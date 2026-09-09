@@ -8,4 +8,7 @@ external/reshade/*.hpp -text
 # ReShade wants CRLF in .ini files it reads back.
 *.ini text eol=crlf
 
+# Checksum lists are fed to sha256sum -c, which chokes on the CR. Keep them LF.
+tools/SHA256SUMS.txt -text
+
 media/* binary
