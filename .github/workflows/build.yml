@@ -1,0 +1,27 @@
+# Proves the repository builds from a clean checkout with nothing else downloaded.
+# If this is green, "it doesn't build" is a local toolchain problem, not a missing file.
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build all three add-ons
+        shell: pwsh
+        run: |
+          foreach ($t in 'neural', 'probe', 'session') {
+            .\build.ps1 -Target $t
+            if ($LASTEXITCODE -ne 0) { throw "$t failed" }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: addons
+          path: build/*.addon64

@@ -392,6 +392,41 @@ bool InitHip()
     return true;
 }
 
+// The engine reads dlssnr_on_amd.ini from DllMain, so it has to exist before LoadLibrary.
+// Its built-in default host watchdog budget is 600 ms: long enough for one stalled job to trip
+// Windows TDR, which removes the D3D12 device and takes the game with it. That surfaces as the
+// game dying on DXGI_ERROR_DEVICE_REMOVED (887A0005), with nothing pointing back here. Writing
+// the file when it is missing is cheaper than explaining the crash.
+void EnsureEngineIni(const std::filesystem::path &dir)
+{
+    const auto ini = dir / L"dlssnr_on_amd.ini";
+    std::error_code ec;
+    if (std::filesystem::exists(ini, ec))
+        return;
+
+    std::ofstream f(ini, std::ios::binary);
+    if (!f)
+    {
+        Log("could not write %ls; the engine will fall back to its own defaults.", ini.c_str());
+        return;
+    }
+    f << "[DlssNrOnAmd]\r\n"
+         "Enabled=1\r\n"
+         "Inline=1\r\n"
+         "; Host watchdog budget, milliseconds. The network takes about 16 ms at 0.50 scale, so\r\n"
+         "; 100 is a wide margin; past it the frame is shown without the effect instead of\r\n"
+         "; freezing. Do not raise this much: the engine's own default is 600 ms, and a stall\r\n"
+         "; that long trips Windows TDR, which removes the D3D12 device and kills the game.\r\n"
+         "InlineWaitMs=100\r\n"
+         "Interop=1\r\n"
+         "UseFsrInputs=1\r\n"
+         "UseDepth=0\r\n"
+         "Temporal=0\r\n"
+         "Tonemap=0\r\n"
+         "HipDevice=-1\r\n";
+    Log("wrote a default dlssnr_on_amd.ini next to the exe.");
+}
+
 bool InitEngine(UINT index)
 {
     if (g.runtimes[index] != nullptr)
@@ -417,6 +452,8 @@ bool InitEngine(UINT index)
     }
     if (!InitHip())
         return false;
+
+    EnsureEngineIni(dir);
 
     HMODULE h = LoadLibraryExW(dll.c_str(), nullptr,
                                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -1021,7 +1058,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
                             const int e = (h >> 10) & 0x1f;
                             const int m = h & 0x3ff;
                             float v = e == 0 ? m / 1024.0f * 6.103515625e-5f
-                                             : (1.0f + m / 1024.0f) * std::pow(2.0f, e - 15);
+                                             : std::ldexpf(1.0f + m / 1024.0f, e - 15);
                             return (h & 0x8000) ? -v : v;
                         };
                         const double d = std::abs(half(pa[x]) - half(pb[x]));
@@ -1043,7 +1080,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
                             const int e = (hh >> 10) & 0x1f;
                             const int m = hh & 0x3ff;
                             float v = e == 0 ? m / 1024.0f * 6.103515625e-5f
-                                             : (1.0f + m / 1024.0f) * std::pow(2.0f, e - 15);
+                                             : std::ldexpf(1.0f + m / 1024.0f, e - 15);
                             return (hh & 0x8000) ? -v : v;
                         };
                         meanBase += std::abs(half(pa[x]));
@@ -1090,13 +1127,13 @@ void OnOverlay(effect_runtime *)
 
     ImGui::BeginDisabled();
     int mode = 0, hook = 0, require = 0;
-    ImGui::Combo("Options Mode", &mode, "DLSS-NR ");
-    ImGui::Combo("Hook Method", &hook, "Present ");
-    ImGui::Combo("Require DLSS", &require, "Off ");
+    ImGui::Combo("Options Mode", &mode, "DLSS-NR\0");
+    ImGui::Combo("Hook Method", &hook, "Present\0");
+    ImGui::Combo("Require DLSS", &require, "Off\0");
     ImGui::EndDisabled();
     
     int enc = g.encoding.load();
-    if (ImGui::Combo("Encoding", &enc, "sRGB Linear scRGB-nl "))
+    if (ImGui::Combo("Encoding", &enc, "sRGB\0Linear\0scRGB-nl\0"))
         g.encoding.store(enc);
     float white = g.diffuseWhite.load();
     if (ImGui::SliderFloat("Diffuse White", &white, 80.0f, 1000.0f, "%.0f nits", 0))
@@ -1131,7 +1168,7 @@ void OnOverlay(effect_runtime *)
     float dummy = 1.0f;
     int model = 0;
     ImGui::SliderFloat("Global Tone Strength", &dummy, 0.0f, 1.0f, "%.2f", 0);
-    ImGui::Combo("Model", &model, "Model A ");
+    ImGui::Combo("Model", &model, "Model A\0");
     ImGui::Checkbox("Character Mask", &on);
     ImGui::EndDisabled();
     

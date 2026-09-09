@@ -255,7 +255,7 @@ void DumpResource(device *dev, command_queue *queue, resource res, const resourc
         return;
 
     resource_desc staging_desc(desc.texture.width, desc.texture.height, 1, 1, desc.texture.format, 1,
-                               memory_heap::gpu_to_cpu, resource_usage::copy_dest);
+                               memory_heap::readback, resource_usage::copy_dest);
     resource staging = {};
     if (!dev->create_resource(staging_desc, nullptr, resource_usage::copy_dest, &staging))
     {

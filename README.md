@@ -2,6 +2,8 @@
 
 ReShade add-on that runs the DLSS-NR network on AMD cards.
 
+*Em português: [LEIA-ME.md](LEIA-ME.md).*
+
 Every tool I found for DLSS 5 (renodx-dlss, DLSS5-Feeder, DLSS5-Swapper) calls NVIDIA's
 `nvngx_dlssnr.dll`, so none of them do anything on a Radeon. This one drives the AMD port of
 the network instead, from a ReShade add-on, same idea as RenoDX: one core file plus a small
@@ -29,39 +31,58 @@ PCSX2, no audio. Click to play.
 
 [![](media/pcsx2-0320.jpg)](https://github.com/zmodelerlover/dlss5-neural-amd/raw/master/media/pcsx2-0320.mp4)
 
-## You need
+---
 
-* AMD RDNA3 or RDNA4, with the HIP 7 runtime installed (`amdhip64_7.dll`). HIP 6 won't do.
-* The game has to be running D3D12. On anything else the add-on just sits there doing nothing.
-* ReShade with add-on support.
-* `dlssnr_amd_pass1.dll` and `dlssnr_on_amd_weights.bin` in the game folder.
+# Quick start
 
-Those last two aren't in this repo. **They're in the `files` channel on the discord:**
-**https://discord.gg/wYhvS3JSHM**
+Four files end up next to `pcsx2-qt.exe`. Two you build or download from the release, two you
+get from the discord. That's the whole install.
 
-## Getting the runtime and the weights
+### 1. Get the add-on
 
-The add-on needs `dlssnr_amd_pass1.dll` and `dlssnr_on_amd_weights.bin`, and neither is in this
-repo. The weights are NVIDIA-derived and the runtime comes from a third-party project that
-doesn't declare a license, so they're not going in a public repo.
+Either download `dlss5-neural.addon64` from
+[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases), or build it:
+
+```powershell
+git clone https://github.com/zmodelerlover/dlss5-neural-amd
+cd dlss5-neural-amd
+.\build.ps1 -Target neural
+```
+
+That is the entire build. Nothing to download first, no submodules, no `vcpkg`. The ReShade and
+ImGui headers are checked into `external/reshade/` (see
+[external/reshade/NOTICE.md](external/reshade/NOTICE.md) for what they are and where they came
+from). You need Visual Studio with the C++ workload and a Windows 10/11 SDK; `build.ps1` finds
+both by itself. The result lands in `build\dlss5-neural.addon64`.
+
+### 2. Get the runtime and the weights
+
+`dlssnr_amd_pass1.dll` (7 MB) and `dlssnr_on_amd_weights.bin` (141 MB) are **not in this repo
+and never will be.** The weights are NVIDIA-derived and the runtime comes from a third-party
+project that declares no license, so I'm not the one redistributing them.
 
 > **Both are in the `files` channel on the discord → https://discord.gg/wYhvS3JSHM**
 
-The dll there is already rebuilt without the spin cap, so you can drop it straight in. It has to
-be exactly that build: the add-on checks it and refuses to load anything else, because the whole
-thing is hardcoded offsets into one specific binary and pointing them at a different one hangs
-the game.
+The `.dll` there is already rebuilt without the spin cap, so it goes straight in the folder with
+no patching. Check what you downloaded against `tools/SHA256SUMS.txt`:
 
-If you'd rather rebuild it yourself, the untouched `version.dll` and `runtime-patches.json` are
-in the same channel, run `tools/patch_runtime.py` on them.
+```powershell
+Get-FileHash dlssnr_amd_pass1.dll, dlssnr_on_amd_weights.bin -Algorithm SHA256
+```
 
-## PCSX2 setup
+It has to be exactly that build. The add-on hashes it at load and refuses anything else, because
+the whole thing is hardcoded offsets into one specific binary and pointing them at a different
+one hangs the game.
 
-Set the renderer to Direct3D 12. Careful with per-game overrides: PCSX2 keeps them in
-`Documents\PCSX2\gamesettings\<SERIAL>.ini`, and a `Renderer = 3` line in there wins over your
-global setting. That one wasted an entire evening for me. 15 is D3D12.
+### 3. Install ReShade into PCSX2
 
-Install ReShade into `pcsx2-qt.exe` (Direct3D 10/11/12 option), then drop these next to the exe:
+Get the **add-on** build of ReShade (the one labelled "with full add-on support") from
+<https://reshade.me/>, run it, pick `pcsx2-qt.exe`, choose **Direct3D 10/11/12**. Skip the
+shader download, this doesn't use any.
+
+### 4. Copy the files in
+
+Next to `pcsx2-qt.exe`:
 
 ```
 dlss5-neural.addon64
@@ -69,42 +90,85 @@ dlssnr_amd_pass1.dll
 dlssnr_on_amd_weights.bin
 ```
 
-Open `ReShade.ini` and check there's no `DisabledAddons=dlss5 neural@...` line under `[ADDON]`.
-ReShade writes that if you ever untick the add-on, and then it silently never loads. That one
-wasted an evening too.
+`dlssnr_on_amd.ini` shows up on its own the first time it runs. Don't delete it — see
+[the engine ini](#the-engine-ini) below.
 
-Start a game, hit Home for the ReShade overlay, Add-ons tab, "DLSS Neural Rendering (AMD)".
-The status line tells you if it's running. There's also `dlss5-neural.log` next to the exe.
+### 5. Set PCSX2 to Direct3D 12
 
-What worked for me: Encoding sRGB, Resolution Scale 0.50, Pass Count 1, Apply On Same Frame on.
+Settings → Graphics → Renderer → **Direct3D 12**. On anything else the add-on loads and then
+sits there doing nothing.
 
-## Building it
+Watch out for per-game overrides: PCSX2 keeps them in
+`Documents\PCSX2\gamesettings\<SERIAL>.ini`, and a `Renderer = 3` line in there beats your
+global setting silently. `15` is D3D12. That one wasted an entire evening for me.
 
-Drop the ReShade headers into `external/reshade/`, plus `imgui.h` and `imconfig.h` from tag
-`v1.92.5-docking`. The version has to be exact (ReShade wants 19250) and it has to be the
-docking branch, because the overlay header uses `ImGuiDockNodeFlags` and `ImGuiWindowClass`.
-Grab a close-enough version and it compiles fine, then the function table layout doesn't match
-and things get weird.
+### 6. Start a game
+
+Hit **Home** for the ReShade overlay → **Add-ons** tab → **DLSS Neural Rendering (AMD)**.
+The status line says whether it's actually running. There's also `dlss5-neural.log` next to
+the exe.
+
+The defaults are the settings I got the numbers below with — Encoding sRGB, Resolution Scale
+0.50, Pass Count 1, inline on — so there is nothing you have to change. Nothing is saved
+between runs either; every launch starts from those defaults.
+
+---
+
+## You need
+
+* **AMD RDNA3 or RDNA4** with the HIP 7 runtime installed, i.e. `amdhip64_7.dll` somewhere on
+  the search path. HIP 6 will not do. A current Adrenalin driver ships it.
+* The game running **D3D12**.
+* **ReShade with add-on support**, 6.x. Tested on 6.8.0.
+* `dlssnr_amd_pass1.dll` + `dlssnr_on_amd_weights.bin`, from the discord.
+
+Tested on: RX 9070 XT, ReShade 6.8.0, **PCSX2 2.3.14 and 2.8.2**, God of War 1.
+
+## Troubleshooting
+
+| What you see | What it is |
+|---|---|
+| Add-on isn't in the Add-ons tab at all | `ReShade.ini` has `DisabledAddons=dlss5 neural@dlss5-neural.addon64` under `[ADDON]`. ReShade writes that line if you ever untick the add-on, and then it never loads again, with no error anywhere. Clear it. |
+| Status says the API is wrong | PCSX2 isn't on D3D12. Check the per-game ini, not just the global setting. |
+| `HIP: amdhip64_7.dll failed to load` | HIP 7 isn't installed. HIP 6 doesn't count. |
+| `hash mismatch; refused` | Wrong `dlssnr_amd_pass1.dll`. Compare against `tools/SHA256SUMS.txt`. The refusal is deliberate — the alternative is a hang. |
+| Game dies with `887A0005` / device removed | `DXGI_ERROR_DEVICE_REMOVED`, from a Windows TDR. See [the engine ini](#the-engine-ini). |
+| It runs but "only shifts the colours a bit" | Encoding is wrong. On an 8-bit SDR back buffer it has to be **sRGB**. scRGB-nl linearises something that is already sRGB and then scales it by 203/white, so the network gets a nearly black image and does nothing. Ask me how I know. |
+| `imgui.h` or `reshade.hpp` not found when building | You deleted `external/`. It's in the repo now; `git checkout external` puts it back. |
+
+### The engine ini
+
+The runtime reads `dlssnr_on_amd.ini` from the game folder when it loads. **Its own built-in
+default for the host watchdog is 600 ms**, and one stalled job that long trips Windows TDR,
+which removes the D3D12 device and takes the emulator with it. The symptom is a pile of
+`887A0005` in `emulog.txt` and a dead PCSX2, with nothing pointing back at this add-on.
+
+So the add-on writes the file itself if it isn't there, with `InlineWaitMs=100`. At 0.50 scale
+the network takes about 16 ms, so 100 is a wide margin, and past it you get a frame without the
+effect instead of a freeze. Delete the file and it gets written again; edit it and your version
+is kept. Don't raise `InlineWaitMs` far without knowing why.
+
+## Rebuilding the runtime yourself
+
+You don't need this — the DLL on the discord is already the rebuilt one. It's here for anyone
+who wants to see what was changed rather than take my word for it.
+
+`tools/runtime-patches.json` is the spec: five patches, with offsets, the bytes before, the
+bytes after, and why. Grab the untouched `version.dll` from the discord and:
 
 ```powershell
-.\build.ps1 -Target neural
+python tools\patch_runtime.py version.dll tools\runtime-patches.json dlssnr_amd_pass1.dll
 ```
 
-## Runtime
-
-The OptiScaler installer patches the GPU wait shader down to 262144 iterations, about 6 ms.
-The network takes 16 ms at half scale, 125-187 ms at full. So inline mode timed out on every
-single frame, and the apply pass just kept the input. Residual came out at exactly zero, which
+That applies four of the five and **skips the fifth on purpose.** The fifth is the one the
+OptiScaler installer uses to cap the GPU wait shader at 262144 iterations, about 6 ms. The
+network takes 16 ms at half scale and 125-187 ms at full, so inline mode timed out on every
+single frame, and the apply pass just kept its input. Residual came out at exactly zero, which
 is a fun way to spend a few hours.
 
-```powershell
-python tools\patch_runtime.py version.dll runtime-patches.json dlssnr_amd_pass1.dll
-```
-
-That applies the four patches you actually need and skips the cap. Everything is written in
-place at the same length so no offset moves. It prints a new SHA256; paste it into
-`kRuntimeSha256` in `src/neural/neural.cpp` and rebuild. The hash check is there on purpose,
-because pointing these offsets at a different build hangs the game.
+Everything is written in place at the same length, so no RVA moves and the add-on's offsets stay
+valid. The script prints a new SHA256; paste it into `kRuntimeSha256` in `src/neural/neural.cpp`
+and rebuild.
 
 ## What it does per frame
 
@@ -115,26 +179,34 @@ back buffer -> colour prep -> network raster -> network -> residual -> compose -
 Only the network's correction gets resampled, the full-res image goes back untouched. It hooks
 `present`, because `reshade_finish_effects` never fires if you have no shaders loaded.
 
-One thing worth knowing: Encoding matters way more than it looks. On an 8-bit SDR back buffer
-the right setting is sRGB. Pick scRGB-nl and it linearises something that's already sRGB and
-scales it by 203/white, so the network gets a nearly black image and does nothing. Symptom is
-"it only shifts the colours a bit". Ask me how I know.
-
 ## Numbers
 
-PCSX2, God of War, 1920x974 back buffer, scale 0.50, 1 pass, RX 9070 XT:
+PCSX2 2.8.2, God of War, 1920x1080 back buffer, scale 0.50, 1 pass, RX 9070 XT:
 
 ```
-network input, mean absolute   0.0259
-residual, mean                 0.0165
-residual, max                  0.777
+network input, mean absolute   0.0207
+residual, mean                 0.0115
+residual, max                  0.792
 per job                        15-16 ms
-frames with a fresh correction 2184 of 2473
+frames with a fresh correction 3932 of 3960
 ```
 
 The add-on measures that itself on one frame and dumps it in the log. Worth keeping, because
 "the network isn't doing anything" and "the network works and my compose is eating it" look
 identical from the couch and need completely different fixes.
+
+## Repository layout
+
+| | |
+|---|---|
+| `src/neural/neural.cpp` | the add-on. One file. |
+| `src/probe/probe.cpp` | render target probe — dumps what a game actually exposes. Build with `-Target probe`. |
+| `src/session/session.cpp` | small session logger. |
+| `external/reshade/` | ReShade + ImGui headers, vendored. See `NOTICE.md`. |
+| `tools/patch_runtime.py` | rebuilds the runtime from `version.dll`. |
+| `tools/runtime-patches.json` | the five patches, with offsets and bytes. |
+| `tools/SHA256SUMS.txt` | hashes of the four files the repo does not ship. |
+| `build.ps1` | builds an add-on with `cl.exe`, no VS project. |
 
 ## Stuff I didn't get to
 
@@ -159,4 +231,6 @@ None of this is settled, it's just where I stopped. One card, one program, one n
 
 ## License
 
-MIT. No network binaries in here and it doesn't download any.
+MIT, in `LICENSE`. Third-party headers under `external/` keep their own licenses, listed in
+`external/reshade/NOTICE.md` — BSD-3-Clause OR MIT for ReShade, MIT for Dear ImGui. No network
+binaries in here and it doesn't download any.

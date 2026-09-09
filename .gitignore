@@ -1,5 +1,9 @@
-# Nada de binario da rede: os pesos sao derivados da NVIDIA e o runtime vem de um projeto
-# de terceiro sem licenca declarada. Quem clonar fornece os seus.
+# Network binaries stay out: the weights are NVIDIA-derived and the runtime comes from a
+# third-party project with no declared license. Whoever clones brings their own.
+# (See README, "Getting the runtime and the weights".)
+#
+# Third-party HEADERS are the opposite: they are vendored in external/reshade/ so a fresh
+# clone builds with nothing else to download. See external/reshade/NOTICE.md.
 *.dll
 *.bin
 *.addon64
@@ -9,16 +13,13 @@
 *.exp
 *.pdb
 
-# Saidas de build e de execucao
+# Build and run output
 build/
 builds/
 *.log
 *.ppm
 *.raw
 
-# Headers de terceiros: o README diz quais buscar e em que versao
-external/
-
-# Scripts de uso unico, sem valor para quem clona
+# One-off scripts, no value to anyone cloning
 patch_*.py
 check_ppm.py
