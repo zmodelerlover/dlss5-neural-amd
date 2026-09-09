@@ -5,16 +5,29 @@ Versão curta em português. O [README](README.md) tem tudo, em inglês.
 É um add-on de ReShade que roda a rede do DLSS-NR numa placa AMD. Só foi testado no PCSX2, numa
 RX 9070 XT. Em qualquer outra coisa eu não sei o que acontece.
 
-## O que precisa
+**Só quer rodar?** [Antes de começar](#antes-de-começar) e os passos abaixo. Não precisa de
+compilador.
+**Quebrou?** [Quando não funciona](#quando-não-funciona), organizado pelo que aparece na tela.
+**Quer mexer no código?** [Compilar por conta própria](#compilar-por-conta-própria-opcional).
 
-* AMD **RDNA3 ou RDNA4** com o runtime **HIP 7** instalado (`amdhip64_7.dll`). HIP 6 não serve.
-  Driver Adrenalin atual já traz.
-* O jogo tem que estar em **Direct3D 12**.
-* **ReShade com suporte a add-on** (o instalador "with full add-on support"), 6.x.
+## Antes de começar
 
-Testado: RX 9070 XT, ReShade 6.8.0, PCSX2 2.3.14 e 2.8.2, God of War 1.
+| | |
+|---|---|
+| **Placa** | AMD **RDNA3 ou RDNA4** com o runtime **HIP 7** (`amdhip64_7.dll` no path). HIP 6 não serve. Driver Adrenalin atual já traz. Em NVIDIA ou Intel não faz nada. |
+| **Renderizador** | O jogo tem que estar em **Direct3D 12**. Em D3D11, Vulkan ou OpenGL o add-on carrega e fica parado. |
+| **ReShade** | A build **com add-on**, 6.x. A normal não carrega add-on nenhum. Testado na 6.8.0. |
+| **Disco** | Uns 150 MB, por causa dos pesos da rede. |
 
-## Quatro arquivos na pasta do `pcsx2-qt.exe`
+Testado: RX 9070 XT, ReShade 6.8.0, PCSX2 2.3.14 e 2.8.2, God of War 1. Mais nada foi testado
+por mim.
+
+**Onde ficam os arquivos? Sempre do lado do `pcsx2-qt.exe`.** Vale tanto pra PCSX2 portable em
+HD externo quanto pra instalação normal — o add-on só olha a pasta do `.exe` que está rodando.
+A diferença portable/instalador só importa pras *configurações* do PCSX2, e isso aparece uma vez
+só, na parte do renderizador.
+
+## Três arquivos na pasta do `pcsx2-qt.exe`
 
 ### 1. `dlss5-neural.addon64`
 
@@ -41,9 +54,9 @@ Get-FileHash dlssnr_amd_pass1.dll, dlssnr_on_amd_weights.bin -Algorithm SHA256
 Tem que ser exatamente aquela build. O add-on confere o hash e recusa qualquer outra, porque a
 coisa toda é offset fixo dentro de um binário específico e apontar para outro trava o jogo.
 
-### 4. `dlssnr_on_amd.ini`
+### E o `dlssnr_on_amd.ini`?
 
-Esse aparece sozinho na primeira vez que roda. **Não apague.** Ver [abaixo](#o-ini-do-engine).
+Esse aparece sozinho na primeira vez que roda, voce nao copia. **Não apague.** Ver [abaixo](#o-ini-do-engine).
 
 ## ReShade e PCSX2
 
@@ -140,6 +153,23 @@ dlss5-neural.addon64  73728  ...
 
 Os outros dois alvos compilam igual: `-Target probe` (mostra o que um jogo expõe) e
 `-Target session`.
+
+### Se for reportar um problema
+
+Print não ajuda muito aqui — flicker é frame alternando, e uma imagem parada congela um deles,
+então sempre parece normal. Duas coisas resolvem quase tudo:
+
+1. **A linha de status.** Overlay do ReShade → Add-ons → DLSS Neural Rendering (AMD). Ela diz
+   `Running: X processed, Y skipped (Z%)` mais o tamanho do back buffer e da rede. Cole essa linha.
+2. **Os logs**, os dois do lado do `pcsx2-qt.exe` — a mesma pasta onde você pôs o add-on, seja
+   portable ou não:
+   * `dlss5-neural.log` — o add-on: o que ele detectou, tamanho e formato do back buffer, e a
+     medição de resíduo que ele faz no frame 240.
+   * `dlssnr_on_amd.log` — o runtime: formatos, tempo por job, timeouts, faults.
+
+A medição de resíduo no primeiro é a parte útil. `mean 0.000000` quer dizer que a rede devolveu
+a entrada intacta, o que é um problema completamente diferente de um resíduo diferente de zero
+que sai errado na tela. Do sofá, os dois são idênticos.
 
 ### O ini do engine
 

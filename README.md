@@ -23,6 +23,12 @@ Discord: https://discord.gg/wYhvS3JSHM
 That server is for DLSS 5 in general, AMD, ports, whatever people are building. It isn't a
 support channel for this add-on.
 
+**Just want it running?** → [Before you start](#before-you-start) → [Quick start](#quick-start).
+Six steps, no compiler needed.
+**Something's broken?** → [Troubleshooting](#troubleshooting), which is keyed by what you see on
+screen.
+**Want to change the code?** → [Building it yourself](#building-it-yourself-optional).
+
 ## Videos
 
 PCSX2, no audio. Click to play.
@@ -33,10 +39,29 @@ PCSX2, no audio. Click to play.
 
 ---
 
+## Before you start
+
+| | |
+|---|---|
+| **GPU** | AMD **RDNA3 or RDNA4** with the **HIP 7** runtime, i.e. `amdhip64_7.dll` on the search path. HIP 6 will not do. A current Adrenalin driver ships it. This does nothing on NVIDIA or Intel. |
+| **Renderer** | The game has to be on **Direct3D 12**. On D3D11, Vulkan or OpenGL the add-on loads and then sits there. |
+| **ReShade** | The **add-on** build, 6.x. The plain one will not load add-ons. Tested on 6.8.0. |
+| **Disk** | About 150 MB for the network weights. |
+
+Tested on: RX 9070 XT, ReShade 6.8.0, **PCSX2 2.3.14 and 2.8.2**, God of War 1. Nothing else has
+been tried by me.
+
+**Where do the files go? Always next to `pcsx2-qt.exe`.** That is true whether your PCSX2 is a
+portable copy on an external drive or a normal install — the add-on only ever looks in the
+folder the running `.exe` is in. The portable-vs-installer difference only matters for PCSX2's
+own *settings*, which comes up once in [step 5](#5-set-pcsx2-to-direct3d-12).
+
+---
+
 # Quick start
 
-Four files end up next to `pcsx2-qt.exe`. Two you build or download from the release, two you
-get from the discord. That's the whole install.
+Three files end up next to `pcsx2-qt.exe`: one from the release, two from the discord. A fourth
+writes itself. That's the whole install.
 
 ### 1. Get the add-on
 
@@ -119,16 +144,6 @@ between runs either; every launch starts from those defaults.
 
 ---
 
-## You need
-
-* **AMD RDNA3 or RDNA4** with the HIP 7 runtime installed, i.e. `amdhip64_7.dll` somewhere on
-  the search path. HIP 6 will not do. A current Adrenalin driver ships it.
-* The game running **D3D12**.
-* **ReShade with add-on support**, 6.x. Tested on 6.8.0.
-* `dlssnr_amd_pass1.dll` + `dlssnr_on_amd_weights.bin`, from the discord.
-
-Tested on: RX 9070 XT, ReShade 6.8.0, **PCSX2 2.3.14 and 2.8.2**, God of War 1.
-
 ## Troubleshooting
 
 | What you see | What it is |
@@ -140,6 +155,23 @@ Tested on: RX 9070 XT, ReShade 6.8.0, **PCSX2 2.3.14 and 2.8.2**, God of War 1.
 | Game dies with `887A0005` / device removed | `DXGI_ERROR_DEVICE_REMOVED`, from a Windows TDR. See [the engine ini](#the-engine-ini). |
 | It runs but "only shifts the colours a bit" | Encoding is wrong. On an 8-bit SDR back buffer it has to be **sRGB**. scRGB-nl linearises something that is already sRGB and then scales it by 203/white, so the network gets a nearly black image and does nothing. Ask me how I know. |
 | `imgui.h` or `reshade.hpp` not found when building | You deleted `external/`. It's in the repo now; `git checkout external` puts it back. |
+
+### If you're reporting a problem
+
+Screenshots don't help much here — flicker is frames alternating, and a still image freezes one
+of them, so it always looks fine. Two things settle almost anything:
+
+1. **The status line.** ReShade overlay → Add-ons → DLSS Neural Rendering (AMD). It reads
+   `Running: X processed, Y skipped (Z%)` plus the back buffer and network size. Quote that line.
+2. **The logs**, both next to `pcsx2-qt.exe` — the same folder you put the add-on in, portable
+   install or not:
+   * `dlss5-neural.log` — the add-on: what it detected, back buffer size and format, and the
+     residual measurement it takes on frame 240.
+   * `dlssnr_on_amd.log` — the runtime: staging formats, per-job timings, timeouts, faults.
+
+The residual measurement in the first one is the useful bit. `mean 0.000000` means the network
+returned its input untouched, which is a completely different problem from a nonzero residual
+that looks wrong on screen. They are indistinguishable from the couch.
 
 ### The engine ini
 

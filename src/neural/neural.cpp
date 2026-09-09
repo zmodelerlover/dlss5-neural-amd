@@ -208,17 +208,19 @@ DXGI_FORMAT ColourReadFormat(DXGI_FORMAT f)
     }
 }
 
-bool HasTypedUavStore(DXGI_FORMAT f)
+// D3D12 guarantees typed UAV store for very few formats. B8G8R8A8_UNORM and R10G10B10A2_UNORM
+// are NOT among them -- they are optional per driver. A hardcoded table that assumes they work
+// means the compose shader writes through an unsupported UAV wherever they don't: undefined
+// behaviour, which shows up as a distorted picture and no error anywhere. Ask the device.
+bool HasTypedUavStore(ID3D12Device *dev, DXGI_FORMAT f)
 {
-    switch (f)
-    {
-    case DXGI_FORMAT_R8G8B8A8_UNORM:
-    case DXGI_FORMAT_B8G8R8A8_UNORM:
-    case DXGI_FORMAT_R10G10B10A2_UNORM:
-    case DXGI_FORMAT_R16G16B16A16_FLOAT:
-    case DXGI_FORMAT_R32G32B32A32_FLOAT:     return true;
-    default:                                 return false;
-    }
+    if (dev == nullptr)
+        return false;
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT s {};
+    s.Format = f;
+    if (FAILED(dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &s, sizeof(s))))
+        return false;
+    return (s.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0;
 }
 
 void Barrier(ID3D12GraphicsCommandList *c, ID3D12Resource *r, D3D12_RESOURCE_STATES a,
@@ -577,10 +579,13 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
         return true;
 
     const DXGI_FORMAT composeFormat = ColourReadFormat(outFormat);
-    if (!HasTypedUavStore(composeFormat))
+    if (!HasTypedUavStore(g.device.Get(), composeFormat))
     {
-        Log("back buffer format %d has no typed UAV store; no path back to the image.",
-            static_cast<int>(outFormat));
+        Log("this GPU/driver has no typed UAV store for the back buffer format (DXGI %d, read as "
+            "%d), so there is no way to write the corrected image back. Stopping instead of "
+            "drawing garbage. Try turning HDR off, or a different swapchain format.",
+            static_cast<int>(outFormat), static_cast<int>(composeFormat));
+        g.reason = "back buffer format has no typed UAV store on this driver";
         return false;
     }
     if (!CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.netColour, "netColour") ||
@@ -719,6 +724,8 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     if (!EnsureResources(static_cast<UINT>(bd.Width), bd.Height, bd.Format, g.scale.load()))
     {
         g.unavailable = true;
+        if (*g.reason == '\0')
+            g.reason = "could not create the working textures; see dlss5-neural.log";
         return;
     }
 
