@@ -396,8 +396,12 @@ struct State
     ComPtr<ID3D12Resource> netBase;
     ComPtr<ID3D12Resource> netMotion;
     ComPtr<ID3D12Resource> lumaA, lumaB, flowSmall, flowCoarse;
+    ComPtr<ID3D12Resource> history;
+    std::atomic<bool> useHistory { true };
+    bool historyValid = false;
+    bool loggedHistory = false;
     UINT flowWidth = 0, flowHeight = 0;
-    std::atomic<bool> useMotion { false };
+    std::atomic<bool> useMotion { true };
     bool loggedFlow = false;
     ComPtr<ID3D12Resource> flowReadLuma, flowReadFlow;
     bool pendingFlow = false;
@@ -734,8 +738,11 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
          !CreateTexture(fw, fh, DXGI_FORMAT_R16_FLOAT, g.lumaA, "lumaA") ||
          !CreateTexture(fw, fh, DXGI_FORMAT_R16_FLOAT, g.lumaB, "lumaB") ||
          !CreateTexture(fw, fh, DXGI_FORMAT_R16G16_FLOAT, g.flowSmall, "flowSmall") ||
-         !CreateTexture(fw, fh, DXGI_FORMAT_R16G16_FLOAT, g.flowCoarse, "flowCoarse")))
+         !CreateTexture(fw, fh, DXGI_FORMAT_R16G16_FLOAT, g.flowCoarse, "flowCoarse") ||
+         !CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.history, "history")))
         return false;
+    if (netChanged)
+        g.historyValid = false;
     if (netChanged)
     {
         g.flowWidth = fw;
@@ -1202,8 +1209,22 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     for (UINT i = 0; i < wanted; ++i)
     {
         HMODULE r = g.runtimes[i];
-        At<uint8_t>(r, 0x765f8) = 0;
-        At<void *>(r, 0x765f0) = nullptr;
+        // Temporal history. The network is a denoiser: without a previous result to carry
+        // forward it starts from nothing every frame, and a motion vector -- which says where a
+        // pixel *was* -- has nothing to point at. This is the pair that turns motion from an
+        // input the engine merely reports into one it can use.
+        //
+        // Off by default because these are hardcoded offsets into one specific build: a wrong
+        // pointer here does not fail, it hangs the game.
+        const bool wantHistory = g.useHistory.load() && g.historyValid && g.history != nullptr;
+        At<uint8_t>(r, 0x765f8) = wantHistory ? 1 : 0;
+        At<void *>(r, 0x765f0) = wantHistory ? static_cast<void *>(g.history.Get()) : nullptr;
+        if (wantHistory && !g.loggedHistory)
+        {
+            g.loggedHistory = true;
+            Log("history: handing the engine last frame's output at %ux%u. Watch the engine log: "
+                "it says history off in the engine log when it is ignoring this.", g.netWidth, g.netHeight);
+        }
         At<uint8_t>(r, 0x76e1d) = 1;
         At<uint8_t>(r, 0x76be0) = g.inlineMode.load() ? 1 : 0;
         At<uint8_t>(r, 0x76e1f) = haveDepth ? 1 : 0;
@@ -1331,6 +1352,22 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     }
     Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+    // Keep this frame's network output as next frame's history. Done here, after compose has
+    // read it, so nothing races over the texture.
+    if (g.useHistory.load() && g.history != nullptr && g.activePasses != 0)
+    {
+        Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Barrier(cmd, g.history.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+        cmd->CopyResource(g.history.Get(), g.netColour.Get());
+        Barrier(cmd, g.history.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        g.historyValid = true;
+    }
 
     ID3D12CommandList *submitted[] { cmd };
     for (UINT i = 0; i < g.activePasses; ++i)
@@ -1596,6 +1633,19 @@ void OnOverlay(effect_runtime *)
     bool inverted = g.depthInverted.load();
     if (ImGui::Checkbox("Depth Inverted", &inverted))
         g.depthInverted.store(inverted);
+    bool hist = g.useHistory.load();
+    if (ImGui::Checkbox("History", &hist))
+    {
+        g.useHistory.store(hist);
+        g.historyValid = false;
+        Log("menu: history %s", hist ? "on" : "off");
+    }
+    ImGui::TextDisabled("Carries the previous result forward. Motion needs this to mean anything.");
+    if (hist)
+        Note(kWarn, "Experimental. This writes a pointer into the runtime at a fixed offset, and a "
+                    "wrong one there hangs the game rather than failing. If the picture smears or "
+                    "the game stops responding, this is the first thing to turn off.");
+
     bool mv = g.useMotion.load();
     if (ImGui::Checkbox("Motion Vectors", &mv))
     {
