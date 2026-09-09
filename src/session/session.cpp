@@ -36,6 +36,7 @@ constexpr uint64_t kReportEvery = 120;
 
 FILE *g_log = nullptr;
 uint64_t g_frame = 0;
+uint64_t g_clears = 0;
 std::mutex g_lock;
 
 void Log(const char *fmt, ...)
@@ -201,6 +202,7 @@ struct Session
     ID3D11ComputeShader *composeCs = nullptr;
     ID3D11ShaderResourceView *resultSrv = nullptr;
     ID3D11Texture2D *tempSrc = nullptr, *tempDst = nullptr, *scan = nullptr;
+    ID3D11Texture2D *rawScan = nullptr;
     UINT scanW = 0, scanH = 0;
     ID3D11ShaderResourceView *tempSrcSrv = nullptr;
     ID3D11UnorderedAccessView *tempDstUav = nullptr;
@@ -229,6 +231,7 @@ struct Session
     // bound as a writable depth-stencil. Snapshotting at the moment PCSX2 binds a *different*
     // depth target avoids both: that is when it has finished with this one.
     ID3D11Texture2D *depthCopy = nullptr;
+    ID3D11Texture2D *uavOf = nullptr;
     UINT copyW = 0, copyH = 0;
     DXGI_FORMAT copyFmt = DXGI_FORMAT_UNKNOWN;
     uint64_t snaps = 0;
@@ -251,6 +254,7 @@ struct Session
         Release(tempDstUav);
         Release(tempSrcSrv);
         Release(scan);
+        Release(rawScan);
         Release(tempDst);
         Release(tempSrc);
         Release(resultSrv);
@@ -388,12 +392,12 @@ struct Session
         if (depthCs == nullptr)
         {
             static const char kCs[] =
-                "Texture2D<float4> src : register(t0);\n"
+                "Texture2D<float> src : register(t0);\n"
                 "RWTexture2D<float> dst : register(u0);\n"
                 "[numthreads(8,8,1)] void main(uint3 p : SV_DispatchThreadID) {\n"
                 "  uint w, h; dst.GetDimensions(w, h);\n"
                 "  if (p.x >= w || p.y >= h) return;\n"
-                "  dst[p.xy] = src.Load(int3(p.xy, 0)).x;\n"
+                "  dst[p.xy] = src.Load(int3(p.xy, 0));\n"
                 "}\n";
             ID3DBlob *blob = nullptr, *err = nullptr;
             if (FAILED(D3DCompile(kCs, sizeof(kCs) - 1, "depth", nullptr, nullptr, "main", "cs_5_0",
@@ -417,6 +421,14 @@ struct Session
 
         if (!depth.Ensure(game11, device, w, h, DXGI_FORMAT_R32_FLOAT, true))
             return false;
+        // A resize makes Ensure build a new texture, and a view over the old one then writes into
+        // an orphan while every read of the new one comes back zero. Rebuild the view whenever the
+        // texture underneath it changed, not just when there is none.
+        if (uavOf != depth.on11)
+        {
+            Release(depthUav);
+            uavOf = nullptr;
+        }
         if (depthUav == nullptr)
         {
             D3D11_UNORDERED_ACCESS_VIEW_DESC ud {};
@@ -427,6 +439,7 @@ struct Session
                 Log("depth: UAV over the shared texture failed");
                 return false;
             }
+            uavOf = depth.on11;
         }
 
         if (depthSrv == nullptr)
@@ -450,6 +463,8 @@ struct Session
                     static_cast<unsigned>(srcFmt), static_cast<unsigned>(sd.Format));
                 return false;
             }
+            Log("depth: SRV created over the snapshot, view fmt %u (resource fmt %u)",
+                static_cast<unsigned>(sd.Format), static_cast<unsigned>(srcFmt));
         }
         return true;
     }
@@ -688,10 +703,66 @@ struct Session
             static_cast<unsigned long long>(n), nonzero == 0 ? "  <-- empty" : "");
     }
 
+    // Reads the private snapshot in its own format instead of the converted copy. R32G8X24 is
+    // eight bytes a texel with the depth in the first four, so a staging texture of the same
+    // typeless format can be walked directly. This separates "the copy brought nothing" from
+    // "the shader read it wrong", which the converted texture alone cannot.
+    void ScanSnapshot()
+    {
+        if (depthCopy == nullptr || copyW == 0)
+            return;
+        if (rawScan == nullptr)
+        {
+            D3D11_TEXTURE2D_DESC td {};
+            td.Width = copyW;
+            td.Height = copyH;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = copyFmt;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_STAGING;
+            td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(game11->CreateTexture2D(&td, nullptr, &rawScan)))
+            {
+                Log("snapshot scan: staging in fmt %u could not be created",
+                    static_cast<unsigned>(copyFmt));
+                return;
+            }
+        }
+        game11ctx->CopyResource(rawScan, depthCopy);
+        D3D11_MAPPED_SUBRESOURCE m {};
+        if (FAILED(game11ctx->Map(rawScan, 0, D3D11_MAP_READ, 0, &m)))
+        {
+            Log("snapshot scan: Map failed");
+            return;
+        }
+        double lo = 1e30, hi = -1e30;
+        uint64_t n = 0, nonzero = 0;
+        for (UINT y = 0; y < copyH; y += 4)
+        {
+            auto *row = static_cast<const char *>(m.pData) + static_cast<size_t>(y) * m.RowPitch;
+            for (UINT x = 0; x < copyW; x += 4)
+            {
+                float v = 0.0f;
+                std::memcpy(&v, row + static_cast<size_t>(x) * 8, sizeof(v));
+                lo = std::min(lo, static_cast<double>(v));
+                hi = std::max(hi, static_cast<double>(v));
+                if (v != 0.0f)
+                    ++nonzero;
+                ++n;
+            }
+        }
+        game11ctx->Unmap(rawScan, 0);
+        Log("private snapshot, read raw as float: min %.6f max %.6f, %llu of %llu non-zero%s", lo,
+            hi, static_cast<unsigned long long>(nonzero), static_cast<unsigned long long>(n),
+            nonzero == 0 ? "  <-- the copy brought nothing, so the shader is not the problem" : "");
+    }
+
     void SampleReturned()
     {
-        Log("depth snapshots taken so far: %llu",
-            static_cast<unsigned long long>(snaps));
+        ScanSnapshot();
+        Log("depth: %llu clears intercepted, %llu snapshots taken",
+            static_cast<unsigned long long>(g_clears), static_cast<unsigned long long>(snaps));
         Scan(depth, "depth after the compute pass, before crossing");
         Scan(result, "result after coming back from D3D12");
     }
@@ -791,10 +862,6 @@ void OnBindRenderTargets(command_list *cmd, uint32_t count, const resource_view 
     if (dsv.handle != 0)
     {
         const resource res = dev->get_resource_from_view(dsv);
-        auto *bound = res.handle != 0 ? reinterpret_cast<ID3D11Resource *>(res.handle) : nullptr;
-        // Binding something else means the tracked target is finished with for now: grab it.
-        if (g_seen.depth != nullptr && bound != g_seen.depth)
-            g_session.SnapshotDepth(g_seen.depth, g_seen.depthW, g_seen.depthH, g_seen.depthFmt);
         if (res.handle != 0)
         {
             const resource_desc d = dev->get_resource_desc(res);
@@ -829,6 +896,34 @@ void OnBindRenderTargets(command_list *cmd, uint32_t count, const resource_view 
         g_seen.colourFmt = static_cast<DXGI_FORMAT>(d.texture.format);
         break;
     }
+}
+
+// PCSX2 clears its depth buffer, and a cleared buffer is uniformly zero -- which is exactly what
+// four different reads of it produced. ReShade's own Generic Depth add-on has an option for this
+// case, "preserve before clear", for the same reason. So the content has to be taken just before
+// the clear wipes it, not at present and not at a bind change.
+//
+// Returning false leaves the clear to go ahead as normal: nothing about the game's rendering
+// changes, the copy just happens first.
+bool OnClearDepthStencil(command_list *cmd, resource_view dsv, const float *, const uint8_t *,
+                         uint32_t, const rect *)
+{
+    device *dev = cmd != nullptr ? cmd->get_device() : nullptr;
+    if (dev == nullptr || dev->get_api() != device_api::d3d11 || dsv.handle == 0)
+        return false;
+    const resource res = dev->get_resource_from_view(dsv);
+    if (res.handle == 0)
+        return false;
+
+    std::lock_guard guard(g_lock);
+    auto *native = reinterpret_cast<ID3D11Resource *>(res.handle);
+    if (g_seen.depth == nullptr || native != g_seen.depth)
+        return false;
+    // Several clears a frame are normal. The last one before present is the one that had the most
+    // drawn into it, so overwriting each time leaves the fullest.
+    g_session.SnapshotDepth(native, g_seen.depthW, g_seen.depthH, g_seen.depthFmt);
+    ++g_clears;
+    return false;
 }
 
 void OnInitDevice(device *dev)
@@ -931,7 +1026,11 @@ void OnPresent(command_queue *, swapchain *sc, const rect *, const rect *, uint3
     // Only give up once there was actually something to try: the snapshot is taken during the
     // frame, so the first present can arrive before one exists, and failing permanently there
     // would disable depth for the whole run.
-    if (!g_session.depthUnshareable && g_session.depthUav == nullptr &&
+    // Checked every frame, not just once: a resize releases the SRV over the snapshot, and gating
+    // this on depthUav alone meant it was never rebuilt -- the shader then sampled a null view,
+    // which reads as zero and looks exactly like a game with no depth.
+    if (!g_session.depthUnshareable &&
+        (g_session.depthUav == nullptr || g_session.depthSrv == nullptr) &&
         g_session.depthCopy != nullptr &&
         !g_session.EnsureDepthPath(g_seen.depth, g_seen.depthW, g_seen.depthH, g_seen.depthFmt))
     {
@@ -1012,6 +1111,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
         reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(
             OnBindRenderTargets);
+        reshade::register_event<reshade::addon_event::clear_depth_stencil_view>(OnClearDepthStencil);
         reshade::register_event<reshade::addon_event::present>(OnPresent);
         break;
     case DLL_PROCESS_DETACH:
