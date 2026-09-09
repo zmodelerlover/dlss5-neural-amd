@@ -258,10 +258,34 @@ The render-resolution colour is also a better input than what is used today: it 
 before it gets scaled down to the window.
 
 The catch is that the AMD network runtime is D3D12. Getting at those sources means running PCSX2
-on D3D11 and bridging the textures to a separate D3D12 device -- own device on the game's
-adapter, shared texture, shared fence. `src/session/session.cpp` is a working prototype of that
-crossing and already logs how long it takes. That is the next real step, and it is the same shape
-as what the NVIDIA route does here.
+on D3D11 and carrying the textures to a separate D3D12 device -- own device on the game's
+adapter, shared texture, shared fence. `src/session/session.cpp` does exactly that and measures
+what it costs. Build it with `-Target session`, run it with PCSX2 on **Direct3D 11**, and read
+`dlss5-session.log`. It runs no network and changes no pixels.
+
+Measured on an RX 9070 XT, God of War, colour and depth both 1536x1254:
+
+```
+submit  0.21 - 0.27 ms mean per frame   (the copy and the fence signal, on the CPU timeline)
+land    ~0.85 ms                        (sampled; a deliberate CPU wait, not paid in normal use)
+```
+
+About a quarter of a millisecond a frame to carry both guides across, against a 16.7 ms frame.
+Cheap enough that the bridge is worth building on.
+
+Two things that cost a day to find, so they are written down here:
+
+* **The depth buffer cannot be shared directly.** PCSX2's depth is `R32G8X24_TYPELESS`, and D3D11
+  refuses to *create* a shared texture in that format at all -- `E_INVALIDARG`, not a permission
+  problem. Same for `R32_FLOAT_X8X24_TYPELESS` and `R32G32_FLOAT`. What does share: `R32_TYPELESS`,
+  `R32_FLOAT`, `R16_FLOAT`, `R16G16_FLOAT`, `R16G16B16A16_FLOAT`, `R8G8B8A8_UNORM` -- and they
+  still share with `BIND_UNORDERED_ACCESS` added. So depth goes through a compute shader that
+  reads it and writes `R32_FLOAT`, which is the format the network wants anyway. That pass does
+  not measurably change the numbers above.
+* **Pick the colour target by matching the depth target's size, not by area.** On PCSX2 the
+  swapchain is 1918x1008 and the render target is 1536x1254 -- the swapchain has *more* pixels,
+  so "the biggest colour target" picks the wrong one. The pair that renders together is the pair
+  that is the same size.
 
 Motion is a separate matter and not a plumbing problem: the PS2 never computed per-pixel motion,
 so there is nothing to capture on either API.
