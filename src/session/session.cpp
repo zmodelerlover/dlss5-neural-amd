@@ -7,7 +7,8 @@
 //
 // Before building that bridge for real, one number decides whether it is worth building at all:
 // what it costs to carry colour and depth across, every frame. That is all this measures. It
-// runs no network and changes no pixels.
+// It composes what came back onto the right half of the screen, so the trip is visible as well as
+// timed. It runs no network.
 
 #include <reshade.hpp>
 
@@ -179,6 +180,34 @@ struct Session
 
     Bridge colour { "colour" };
     Bridge depth { "depth" };
+    Bridge result { "result" };
+
+    // Three (allocator, list) pairs so the D3D12 side never has to stall waiting for its own
+    // previous frame before it can record the next one.
+    static constexpr UINT kRing = 3;
+    ID3D12CommandAllocator *alloc[kRing] {};
+    ID3D12GraphicsCommandList *list[kRing] {};
+    UINT64 ringValue[kRing] {};
+
+    // The way back: D3D12 signals, the game's D3D11 context waits on it before composing.
+    ID3D12Fence *backFence = nullptr;
+    HANDLE backHandle = nullptr;
+    ID3D11Fence *backOn11 = nullptr;
+    UINT64 backValue = 0;
+
+    // Compose on D3D11. The swapchain back buffer has no UAV, so it goes copy -> compute -> copy
+    // rather than a fullscreen draw: two full-res copies are cheap, and this way the only game
+    // state touched is three compute bindings.
+    ID3D11ComputeShader *composeCs = nullptr;
+    ID3D11ShaderResourceView *resultSrv = nullptr;
+    ID3D11Texture2D *tempSrc = nullptr, *tempDst = nullptr, *scan = nullptr;
+    UINT scanW = 0, scanH = 0;
+    ID3D11ShaderResourceView *tempSrcSrv = nullptr;
+    ID3D11UnorderedAccessView *tempDstUav = nullptr;
+    UINT tempW = 0, tempH = 0;
+    DXGI_FORMAT tempFmt = DXGI_FORMAT_UNKNOWN;
+    double roundSum = 0.0, roundMax = 0.0;
+    uint64_t roundN = 0;
 
     ID3D11Device5 *game11 = nullptr;
     ID3D11DeviceContext4 *game11ctx = nullptr;
@@ -192,7 +221,17 @@ struct Session
     ID3D11ComputeShader *depthCs = nullptr;
     ID3D11ShaderResourceView *depthSrv = nullptr;
     ID3D11UnorderedAccessView *depthUav = nullptr;
-    ID3D11Resource *depthSrvOf = nullptr;
+
+    // A private, non-shared copy of the game's depth buffer, taken while the content is still
+    // there. Read at present it is all zeros -- measured two ways, through this add-on's own
+    // shader and through the probe's ReShade readback, both entirely zero -- because by then
+    // PCSX2 has moved on, and because D3D11 quietly drops an SRV over a resource that is still
+    // bound as a writable depth-stencil. Snapshotting at the moment PCSX2 binds a *different*
+    // depth target avoids both: that is when it has finished with this one.
+    ID3D11Texture2D *depthCopy = nullptr;
+    UINT copyW = 0, copyH = 0;
+    DXGI_FORMAT copyFmt = DXGI_FORMAT_UNKNOWN;
+    uint64_t snaps = 0;
 
     bool failed = false;
     bool depthUnshareable = false;
@@ -208,10 +247,28 @@ struct Session
     {
         colour.Destroy();
         depth.Destroy();
+        result.Destroy();
+        Release(tempDstUav);
+        Release(tempSrcSrv);
+        Release(scan);
+        Release(tempDst);
+        Release(tempSrc);
+        Release(resultSrv);
+        Release(composeCs);
+        Release(backOn11);
+        if (backHandle != nullptr)
+            CloseHandle(backHandle);
+        backHandle = nullptr;
+        Release(backFence);
+        for (UINT i = 0; i < kRing; ++i)
+        {
+            Release(list[i]);
+            Release(alloc[i]);
+        }
         Release(depthUav);
         Release(depthSrv);
+        Release(depthCopy);
         Release(depthCs);
-        depthSrvOf = nullptr;
         Release(crossOn11);
         Release(game11ctx);
         Release(game11);
@@ -262,18 +319,70 @@ struct Session
         }
         localEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
 
-        if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&crossFence))) ||
-            FAILED(device->CreateSharedHandle(crossFence, nullptr, GENERIC_ALL, nullptr, &crossHandle)))
+        for (UINT i = 0; i < kRing; ++i)
         {
-            Log("session: could not create the shared fence");
+            if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                      IID_PPV_ARGS(&alloc[i]))) ||
+                FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc[i],
+                                                 nullptr, IID_PPV_ARGS(&list[i]))))
+            {
+                Log("session: could not create the command allocator or list");
+                return false;
+            }
+            list[i]->Close();
+        }
+
+        if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&crossFence))) ||
+            FAILED(device->CreateSharedHandle(crossFence, nullptr, GENERIC_ALL, nullptr, &crossHandle)) ||
+            FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&backFence))) ||
+            FAILED(device->CreateSharedHandle(backFence, nullptr, GENERIC_ALL, nullptr, &backHandle)))
+        {
+            Log("session: could not create the shared fences");
             return false;
         }
         return true;
     }
 
+    // Called from the bind event, on the game's own thread, at the moment PCSX2 stops using this
+    // depth target. One CopyResource; the destination is never bound as a depth-stencil, so it
+    // can be read as an SRV afterwards without the runtime dropping the view.
+    void SnapshotDepth(ID3D11Resource *src, UINT w, UINT h, DXGI_FORMAT fmt)
+    {
+        if (game11 == nullptr || src == nullptr)
+            return;
+        if (depthCopy == nullptr || copyW != w || copyH != h || copyFmt != fmt)
+        {
+            Release(depthSrv);
+            Release(depthCopy);
+            copyW = copyH = 0;
+            D3D11_TEXTURE2D_DESC td {};
+            td.Width = w;
+            td.Height = h;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = fmt;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (FAILED(game11->CreateTexture2D(&td, nullptr, &depthCopy)))
+            {
+                Log("depth: private copy %ux%u fmt %u could not be created", w, h,
+                    static_cast<unsigned>(fmt));
+                return;
+            }
+            copyW = w;
+            copyH = h;
+            copyFmt = fmt;
+            Log("depth: snapshotting %ux%u fmt %u at bind time into a private copy", w, h,
+                static_cast<unsigned>(fmt));
+        }
+        game11ctx->CopyResource(depthCopy, src);
+        ++snaps;
+    }
+
     // Builds the depth path once: the shader, the UAV over the shared R32_FLOAT texture, and an
-    // SRV over whichever depth resource the game is currently using. Returns false once and then
-    // stays false, so a game whose depth cannot be read does not retry every frame.
+    // SRV over the private snapshot. Returns false once and then stays false, so a game whose
+    // depth cannot be read does not retry every frame.
     bool EnsureDepthPath(ID3D11Resource *src, UINT w, UINT h, DXGI_FORMAT srcFmt)
     {
         if (depthCs == nullptr)
@@ -320,10 +429,11 @@ struct Session
             }
         }
 
-        if (src != depthSrvOf)
+        if (depthSrv == nullptr)
         {
-            Release(depthSrv);
-            depthSrvOf = nullptr;
+            if (depthCopy == nullptr)
+                return false;
+            src = depthCopy;
             D3D11_SHADER_RESOURCE_VIEW_DESC sd {};
             sd.Format = (srcFmt == DXGI_FORMAT_R32G8X24_TYPELESS)
                             ? DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS
@@ -336,12 +446,10 @@ struct Session
             const HRESULT hr = game11->CreateShaderResourceView(src, &sd, &depthSrv);
             if (FAILED(hr))
             {
-                Log("depth: SRV over the game's depth buffer failed 0x%08lX (fmt %u read as %u). "
-                    "The buffer was probably created without BIND_SHADER_RESOURCE.",
-                    hr, static_cast<unsigned>(srcFmt), static_cast<unsigned>(sd.Format));
+                Log("depth: SRV over the private snapshot failed 0x%08lX (fmt %u read as %u)", hr,
+                    static_cast<unsigned>(srcFmt), static_cast<unsigned>(sd.Format));
                 return false;
             }
-            depthSrvOf = src;
         }
         return true;
     }
@@ -372,6 +480,220 @@ struct Session
         Release(oldCs);
         Release(oldSrv);
         Release(oldUav);
+    }
+
+    // D3D12 half of the round trip. It waits for the game's copies on the GPU timeline, does its
+    // work, and signals back. A CopyResource stands in for the network here on purpose: the point
+    // is to prove the transport in both directions and price it, not to run a network twice.
+    bool WorkAndSignBack()
+    {
+        const UINT i = static_cast<UINT>(backValue % kRing);
+        // Only blocks if this pair is still in flight, which with three of them it will not be.
+        if (ringValue[i] != 0 && localFence->GetCompletedValue() < ringValue[i])
+        {
+            localFence->SetEventOnCompletion(ringValue[i], localEvent);
+            WaitForSingleObject(localEvent, 2000);
+        }
+        if (FAILED(alloc[i]->Reset()) || FAILED(list[i]->Reset(alloc[i], nullptr)))
+            return false;
+
+        // Shared resources opened from another device sit in COMMON, and COMMON promotes to
+        // COPY_SOURCE and COPY_DEST on a direct queue, so a plain copy needs no barriers.
+        list[i]->CopyResource(result.on12, depth.on12);
+        if (FAILED(list[i]->Close()))
+            return false;
+        ID3D12CommandList *lists[] = { list[i] };
+        queue->ExecuteCommandLists(1, lists);
+
+        ++localValue;
+        ringValue[i] = localValue;
+        if (FAILED(queue->Signal(localFence, localValue)))
+            return false;
+        ++backValue;
+        return SUCCEEDED(queue->Signal(backFence, backValue));
+    }
+
+    bool EnsureComposePath(UINT w, UINT h, DXGI_FORMAT fmt)
+    {
+        if (composeCs == nullptr)
+        {
+            // Right half only, so one look tells you whether the trip worked: the left half is the
+            // untouched game, the right half is what came back from the other device.
+            static const char kCs[] =
+                "Texture2D<float4> src : register(t0);\n"
+                "Texture2D<float>  ret : register(t1);\n"
+                "RWTexture2D<float4> dst : register(u0);\n"
+                "[numthreads(8,8,1)] void main(uint3 p : SV_DispatchThreadID) {\n"
+                "  uint w, h; dst.GetDimensions(w, h);\n"
+                "  if (p.x >= w || p.y >= h) return;\n"
+                "  float4 c = src.Load(int3(p.xy, 0));\n"
+                "  if (p.x > w / 2) {\n"
+                "    uint rw, rh; ret.GetDimensions(rw, rh);\n"
+                "    int2 t = int2(p.xy * float2(rw, rh) / float2(w, h));\n"
+                "    float d = ret.Load(int3(t, 0));\n"
+                "    c.rgb = lerp(c.rgb, d.xxx, 0.85);\n"
+                "  }\n"
+                "  dst[p.xy] = c;\n"
+                "}\n";
+            ID3DBlob *blob = nullptr, *err = nullptr;
+            if (FAILED(D3DCompile(kCs, sizeof(kCs) - 1, "compose", nullptr, nullptr, "main",
+                                  "cs_5_0", 0, 0, &blob, &err)))
+            {
+                Log("compose: shader failed to compile: %s",
+                    err != nullptr ? static_cast<const char *>(err->GetBufferPointer()) : "?");
+                Release(err);
+                return false;
+            }
+            Release(err);
+            const HRESULT hr = game11->CreateComputeShader(blob->GetBufferPointer(),
+                                                           blob->GetBufferSize(), nullptr,
+                                                           &composeCs);
+            blob->Release();
+            if (FAILED(hr))
+            {
+                Log("compose: CreateComputeShader failed 0x%08lX", hr);
+                return false;
+            }
+        }
+        if (resultSrv == nullptr &&
+            FAILED(game11->CreateShaderResourceView(result.on11, nullptr, &resultSrv)))
+        {
+            Log("compose: SRV over the returned texture failed");
+            return false;
+        }
+        if (tempSrc != nullptr && tempW == w && tempH == h && tempFmt == fmt)
+            return true;
+
+        Release(tempDstUav);
+        Release(tempSrcSrv);
+        Release(tempDst);
+        Release(tempSrc);
+        D3D11_TEXTURE2D_DESC td {};
+        td.Width = w;
+        td.Height = h;
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format = fmt;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(game11->CreateTexture2D(&td, nullptr, &tempSrc)))
+        {
+            Log("compose: scratch copy of the back buffer failed (%ux%u fmt %u)", w, h,
+                static_cast<unsigned>(fmt));
+            return false;
+        }
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+        if (FAILED(game11->CreateTexture2D(&td, nullptr, &tempDst)) ||
+            FAILED(game11->CreateShaderResourceView(tempSrc, nullptr, &tempSrcSrv)) ||
+            FAILED(game11->CreateUnorderedAccessView(tempDst, nullptr, &tempDstUav)))
+        {
+            Log("compose: scratch target or views failed (%ux%u fmt %u)", w, h,
+                static_cast<unsigned>(fmt));
+            return false;
+        }
+        tempW = w;
+        tempH = h;
+        tempFmt = fmt;
+        Log("compose ready: %ux%u fmt %u, right half shows what came back", w, h,
+            static_cast<unsigned>(fmt));
+        return true;
+    }
+
+    void Compose(ID3D11Resource *backbuffer, UINT w, UINT h)
+    {
+        game11ctx->Wait(backOn11, backValue);
+        game11ctx->CopyResource(tempSrc, backbuffer);
+
+        ID3D11ComputeShader *oldCs = nullptr;
+        ID3D11ShaderResourceView *oldSrv[2] { nullptr, nullptr };
+        ID3D11UnorderedAccessView *oldUav = nullptr;
+        game11ctx->CSGetShader(&oldCs, nullptr, nullptr);
+        game11ctx->CSGetShaderResources(0, 2, oldSrv);
+        game11ctx->CSGetUnorderedAccessViews(0, 1, &oldUav);
+
+        UINT keep = static_cast<UINT>(-1);
+        ID3D11ShaderResourceView *srvs[2] { tempSrcSrv, resultSrv };
+        game11ctx->CSSetShader(composeCs, nullptr, 0);
+        game11ctx->CSSetShaderResources(0, 2, srvs);
+        game11ctx->CSSetUnorderedAccessViews(0, 1, &tempDstUav, &keep);
+        game11ctx->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
+
+        ID3D11UnorderedAccessView *nullUav = nullptr;
+        ID3D11ShaderResourceView *nullSrv[2] { nullptr, nullptr };
+        game11ctx->CSSetUnorderedAccessViews(0, 1, &nullUav, &keep);
+        game11ctx->CSSetShaderResources(0, 2, nullSrv);
+        game11ctx->CSSetShader(oldCs, nullptr, 0);
+        game11ctx->CSSetShaderResources(0, 2, oldSrv);
+        game11ctx->CSSetUnorderedAccessViews(0, 1, &oldUav, &keep);
+        Release(oldCs);
+        Release(oldSrv[0]);
+        Release(oldSrv[1]);
+        Release(oldUav);
+
+        game11ctx->CopyResource(backbuffer, tempDst);
+    }
+
+    // Numbers, not eyes. Sampled at both ends of the chain, because "it came back empty" and
+    // "it was never filled in" look identical from the far end and need opposite fixes:
+    //   game depth --[compute]--> depth.on11 --[D3D12 copy]--> result.on11
+    // The whole texture is scanned on a stride rather than a block from the middle, since the
+    // middle of a frame is often just background and would read as flat even when it is fine.
+    void Scan(Bridge &b, const char *what)
+    {
+        if (b.on11 == nullptr || b.width == 0)
+            return;
+        if (scan == nullptr || scanW != b.width || scanH != b.height)
+        {
+            Release(scan);
+            scanW = scanH = 0;
+            D3D11_TEXTURE2D_DESC td {};
+            td.Width = b.width;
+            td.Height = b.height;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R32_FLOAT;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_STAGING;
+            td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(game11->CreateTexture2D(&td, nullptr, &scan)))
+                return;
+            scanW = b.width;
+            scanH = b.height;
+        }
+        game11ctx->CopyResource(scan, b.on11);
+        D3D11_MAPPED_SUBRESOURCE m {};
+        if (FAILED(game11ctx->Map(scan, 0, D3D11_MAP_READ, 0, &m)))
+            return;
+        double lo = 1e30, hi = -1e30, sum = 0.0;
+        uint64_t n = 0, nonzero = 0;
+        for (UINT y = 0; y < scanH; y += 4)
+        {
+            auto *row = reinterpret_cast<const float *>(static_cast<const char *>(m.pData) +
+                                                        static_cast<size_t>(y) * m.RowPitch);
+            for (UINT x = 0; x < scanW; x += 4)
+            {
+                const double v = row[x];
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+                sum += v;
+                if (v != 0.0)
+                    ++nonzero;
+                ++n;
+            }
+        }
+        game11ctx->Unmap(scan, 0);
+        Log("%s: min %.6f max %.6f mean %.6f, %llu of %llu samples non-zero%s", what, lo, hi,
+            n ? sum / n : 0.0, static_cast<unsigned long long>(nonzero),
+            static_cast<unsigned long long>(n), nonzero == 0 ? "  <-- empty" : "");
+    }
+
+    void SampleReturned()
+    {
+        Log("depth snapshots taken so far: %llu",
+            static_cast<unsigned long long>(snaps));
+        Scan(depth, "depth after the compute pass, before crossing");
+        Scan(result, "result after coming back from D3D12");
     }
 
     // The whole per-frame cost: two copies on the game's device plus one fence signal. No CPU
@@ -419,6 +741,11 @@ struct Session
     {
         if (copyN == 0)
             return;
+        Log("round trip over %llu frames: %.3f ms mean / %.3f ms max (D3D12 record, submit, "
+            "signal back, and compose on D3D11)",
+            static_cast<unsigned long long>(roundN), roundN ? roundSum / roundN : 0.0, roundMax);
+        roundSum = roundMax = 0.0;
+        roundN = 0;
         Log("crossing over %llu frames: submit %.3f ms mean / %.3f ms max; land %.3f ms mean / "
             "%.3f ms max (%llu samples). colour %ux%u fmt %u, depth %s",
             static_cast<unsigned long long>(copyN), copySum / copyN, copyMax,
@@ -464,6 +791,10 @@ void OnBindRenderTargets(command_list *cmd, uint32_t count, const resource_view 
     if (dsv.handle != 0)
     {
         const resource res = dev->get_resource_from_view(dsv);
+        auto *bound = res.handle != 0 ? reinterpret_cast<ID3D11Resource *>(res.handle) : nullptr;
+        // Binding something else means the tracked target is finished with for now: grab it.
+        if (g_seen.depth != nullptr && bound != g_seen.depth)
+            g_session.SnapshotDepth(g_seen.depth, g_seen.depthW, g_seen.depthH, g_seen.depthFmt);
         if (res.handle != 0)
         {
             const resource_desc d = dev->get_resource_desc(res);
@@ -541,7 +872,9 @@ void OnInitDevice(device *dev)
         if (!g_session.CreateOn(ad.AdapterLuid))
             g_session.failed = true;
         else if (FAILED(g_session.game11->OpenSharedFence(g_session.crossHandle,
-                                                          IID_PPV_ARGS(&g_session.crossOn11))))
+                                                          IID_PPV_ARGS(&g_session.crossOn11))) ||
+                 FAILED(g_session.game11->OpenSharedFence(g_session.backHandle,
+                                                          IID_PPV_ARGS(&g_session.backOn11))))
         {
             Log("session: OpenSharedFence on the game's device failed");
             g_session.failed = true;
@@ -563,7 +896,7 @@ void OnDestroyDevice(device *)
     g_session.Destroy();
 }
 
-void OnPresent(command_queue *, swapchain *, const rect *, const rect *, uint32_t, const rect *)
+void OnPresent(command_queue *, swapchain *sc, const rect *, const rect *, uint32_t, const rect *)
 {
     ++g_frame;
     if (g_session.device == nullptr || g_session.failed)
@@ -595,7 +928,11 @@ void OnPresent(command_queue *, swapchain *, const rect *, const rect *, uint32_
     }
     // Depth is allowed to fail on its own: it needs a conversion pass, and if that cannot be set
     // up it is worth knowing separately rather than taking the whole measurement down with it.
+    // Only give up once there was actually something to try: the snapshot is taken during the
+    // frame, so the first present can arrive before one exists, and failing permanently there
+    // would disable depth for the whole run.
     if (!g_session.depthUnshareable && g_session.depthUav == nullptr &&
+        g_session.depthCopy != nullptr &&
         !g_session.EnsureDepthPath(g_seen.depth, g_seen.depthW, g_seen.depthH, g_seen.depthFmt))
     {
         g_session.depthUnshareable = true;
@@ -611,6 +948,41 @@ void OnPresent(command_queue *, swapchain *, const rect *, const rect *, uint32_
 
     if (g_frame % 20 == 0)
         g_session.SampleLatency();
+
+    // The way back. Only attempted once depth is actually crossing, because that is what the
+    // D3D12 side has to hand over.
+    if (!g_session.depthUnshareable && g_session.depth.on12 != nullptr)
+    {
+        LARGE_INTEGER t0 {};
+        QueryPerformanceCounter(&t0);
+
+        device *dev = sc->get_device();
+        const resource back = sc->get_current_back_buffer();
+        const resource_desc bd = back.handle != 0 ? dev->get_resource_desc(back) : resource_desc {};
+
+        if (back.handle != 0 &&
+            g_session.result.Ensure(g_session.game11, g_session.device, g_session.depth.width,
+                                    g_session.depth.height, DXGI_FORMAT_R32_FLOAT) &&
+            g_session.EnsureComposePath(bd.texture.width, bd.texture.height,
+                                        static_cast<DXGI_FORMAT>(bd.texture.format)))
+        {
+            if (!g_session.WorkAndSignBack())
+            {
+                Log("return: the D3D12 side could not record or signal");
+                g_session.failed = true;
+                return;
+            }
+            g_session.Compose(reinterpret_cast<ID3D11Resource *>(back.handle), bd.texture.width,
+                              bd.texture.height);
+            const double ms = MsSince(t0);
+            g_session.roundSum += ms;
+            g_session.roundMax = std::max(g_session.roundMax, ms);
+            ++g_session.roundN;
+        }
+    }
+
+    if (g_frame % 240 == 0)
+        g_session.SampleReturned();
     if (g_frame % kReportEvery == 0)
         g_session.Report();
 }
@@ -619,7 +991,7 @@ void OpenLog()
 {
     g_log = fopen(GamePath("dlss5-session.log").c_str(), "w");
     Log("dlss5 session -- what it costs to carry colour and depth from D3D11 to a D3D12 device");
-    Log("needs PCSX2 on Direct3D 11. Runs no network and changes no pixels.");
+    Log("needs PCSX2 on Direct3D 11. Runs no network. The right half of the screen shows what came back.");
 }
 }
 

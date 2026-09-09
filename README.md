@@ -271,7 +271,21 @@ land    ~0.85 ms                        (sampled; a deliberate CPU wait, not pai
 ```
 
 About a quarter of a millisecond a frame to carry both guides across, against a 16.7 ms frame.
-Cheap enough that the bridge is worth building on.
+The way back -- D3D12 writes a shared texture, signals a fence, the game's D3D11 context waits on
+it and composes -- adds **0.066 ms mean**. The whole loop is affordable.
+
+**But the depth buffer is empty, and that is the wall.** Not a transport problem: the round trip
+carries whatever is in it faithfully. PCSX2's depth target simply reads as all zeros. Four
+independent ways agree, and the fourth is the one that settles it -- the probe dumps colour and
+depth from the same frame through ReShade's own readback, and in that one file colour is 94.8%
+non-zero while depth is 0.0%, min 0, max 0. So it is not the measurement. Also tried, same
+result: reading it through a compute shader at present, and reading a private copy snapshotted
+at the moment PCSX2 binds a different depth target, which is early enough that the content
+should still be there.
+
+Where that leaves it: the transport is built and priced, the render-resolution colour is real and
+usable, and depth needs someone to work out where PCSX2 actually keeps usable depth on D3D11 --
+the target the bind events point at is not it.
 
 Two things that cost a day to find, so they are written down here:
 
