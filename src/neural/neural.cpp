@@ -134,10 +134,10 @@ float3 ToSrgb(float3 c){ return c <= 0.0031308 ? c*12.92 : 1.055*pow(abs(c), 1.0
 [numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
  if(p.x>=dw || p.y>=dh) return;
  float2 uv = (float2(p.xy)+0.5)/float2(dw,dh);
- float3 correcao = (nr.SampleLevel(smp,uv,0) - base.SampleLevel(smp,uv,0)).rgb * intensity;
+ float3 fix = (nr.SampleLevel(smp,uv,0) - base.SampleLevel(smp,uv,0)).rgb * intensity;
  float3 c = full.Load(int3(p.xy,0)).rgb;
  float3 v = (mode != 0) ? ToLinear(saturate(c)) * k : c;
- v = v + correcao;
+ v = v + fix;
  if (mode != 0) v = ToSrgb(saturate(v / max(k, 1e-6)));
  dst[p.xy] = float4(saturate(v), 1.0);
 })";
@@ -344,6 +344,8 @@ struct State
     UINT64 serial = 0, completion = 0;
 
     bool loggedProfile = false;
+    bool loggedPin = false;
+    UINT measureTries = 0;
 };
 
 State g;
@@ -572,10 +574,36 @@ bool CreateTexture(UINT w, UINT h, DXGI_FORMAT f, ComPtr<ID3D12Resource> &out, c
 
 bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
 {
-    const UINT nw = std::max<UINT>(64u, static_cast<UINT>(w * scale + 0.5f));
-    const UINT nh = std::max<UINT>(64u, static_cast<UINT>(h * scale + 0.5f));
-    if (g.outWidth == w && g.outHeight == h && g.netWidth == nw && g.netHeight == nh &&
-        g.outFormat == outFormat && g.netColour != nullptr)
+    UINT nw = std::max<UINT>(64u, static_cast<UINT>(w * scale + 0.5f));
+    UINT nh = std::max<UINT>(64u, static_cast<UINT>(h * scale + 0.5f));
+
+    // The engine sizes its staging buffers once, when it initialises, from the first raster it is
+    // handed, and offers no way to resize them afterwards. Some games do not present at a fixed
+    // size: Xenosaga 2 walks between 1920x1080, 1918x1014, 1918x994 and 1918x1008 every few
+    // frames. Letting the raster follow that hands the engine a 959x507 texture it still reads as
+    // 960x540 -- wrong stride, every row shifted, which is the skewed picture people report. It
+    // would also destroy the very textures the engine holds zero-copy handles to.
+    //
+    // Both shaders already resample between the back buffer and the raster, in either direction,
+    // so pinning the raster to whatever the engine came up with costs nothing but a resample.
+    if (g.engineReady && g.netWidth != 0 && (nw != g.netWidth || nh != g.netHeight))
+    {
+        if (!g.loggedPin)
+        {
+            g.loggedPin = true;
+            Log("back buffer changed to %ux%u, which wants a %ux%u raster; keeping the raster at "
+                "%ux%u because the engine's staging is fixed at that size. Further changes are "
+                "handled the same way and not logged.",
+                w, h, nw, nh, g.netWidth, g.netHeight);
+        }
+        nw = g.netWidth;
+        nh = g.netHeight;
+    }
+
+    const bool netChanged = g.netWidth != nw || g.netHeight != nh || g.netColour == nullptr;
+    const bool outChanged = g.outWidth != w || g.outHeight != h || g.outFormat != outFormat ||
+                            g.composed == nullptr;
+    if (!netChanged && !outChanged)
         return true;
 
     const DXGI_FORMAT composeFormat = ColourReadFormat(outFormat);
@@ -588,12 +616,19 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
         g.reason = "back buffer format has no typed UAV store on this driver";
         return false;
     }
-    if (!CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.netColour, "netColour") ||
-        !CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.netBase, "netBase") ||
-        !CreateTexture(nw, nh, DXGI_FORMAT_R16G16_FLOAT, g.netMotion, "netMotion") ||
-        !CreateTexture(nw, nh, DXGI_FORMAT_R32_FLOAT, g.netDepth, "netDepth") ||
-        !CreateTexture(w, h, composeFormat, g.composed, "composed"))
+
+    // Only the textures whose geometry actually moved get rebuilt. composed has to match the back
+    // buffer because it is CopyResource'd into it; the network textures must not be touched while
+    // the engine is using them.
+    if (netChanged &&
+        (!CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.netColour, "netColour") ||
+         !CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.netBase, "netBase") ||
+         !CreateTexture(nw, nh, DXGI_FORMAT_R16G16_FLOAT, g.netMotion, "netMotion") ||
+         !CreateTexture(nw, nh, DXGI_FORMAT_R32_FLOAT, g.netDepth, "netDepth")))
         return false;
+    if (outChanged && !CreateTexture(w, h, composeFormat, g.composed, "composed"))
+        return false;
+
     g.depthAlias.Reset();
     g.outWidth = w;
     g.outHeight = h;
@@ -708,7 +743,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     if (!enginesReady)
     {
         g.unavailable = true;
-        g.reason = "nao foi possivel preparar o engine";
+        g.reason = "could not bring the engine up";
         Log("off: %s", g.reason);
         return;
     }
@@ -733,7 +768,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         FAILED(g.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
     {
         g.unavailable = true;
-        g.reason = "fence de conclusao nao pode ser criada";
+        g.reason = "could not create the completion fence";
         Log("off: %s", g.reason);
         return;
     }
@@ -960,9 +995,12 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     }
     }
 
-    if (!g.measured && g.frame == 240 && g.activePasses != 0)
+    // Retried rather than fired once at a fixed frame: at frame 240 a lot of games are still
+    // on a black boot screen, and measuring there reports a black input and a zero residual
+    // for a setup that is actually fine. Keep trying every 240 frames until the input has
+    // something in it, then stop.
+    if (!g.measured && g.frame >= 240 && g.frame % 240 == 0 && g.activePasses != 0)
     {
-        g.measured = true;
         const UINT rowPitch = (nw * 8 + 255) & ~255u;
         const UINT64 size = static_cast<UINT64>(rowPitch) * nh;
         D3D12_HEAP_PROPERTIES rb {};
@@ -1094,12 +1132,24 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
                         ++nb;
                     }
                 }
-                Log("measure, network input: mean absolute %.6f (%llu samples)",
-                    nb ? meanBase / nb : 0.0, static_cast<unsigned long long>(nb));
-                Log("  0.000000 means a black image was handed to the network.");
-                Log("measure, residual at %ux%u: mean %.6f, max %.6f (%llu samples)",
-                    nw, nh, n ? sum / n : 0.0, peak, static_cast<unsigned long long>(n));
-                Log("  mean 0.000000 means the network returned its input unchanged.");
+                const double inputMean = nb ? meanBase / nb : 0.0;
+                if (inputMean <= 0.0 && g.measureTries < 12)
+                {
+                    ++g.measureTries;
+                    Log("measure: the network was handed a black frame (attempt %u); the game is "
+                        "probably still on a loading screen. Retrying in 240 frames.",
+                        g.measureTries);
+                }
+                else
+                {
+                    g.measured = true;
+                    Log("measure, network input: mean absolute %.6f (%llu samples)",
+                        inputMean, static_cast<unsigned long long>(nb));
+                    Log("  0.000000 means a black image was handed to the network.");
+                    Log("measure, residual at %ux%u: mean %.6f, max %.6f (%llu samples)",
+                        nw, nh, n ? sum / n : 0.0, peak, static_cast<unsigned long long>(n));
+                    Log("  mean 0.000000 means the network returned its input unchanged.");
+                }
                 g.readbackBase->Unmap(0, nullptr);
                 g.readbackNr->Unmap(0, nullptr);
             }

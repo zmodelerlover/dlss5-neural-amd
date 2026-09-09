@@ -129,9 +129,9 @@ const char *Guess(const Target &t)
     if (IsMotionFormat(tex.format))
         return "  <-- MOTION?";
     if (IsColorFormat(tex.format) && !full_res)
-        return "  <-- COLOR? (resolucao de render)";
+        return "  <-- COLOUR? (render resolution)";
     if (full_res)
-        return "  (resolucao de tela)";
+        return "  (screen resolution)";
     return "";
 }
 
@@ -259,7 +259,7 @@ void DumpResource(device *dev, command_queue *queue, resource res, const resourc
     resource staging = {};
     if (!dev->create_resource(staging_desc, nullptr, resource_usage::copy_dest, &staging))
     {
-        Log("  despejo %s: falhou ao criar a textura de leitura", role);
+        Log("  dump %s: could not create the readback texture", role);
         return;
     }
 
@@ -299,12 +299,12 @@ void DumpResource(device *dev, command_queue *queue, resource res, const resourc
             fclose(f);
         }
         dev->unmap_texture_region(staging, 0);
-        Log("  despejo %s: %ux%u %s -> dlss5-%s-f%llu.ppm", role, desc.texture.width, desc.texture.height,
+        Log("  dump %s: %ux%u %s -> dlss5-%s-f%llu.ppm", role, desc.texture.width, desc.texture.height,
             FormatName(desc.texture.format), role, g_frame);
     }
     else
     {
-        Log("  despejo %s: map_texture_region falhou", role);
+        Log("  dump %s: map_texture_region failed", role);
     }
     dev->destroy_resource(staging);
 }
@@ -335,7 +335,7 @@ void DumpCandidates(device *dev, command_queue *queue)
     }
 
     Log("");
-    Log("===== despejo de conteudo no frame %llu =====", g_frame);
+    Log("===== content dump at frame %llu =====", g_frame);
     const std::pair<Pick *, const char *> picks[] = { { &motion, "motion" },
                                                       { &depth, "depth" },
                                                       { &colour, "colour" } };
@@ -343,7 +343,7 @@ void DumpCandidates(device *dev, command_queue *queue)
     {
         if (pick->handle == 0)
         {
-            Log("  despejo %s: nenhum candidato neste frame", role);
+            Log("  dump %s: no candidate this frame", role);
             continue;
         }
         DumpResource(dev, queue, resource { pick->handle }, pick->desc, role);
@@ -411,7 +411,7 @@ void OnInitSwapchain(swapchain *sc, bool)
     std::lock_guard<std::mutex> lock(g_mutex);
     g_swap_width = desc.texture.width;
     g_swap_height = desc.texture.height;
-    Log("swapchain %ux%u formato %s (%u)", g_swap_width, g_swap_height, FormatName(desc.texture.format),
+    Log("swapchain %ux%u format %s (%u)", g_swap_width, g_swap_height, FormatName(desc.texture.format),
         static_cast<uint32_t>(desc.texture.format));
 }
 
@@ -421,8 +421,8 @@ void DumpInventory()
     std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.second.draws > b.second.draws; });
 
     Log("");
-    Log("===== frame %llu — %zu render targets distintos =====", g_frame, sorted.size());
-    Log("%-18s %-10s %-24s %7s %6s %s", "handle", "tamanho", "formato", "draws", "papel", "palpite");
+    Log("===== frame %llu -- %zu distinct render targets =====", g_frame, sorted.size());
+    Log("%-18s %-10s %-24s %7s %6s %s", "handle", "size", "format", "draws", "role", "guess");
 
     for (const auto &[handle, t] : sorted)
     {
@@ -460,15 +460,15 @@ void OnPresent(command_queue *queue, swapchain *, const rect *, const rect *, ui
 void OpenLog()
 {
     g_log = fopen(GamePath("dlss5-probe.log").c_str(), "w");
-    Log("dlss5 probe — inventario de render targets por frame");
-    Log("inventario nos %llu primeiros frames e depois a cada %llu", kDumpFirst, kDumpEvery);
+    Log("dlss5 probe -- per-frame inventory of render targets");
+    Log("inventory for the first %llu frames, then every %llu", kDumpFirst, kDumpEvery);
     Log("conteudo gravado nos frames 600, 1200 e 1800 (.ppm e .raw ao lado do executavel)");
 }
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "dlss5 probe";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "Inventario de render targets por frame e despejo de conteudo: acha e comprova color, depth e motion "
+    "Per-frame render target inventory and content dump: finds and proves colour, depth and motion "
     "em jogos sem contrato de upscaler.";
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)

@@ -2,8 +2,6 @@
 
 ReShade add-on that runs the DLSS-NR network on AMD cards.
 
-*Em português: [LEIA-ME.md](LEIA-ME.md).*
-
 Every tool I found for DLSS 5 (renodx-dlss, DLSS5-Feeder, DLSS5-Swapper) calls NVIDIA's
 `nvngx_dlssnr.dll`, so none of them do anything on a Radeon. This one drives the AMD port of
 the network instead, from a ReShade add-on, same idea as RenoDX: one core file plus a small

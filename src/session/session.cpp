@@ -114,7 +114,7 @@ struct Session
         factory->Release();
         if (!found)
         {
-            Log("sessao: adaptador do jogo nao encontrado pelo LUID");
+            Log("session: no adapter matched the game's LUID");
             return false;
         }
         DXGI_ADAPTER_DESC1 ad {};
@@ -123,12 +123,12 @@ struct Session
         adapter->Release();
         if (FAILED(hr))
         {
-            Log("sessao: D3D12CreateDevice falhou 0x%08lX", hr);
+            Log("session: D3D12CreateDevice failed 0x%08lX", hr);
             return false;
         }
         char name[128] {};
         WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
-        Log("sessao: device D3D12 proprio em %s (vendor %04X)", name, ad.VendorId);
+        Log("session: own D3D12 device on %s (vendor %04X)", name, ad.VendorId);
 
         D3D12_COMMAND_QUEUE_DESC qd {};
         qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -138,7 +138,7 @@ struct Session
                                              IID_PPV_ARGS(&list))) ||
             FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&localFence))))
         {
-            Log("sessao: falhou ao criar fila, alocador, lista ou fence");
+            Log("session: could not create the queue, allocator, list or fence");
             return false;
         }
         list->Close();
@@ -147,7 +147,7 @@ struct Session
         if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&crossFence))) ||
             FAILED(device->CreateSharedHandle(crossFence, nullptr, GENERIC_ALL, nullptr, &crossHandle)))
         {
-            Log("sessao: falhou ao criar a fence compartilhada");
+            Log("session: could not create the shared fence");
             return false;
         }
         return true;
@@ -178,13 +178,13 @@ struct Session
         HRESULT hr = game11->CreateTexture2D(&td, nullptr, &sharedOn11);
         if (FAILED(hr))
         {
-            Log("sessao: textura de ponte %ux%u fmt %u falhou no D3D11 0x%08lX", w, h, fmt, hr);
+            Log("session: bridge texture %ux%u fmt %u failed on D3D11 0x%08lX", w, h, fmt, hr);
             return false;
         }
         IDXGIResource1 *dxgiRes = nullptr;
         if (FAILED(sharedOn11->QueryInterface(IID_PPV_ARGS(&dxgiRes))))
         {
-            Log("sessao: textura de ponte nao expoe IDXGIResource1");
+            Log("session: bridge texture does not expose IDXGIResource1");
             return false;
         }
         hr = dxgiRes->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr,
@@ -192,18 +192,18 @@ struct Session
         dxgiRes->Release();
         if (FAILED(hr))
         {
-            Log("sessao: CreateSharedHandle da textura falhou 0x%08lX", hr);
+            Log("session: CreateSharedHandle on the texture failed 0x%08lX", hr);
             return false;
         }
         if (FAILED(device->OpenSharedHandle(sharedHandle, IID_PPV_ARGS(&shared))))
         {
-            Log("sessao: OpenSharedHandle no device proprio falhou");
+            Log("session: OpenSharedHandle on our own device failed");
             return false;
         }
         width = w;
         height = h;
         format = fmt;
-        Log("sessao: ponte pronta %ux%u fmt %u", w, h, fmt);
+        Log("session: bridge ready %ux%u fmt %u", w, h, fmt);
         return true;
     }
 
@@ -257,7 +257,7 @@ void DumpBridge()
     if (FAILED(s.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST,
                                                  nullptr, IID_PPV_ARGS(&readback))))
     {
-        Log("travessia: buffer de leitura falhou");
+        Log("crossing: readback buffer failed");
         return;
     }
 
@@ -316,7 +316,7 @@ void DumpBridge()
                 fwrite(row.data(), 1, row.size(), f);
             }
             fclose(f);
-            Log("travessia: gravado dlss5-crossing-f%llu.ppm (%ux%u)", g_frame, s.width, s.height);
+            Log("crossing: wrote dlss5-crossing-f%llu.ppm (%ux%u)", g_frame, s.width, s.height);
         }
         readback->Unmap(0, nullptr);
     }
@@ -330,7 +330,7 @@ void OnInitDevice(device *dev)
 
     if (dev->get_api() != device_api::d3d11)
     {
-        Log("sessao: API %u ainda nao tratada; por ora so D3D11", static_cast<uint32_t>(dev->get_api()));
+        Log("session: API %u not handled yet; D3D11 only for now", static_cast<uint32_t>(dev->get_api()));
         g_session.failed = true;
         return;
     }
@@ -338,7 +338,7 @@ void OnInitDevice(device *dev)
     auto *native = reinterpret_cast<ID3D11Device *>(dev->get_native());
     if (native == nullptr || FAILED(native->QueryInterface(IID_PPV_ARGS(&g_session.game11))))
     {
-        Log("sessao: device do jogo nao expoe ID3D11Device5 (precisa de Windows 10 1703+)");
+        Log("session: the game's device does not expose ID3D11Device5 (needs Windows 10 1703+)");
         g_session.failed = true;
         return;
     }
@@ -346,7 +346,7 @@ void OnInitDevice(device *dev)
     g_session.game11->GetImmediateContext(&ctx);
     if (ctx == nullptr || FAILED(ctx->QueryInterface(IID_PPV_ARGS(&g_session.game11ctx))))
     {
-        Log("sessao: contexto do jogo nao expoe ID3D11DeviceContext4");
+        Log("session: the game's context does not expose ID3D11DeviceContext4");
         Release(ctx);
         g_session.failed = true;
         return;
@@ -363,19 +363,19 @@ void OnInitDevice(device *dev)
             g_session.failed = true;
         else if (FAILED(g_session.game11->OpenSharedFence(g_session.crossHandle, IID_PPV_ARGS(&g_session.crossOn11))))
         {
-            Log("sessao: OpenSharedFence no device do jogo falhou");
+            Log("session: OpenSharedFence on the game's device failed");
             g_session.failed = true;
         }
     }
     else
     {
-        Log("sessao: nao consegui o LUID do adaptador do jogo");
+        Log("session: could not read the game adapter's LUID");
         g_session.failed = true;
     }
     Release(adapter);
     Release(dxgi);
     if (!g_session.failed)
-        Log("sessao: pronta -- device proprio, fila propria, fence compartilhada");
+        Log("session: ready -- own device, own queue, shared fence");
 }
 
 void OnDestroyDevice(device *)
@@ -419,18 +419,18 @@ void OnPresent(command_queue *, swapchain *sc, const rect *, const rect *, uint3
 
     if (!g_session.CopyIn(reinterpret_cast<ID3D11Resource *>(back.handle)))
     {
-        Log("travessia: CopyIn falhou");
+        Log("crossing: CopyIn failed");
         g_session.failed = true;
         return;
     }
     if (!g_session.WaitForCopy())
     {
-        Log("travessia: espera da fence falhou");
+        Log("crossing: waiting on the fence failed");
         g_session.failed = true;
         return;
     }
     QueryPerformanceCounter(&t1);
-    Log("travessia f%llu: %.3f ms para o frame cruzar para o device proprio", g_frame,
+    Log("crossing f%llu: %.3f ms for the frame to reach our own device", g_frame,
         1000.0 * double(t1.QuadPart - t0.QuadPart) / double(freq.QuadPart));
 
     DumpBridge();
@@ -439,14 +439,14 @@ void OnPresent(command_queue *, swapchain *sc, const rect *, const rect *, uint3
 void OpenLog()
 {
     g_log = fopen(GamePath("dlss5-session.log").c_str(), "w");
-    Log("dlss5 session — device D3D12 proprio e travessia do frame");
+    Log("dlss5 session -- own D3D12 device and the frame crossing");
     Log("captura nos frames 600 e 1200");
 }
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "dlss5 session";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "Cria um device D3D12 proprio no adaptador do jogo e traz o frame por textura e fence "
+    "Creates its own D3D12 device on the game's adapter and brings the frame across by shared texture and fence "
     "compartilhadas. Prova o transporte cross-device que a rede vai usar.";
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
