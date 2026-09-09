@@ -606,6 +606,21 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     if (!netChanged && !outChanged)
         return true;
 
+    // Everything below releases a texture and makes a new one. D3D12 does not keep a resource
+    // alive just because an in-flight command list still references it, and last frame's
+    // CopyResource out of `composed` can still be running when the back buffer resizes. Dropping
+    // it there is a use-after-free on the GPU. Wait for the queue to catch up first -- this only
+    // costs anything on an actual size change, which is rare.
+    if (g.fence != nullptr && g.fence->GetCompletedValue() < g.completion)
+    {
+        if (HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr))
+        {
+            if (SUCCEEDED(g.fence->SetEventOnCompletion(g.completion, done)))
+                WaitForSingleObject(done, 1000);
+            CloseHandle(done);
+        }
+    }
+
     const DXGI_FORMAT composeFormat = ColourReadFormat(outFormat);
     if (!HasTypedUavStore(g.device.Get(), composeFormat))
     {
