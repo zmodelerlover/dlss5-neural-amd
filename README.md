@@ -90,9 +90,21 @@ dlssnr_on_amd_weights.bin
 Settings → Graphics → Renderer → **Direct3D 12**. On anything else the add-on loads and then
 sits there doing nothing.
 
-Watch out for per-game overrides: PCSX2 keeps them in
-`Documents\PCSX2\gamesettings\<SERIAL>.ini`, and a `Renderer = 3` line in there beats your
-global setting silently. `15` is D3D12. That one wasted an entire evening for me.
+**Watch out for per-game overrides.** A renderer pinned on one game beats your global setting
+silently, and that wasted an entire evening for me. Easiest way to check, no matter where PCSX2
+lives: **right-click the game in the list → Properties → Graphics**, and make sure Renderer is
+either *Direct3D 12* or left on the global setting.
+
+If you'd rather look at the file, it's `gamesettings\<SERIAL>.ini` — but *which folder* that is
+depends on how PCSX2 was installed:
+
+* **Portable** — you extracted the `.7z`/`.zip`, or there's a `portable.ini` next to the exe.
+  Common if PCSX2 lives on an external drive. Everything sits next to `pcsx2-qt.exe`:
+  `gamesettings\`, `inis\`, `memcards\`, `cache\`. There is no `Documents\PCSX2` at all.
+* **Installer** — `Documents\PCSX2\gamesettings\`.
+
+In that file, `Renderer = 3` is Direct3D 11 and `15` is Direct3D 12. Deleting the line is fine
+too; it falls back to your global setting.
 
 ### 6. Start a game
 
@@ -121,7 +133,7 @@ Tested on: RX 9070 XT, ReShade 6.8.0, **PCSX2 2.3.14 and 2.8.2**, God of War 1.
 | What you see | What it is |
 |---|---|
 | Add-on isn't in the Add-ons tab at all | `ReShade.ini` has `DisabledAddons=dlss5 neural@dlss5-neural.addon64` under `[ADDON]`. ReShade writes that line if you ever untick the add-on, and then it never loads again, with no error anywhere. Clear it. |
-| Status says the API is wrong | PCSX2 isn't on D3D12. Check the per-game ini, not just the global setting. |
+| Status says the API is wrong | PCSX2 isn't on D3D12. Check the per-game override too, not just the global setting: right-click the game in the list, Properties, Graphics. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 isn't installed. HIP 6 doesn't count. |
 | `hash mismatch; refused` | Wrong `dlssnr_amd_pass1.dll`. Compare against `tools/SHA256SUMS.txt`. The refusal is deliberate — the alternative is a hang. |
 | Game dies with `887A0005` / device removed | `DXGI_ERROR_DEVICE_REMOVED`, from a Windows TDR. See [the engine ini](#the-engine-ini). |

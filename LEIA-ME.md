@@ -52,9 +52,21 @@ pular o download de shaders, isso aqui não usa nenhum.
 
 No PCSX2: Configurações → Gráficos → Renderizador → **Direct3D 12**.
 
-Cuidado com configuração por jogo: o PCSX2 guarda em
-`Documents\PCSX2\gamesettings\<SERIAL>.ini`, e uma linha `Renderer = 3` ali **ganha** da
-configuração global, calado. `15` é D3D12. Isso me custou uma noite.
+**Cuidado com configuração por jogo.** Um renderizador fixado num jogo **ganha** da configuração
+global, calado — isso me custou uma noite. O jeito mais fácil de conferir, não importa onde o
+PCSX2 esteja instalado: **clique com o botão direito no jogo na lista → Propriedades →
+Gráficos**, e veja se o Renderizador está em *Direct3D 12* ou na configuração global.
+
+Se preferir olhar o arquivo, ele é `gamesettings\<SERIAL>.ini` — mas *qual pasta* depende de como
+o PCSX2 foi instalado:
+
+* **Portable** — você extraiu o `.7z`/`.zip`, ou existe um `portable.ini` do lado do exe. É o
+  caso comum de PCSX2 em HD externo. Aí fica tudo junto do `pcsx2-qt.exe`: `gamesettings\`,
+  `inis\`, `memcards\`, `cache\`. Não existe `Documents\PCSX2` nenhum.
+* **Instalador** — `Documents\PCSX2\gamesettings\`.
+
+Dentro do arquivo, `Renderer = 3` é Direct3D 11 e `15` é Direct3D 12. Apagar a linha também
+resolve; aí volta pra configuração global.
 
 ## Rodando
 
@@ -70,7 +82,7 @@ Count 1). Não precisa mexer em nada.
 | O que aparece | O que é |
 |---|---|
 | O add-on não aparece na aba Add-ons | O `ReShade.ini` tem `DisabledAddons=dlss5 neural@dlss5-neural.addon64` em `[ADDON]`. O ReShade escreve essa linha se você desmarcar o add-on uma vez, e aí ele nunca mais carrega, sem erro nenhum. Apague a linha. |
-| Status diz que a API está errada | O PCSX2 não está em D3D12. Confira o ini por jogo, não só o global. |
+| Status diz que a API está errada | O PCSX2 não está em D3D12. Confira também a configuração por jogo, não só a global: botão direito no jogo, Propriedades, Gráficos. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 não está instalado. HIP 6 não vale. |
 | `hash mismatch; refused` | `dlssnr_amd_pass1.dll` errada. Confira contra `tools/SHA256SUMS.txt`. A recusa é de propósito — a alternativa é travar. |
 | O jogo morre com `887A0005` | `DXGI_ERROR_DEVICE_REMOVED`, TDR do Windows. Ver [o ini do engine](#o-ini-do-engine). |
