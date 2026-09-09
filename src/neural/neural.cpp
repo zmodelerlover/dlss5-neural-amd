@@ -1112,6 +1112,20 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             static_cast<unsigned long long>(g.skipped));
 }
 
+// Anything that makes one evaluation slower is a driver-reset risk while Apply On Same Frame is
+// on, because in that mode the game is blocked on the GPU until the network finishes. Past the
+// Windows driver timeout the display driver resets and the game dies on DEVICE_REMOVED, with
+// nothing in any log pointing back here -- so the warning goes next to the control.
+void Note(const ImVec4 &colour, const char *text)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, colour);
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
+const ImVec4 kWarn { 1.0f, 0.80f, 0.30f, 1.0f };
+const ImVec4 kDanger { 1.0f, 0.45f, 0.35f, 1.0f };
+
 void OnOverlay(effect_runtime *)
 {
     bool on = g.enabled.load();
@@ -1163,7 +1177,11 @@ void OnOverlay(effect_runtime *)
     int passes = g.passes.load();
     if (ImGui::SliderInt("Pass Count", &passes, 1, 3, "%d", 0))
         g.passes.store(passes);
-    
+    if (passes > 1)
+        Note(kWarn, "Each pass is another full evaluation of the network: 2 costs twice what 1 "
+                    "costs, 3 costs three times. It multiplies with Resolution Scale, and it "
+                    "carries the same driver-reset risk. Leave it at 1 unless you are measuring.");
+
     ImGui::BeginDisabled();
     float dummy = 1.0f;
     int model = 0;
@@ -1195,10 +1213,22 @@ void OnOverlay(effect_runtime *)
         g.inlineMode.store(inl);
         Log("menu: mode %s", inl ? "inline" : "async");
     }
-    ImGui::TextDisabled(inl ? "this frame's residual" : "previous frame's residual");
+    ImGui::TextDisabled(inl ? "this frame's residual -- the game waits for the network"
+                            : "previous frame's residual -- the game does not wait");
     v = g.scale.load();
     if (ImGui::SliderFloat("Resolution Scale", &v, 0.25f, 2.0f, "%.2f", 0))
         g.scale.store(v);
+    ImGui::TextDisabled("Cost grows with the square. 0.50 is about 16 ms on an RX 9070 XT.");
+    if (v > 1.0f)
+        Note(kDanger, "CAN RESET THE DISPLAY DRIVER. Above 1.00 one evaluation takes hundreds of "
+                      "milliseconds. With Apply On Same Frame on, the game blocks for that whole "
+                      "time, which trips the Windows driver timeout: the driver resets and the "
+                      "game dies with DXGI_ERROR_DEVICE_REMOVED (887A0005). If you want to try "
+                      "it anyway, turn Apply On Same Frame off first.");
+    else if (v > 0.75f)
+        Note(kWarn, "Past about 0.75 the evaluation usually stops fitting inside one frame at "
+                    "60 Hz. The result is skipped frames, and skipped frames are what flicker "
+                    "looks like. Watch the skip count below.");
     ImGui::BeginDisabled();
     float ratio = 1.0f;
     ImGui::SliderFloat("Upscaling Ratio", &ratio, 1.0f, 2.0f, "%.2fx", 0);
@@ -1217,9 +1247,23 @@ void OnOverlay(effect_runtime *)
     else if (g.frame == 0)
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "No frames processed yet.");
     else
-        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Running: %llu processed, %llu skipped",
+    {
+        const uint64_t seen = g.frame + g.skipped;
+        const double pct = seen != 0 ? 100.0 * static_cast<double>(g.skipped) / seen : 0.0;
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
+                           "Running: %llu processed, %llu skipped (%.0f%%)",
                            static_cast<unsigned long long>(g.frame),
-                           static_cast<unsigned long long>(g.skipped));
+                           static_cast<unsigned long long>(g.skipped), pct);
+        // A skipped frame reuses whatever the network textures hold, and a job that is still
+        // running is writing them while compose reads them. A few percent is invisible; a third
+        // of the frames is a correction that changes every frame, which reads as flicker.
+        if (seen > 300 && pct >= 10.0)
+            Note(kWarn, "High skip rate. The network is not finishing inside a frame, so the "
+                        "correction being shown is stale or half-written and changes frame to "
+                        "frame. That is what the flicker is. Lower Resolution Scale, set Pass "
+                        "Count to 1, and lower the emulator's own upscale multiplier -- it is "
+                        "competing for the same GPU.");
+    }
     ImGui::Text("Target: %s", profile.note);
     if (g.outWidth != 0)
         ImGui::Text("Back buffer %ux%u  ->  network %ux%u", g.outWidth, g.outHeight, g.netWidth,
