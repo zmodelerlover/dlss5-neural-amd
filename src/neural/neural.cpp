@@ -1,4 +1,4 @@
-// ReShade add-on: runs the DLSS-NR network over the presented frame on an AMD GPU via HIP.
+﻿// ReShade add-on: runs the DLSS-NR network over the presented frame on an AMD GPU via HIP.
 // D3D12 only. One core, one table row per target.
 
 #include <imgui.h>
@@ -140,6 +140,79 @@ float3 ToSrgb(float3 c){ return c <= 0.0031308 ? c*12.92 : 1.055*pow(abs(c), 1.0
  v = v + fix;
  if (mode != 0) v = ToSrgb(saturate(v / max(k, 1e-6)));
  dst[p.xy] = float4(saturate(v), 1.0);
+})";
+
+// Optical flow, in three passes. The PS2 never computed per-pixel motion, so there is nothing to
+// capture: this estimates it by comparing two frames, which is what the NVIDIA route does here too
+// -- its motion comes from a shader (LumeniteFX), not from the game. Estimated motion is wrong in
+// the places you would expect: reflections, fire, moving shadows, and anything newly revealed.
+//
+// Convention, matching the Feeder's: the vector points from where a pixel is now to where it was,
+// so prev_uv = cur_uv + motion. Block matching produces exactly that sign, no flip needed.
+constexpr char kLumaShader[] = R"(
+Texture2D<float4> src : register(t0);
+RWTexture2D<float> dst : register(u0);
+SamplerState smp : register(s0);
+cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float extra; uint pad; };
+[numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
+ if(p.x>=dw || p.y>=dh) return;
+ float2 uv = (float2(p.xy)+0.5)/float2(dw,dh);
+ float3 c = src.SampleLevel(smp,uv,0).rgb;
+ dst[p.xy] = dot(c, float3(0.299,0.587,0.114));
+})";
+
+// Search radius 4 with a 3x3 patch: 81 candidates times 9 taps. A wider window finds faster
+// motion but costs the square of the radius, and this runs every frame inside the frame budget.
+constexpr char kFlowShader[] = R"(
+Texture2D<float> cur : register(t0);
+Texture2D<float> prv : register(t1);
+Texture2D<float2> guess : register(t2);
+RWTexture2D<float2> dst : register(u0);
+cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint useGuess; float k; float step; uint pad; };
+[numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
+ if(p.x>=dw || p.y>=dh) return;
+ int2 base = int2(p.xy);
+ int2 lim = int2(dw-1, dh-1);
+ int st = max(1, (int)step);
+ // Nothing to track in a flat patch: every candidate matches equally well, so the winner is
+ // whichever the loop happened to try first. That is the aperture problem, and it is why a wider
+ // search made the field wilder instead of better. Reject on contrast before searching at all.
+ float mn = 1e9, mx = -1e9;
+ for (int cy=-1; cy<=1; ++cy) for (int cx=-1; cx<=1; ++cx) {
+  float v = cur.Load(int3(clamp(base+int2(cx,cy), int2(0,0), lim), 0));
+  mn = min(mn, v); mx = max(mx, v);
+ }
+ if (mx - mn < 0.02) { dst[p.xy] = float2(0,0); return; }
+
+ int2 g0 = (useGuess != 0) ? int2(round(guess.Load(int3(p.xy,0)))) : int2(0,0);
+ float best = 1e9; int2 bestD = g0; float zero = 0.0;
+ for (int dy=-4; dy<=4; ++dy) for (int dx=-4; dx<=4; ++dx) {
+  int2 d = g0 + int2(dx,dy) * st;
+  float sad = 0.0;
+  for (int y=-1; y<=1; ++y) for (int x=-1; x<=1; ++x) {
+   int2 a = clamp(base+int2(x,y), int2(0,0), lim);
+   int2 b = clamp(base+d+int2(x,y), int2(0,0), lim);
+   sad += abs(cur.Load(int3(a,0)) - prv.Load(int3(b,0)));
+  }
+  if (d.x==0 && d.y==0) zero = sad;
+  if (sad < best) { best = sad; bestD = d; }
+ }
+ // Only on the coarse pass: reject a winner that barely beats standing still, which is what flat
+ // sky and noise produce. The refine pass trusts the guess it was handed instead.
+ // And a match has to explain the image clearly better than standing still, not marginally.
+ if (useGuess == 0 && best > zero * 0.70) bestD = int2(0,0);
+ dst[p.xy] = float2(bestD);
+})";
+
+constexpr char kFlowUpShader[] = R"(
+Texture2D<float2> src : register(t0);
+RWTexture2D<float2> dst : register(u0);
+SamplerState smp : register(s0);
+cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float step; uint pad; };
+[numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
+ if(p.x>=dw || p.y>=dh) return;
+ float2 uv = (float2(p.xy)+0.5)/float2(dw,dh);
+ dst[p.xy] = src.SampleLevel(smp,uv,0) * step;
 })";
 
 DXGI_FORMAT DepthReadFormat(DXGI_FORMAT f)
@@ -313,6 +386,7 @@ struct State
 
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> copyPipeline, depthPipeline, composePipeline;
+    ComPtr<ID3D12PipelineState> lumaPipeline, flowPipeline, flowUpPipeline;
     ComPtr<ID3D12DescriptorHeap> heap;
 
     UINT outWidth = 0, outHeight = 0, netWidth = 0, netHeight = 0;
@@ -321,6 +395,13 @@ struct State
     ComPtr<ID3D12Resource> netColour;
     ComPtr<ID3D12Resource> netBase;
     ComPtr<ID3D12Resource> netMotion;
+    ComPtr<ID3D12Resource> lumaA, lumaB, flowSmall, flowCoarse;
+    UINT flowWidth = 0, flowHeight = 0;
+    std::atomic<bool> useMotion { false };
+    bool loggedFlow = false;
+    ComPtr<ID3D12Resource> flowReadLuma, flowReadFlow;
+    bool pendingFlow = false;
+    bool flowProbed = false;
     ComPtr<ID3D12Resource> netDepth;
     ComPtr<ID3D12Resource> depthAlias;
 
@@ -542,9 +623,12 @@ bool InitPipeline()
     }
     if (!CompileShader(kCopyShader, sizeof(kCopyShader), "copy", g.copyPipeline) ||
         !CompileShader(kDepthShader, sizeof(kDepthShader), "depth", g.depthPipeline) ||
-        !CompileShader(kComposeShader, sizeof(kComposeShader), "compose", g.composePipeline))
+        !CompileShader(kComposeShader, sizeof(kComposeShader), "compose", g.composePipeline) ||
+        !CompileShader(kLumaShader, sizeof(kLumaShader), "luma", g.lumaPipeline) ||
+        !CompileShader(kFlowShader, sizeof(kFlowShader), "flow", g.flowPipeline) ||
+        !CompileShader(kFlowUpShader, sizeof(kFlowUpShader), "flowup", g.flowUpPipeline))
         return false;
-    D3D12_DESCRIPTOR_HEAP_DESC hd { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16,
+    D3D12_DESCRIPTOR_HEAP_DESC hd { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 32,
                                     D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
     return SUCCEEDED(g.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g.heap)));
 }
@@ -636,12 +720,27 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     // Only the textures whose geometry actually moved get rebuilt. composed has to match the back
     // buffer because it is CopyResource'd into it; the network textures must not be touched while
     // the engine is using them.
+    // Flow runs on a luminance image an eighth the size. Full resolution would cost the square
+    // of that for no gain: the search window is what limits how fast a motion can be tracked, and
+    // a coarse field upsamples cleanly because real motion is mostly low frequency.
+    const UINT fw = std::max<UINT>(16u, nw / 8u);
+    const UINT fh = std::max<UINT>(16u, nh / 8u);
+
     if (netChanged &&
         (!CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.netColour, "netColour") ||
          !CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.netBase, "netBase") ||
          !CreateTexture(nw, nh, DXGI_FORMAT_R16G16_FLOAT, g.netMotion, "netMotion") ||
-         !CreateTexture(nw, nh, DXGI_FORMAT_R32_FLOAT, g.netDepth, "netDepth")))
+         !CreateTexture(nw, nh, DXGI_FORMAT_R32_FLOAT, g.netDepth, "netDepth") ||
+         !CreateTexture(fw, fh, DXGI_FORMAT_R16_FLOAT, g.lumaA, "lumaA") ||
+         !CreateTexture(fw, fh, DXGI_FORMAT_R16_FLOAT, g.lumaB, "lumaB") ||
+         !CreateTexture(fw, fh, DXGI_FORMAT_R16G16_FLOAT, g.flowSmall, "flowSmall") ||
+         !CreateTexture(fw, fh, DXGI_FORMAT_R16G16_FLOAT, g.flowCoarse, "flowCoarse")))
         return false;
+    if (netChanged)
+    {
+        g.flowWidth = fw;
+        g.flowHeight = fh;
+    }
     if (outChanged && !CreateTexture(w, h, composeFormat, g.composed, "composed"))
         return false;
 
@@ -884,6 +983,148 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
+    // Optical flow. Three dispatches on small textures: luminance, block match against last
+    // frame's luminance, then upsample into the raster the engine reads. The two luminance
+    // textures swap every frame so this frame's becomes next frame's reference.
+    bool haveMotion = false;
+    if (g.useMotion.load() && g.flowSmall != nullptr)
+    {
+        ID3D12Resource *cur = (g.frame & 1) ? g.lumaB.Get() : g.lumaA.Get();
+        ID3D12Resource *prev = (g.frame & 1) ? g.lumaA.Get() : g.lumaB.Get();
+        const UINT fw = g.flowWidth, fh = g.flowHeight;
+
+        srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        g.device->CreateShaderResourceView(g.netColour.Get(), &srv, slot(12));
+        uav.Format = DXGI_FORMAT_R16_FLOAT;
+        g.device->CreateUnorderedAccessView(cur, nullptr, &uav, slot(15));
+
+        // Coarse pass at base 16 searches in strides of 2, so it reaches twice as far for the
+        // same 81 candidates. Fine pass at base 24 refines around what it found. Two cheap passes
+        // beat one wide search: reach grows linearly here and quadratically there.
+        srv.Format = DXGI_FORMAT_R16_FLOAT;
+        g.device->CreateShaderResourceView(cur, &srv, slot(16));
+        g.device->CreateShaderResourceView(prev, &srv, slot(17));
+        srv.Format = DXGI_FORMAT_R16G16_FLOAT;
+        g.device->CreateShaderResourceView(g.flowCoarse.Get(), &srv, slot(18));
+        uav.Format = DXGI_FORMAT_R16G16_FLOAT;
+        g.device->CreateUnorderedAccessView(g.flowCoarse.Get(), nullptr, &uav, slot(19));
+
+        srv.Format = DXGI_FORMAT_R16_FLOAT;
+        g.device->CreateShaderResourceView(cur, &srv, slot(24));
+        g.device->CreateShaderResourceView(prev, &srv, slot(25));
+        srv.Format = DXGI_FORMAT_R16G16_FLOAT;
+        g.device->CreateShaderResourceView(g.flowCoarse.Get(), &srv, slot(26));
+        uav.Format = DXGI_FORMAT_R16G16_FLOAT;
+        g.device->CreateUnorderedAccessView(g.flowSmall.Get(), nullptr, &uav, slot(27));
+
+        srv.Format = DXGI_FORMAT_R16G16_FLOAT;
+        g.device->CreateShaderResourceView(g.flowSmall.Get(), &srv, slot(20));
+        uav.Format = DXGI_FORMAT_R16G16_FLOAT;
+        g.device->CreateUnorderedAccessView(g.netMotion.Get(), nullptr, &uav, slot(23));
+
+        auto table = [&](UINT base) {
+            auto t = heap->GetGPUDescriptorHandleForHeapStart();
+            t.ptr += static_cast<UINT64>(base) * inc;
+            return t;
+        };
+        auto dispatch = [&](ID3D12PipelineState *pso, UINT base, UINT dw, UINT dh, UINT sw, UINT sh,
+                            float extra, UINT mode = 0) {
+            cmd->SetPipelineState(pso);
+            cmd->SetComputeRootDescriptorTable(0, table(base));
+            UINT d[8] { dw, dh, sw, sh, mode, 0, 0, 0 };
+            std::memcpy(&d[6], &extra, sizeof(extra));
+            cmd->SetComputeRoot32BitConstants(1, 8, d, 0);
+            cmd->Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
+        };
+
+        cmd->SetComputeRootSignature(g.root.Get());
+        cmd->SetDescriptorHeaps(1, &heap);
+
+        Barrier(cmd, cur, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        dispatch(g.lumaPipeline.Get(), 12, fw, fh, nw, nh, 0.0f);
+        Barrier(cmd, cur, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        Barrier(cmd, g.flowCoarse.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        dispatch(g.flowPipeline.Get(), 16, fw, fh, fw, fh, 2.0f, 0);
+        Barrier(cmd, g.flowCoarse.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        Barrier(cmd, g.flowSmall.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        dispatch(g.flowPipeline.Get(), 24, fw, fh, fw, fh, 1.0f, 1);
+        Barrier(cmd, g.flowSmall.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        // The field is in coarse pixels; the engine reads it at raster resolution, so one coarse
+        // pixel is eight of those. Getting this factor wrong tells the network the image moved a
+        // different distance than it did, which is worse than telling it nothing.
+        Barrier(cmd, g.netMotion.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        dispatch(g.flowUpPipeline.Get(), 20, nw, nh, fw, fh,
+                 static_cast<float>(nw) / static_cast<float>(fw));
+        Barrier(cmd, g.netMotion.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+        // One-shot look inside the flow, so a single run answers what is wrong instead of
+        // bisecting over several. A degenerate match and a genuinely still scene produce the same
+        // mean vector; the luminance stats tell them apart.
+        if (!g.flowProbed && g.frame == 300)
+        {
+            g.flowProbed = true;
+            const UINT lumaPitch = (fw * 2 + 255) & ~255u;
+            const UINT flowPitch = (fw * 4 + 255) & ~255u;
+            D3D12_HEAP_PROPERTIES rb {};
+            rb.Type = D3D12_HEAP_TYPE_READBACK;
+            D3D12_RESOURCE_DESC bd {};
+            bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            bd.Height = 1;
+            bd.DepthOrArraySize = 1;
+            bd.MipLevels = 1;
+            bd.SampleDesc.Count = 1;
+            bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            bd.Width = static_cast<UINT64>(lumaPitch) * fh;
+            const bool okA = SUCCEEDED(g.device->CreateCommittedResource(
+                &rb, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&g.flowReadLuma)));
+            bd.Width = static_cast<UINT64>(flowPitch) * fh;
+            const bool okB = SUCCEEDED(g.device->CreateCommittedResource(
+                &rb, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                IID_PPV_ARGS(&g.flowReadFlow)));
+            if (okA && okB)
+            {
+                auto grab = [&](ID3D12Resource *src, ID3D12Resource *dst, DXGI_FORMAT f, UINT pitch) {
+                    Barrier(cmd, src, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    D3D12_TEXTURE_COPY_LOCATION from {}, to {};
+                    from.pResource = src;
+                    from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                    to.pResource = dst;
+                    to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                    to.PlacedFootprint.Footprint = { f, fw, fh, 1, pitch };
+                    cmd->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+                    Barrier(cmd, src, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                };
+                grab(cur, g.flowReadLuma.Get(), DXGI_FORMAT_R16_FLOAT, lumaPitch);
+                grab(g.flowSmall.Get(), g.flowReadFlow.Get(), DXGI_FORMAT_R16G16_FLOAT, flowPitch);
+                g.pendingFlow = true;
+            }
+        }
+
+        haveMotion = g.frame > 1;
+        if (!g.loggedFlow)
+        {
+            g.loggedFlow = true;
+            Log("motion: flow at %ux%u, coarse pass in strides of 2 then a refine, reaching +/-12 "
+                "coarse pixels, about %.0f raster pixels a frame. The PS2 has no real motion to "
+                "read, so this is inferred from the image, same as the NVIDIA route does here.",
+                fw, fh, 12.0 * static_cast<double>(nw) / static_cast<double>(fw));
+        }
+    }
+
     bool haveDepth = false;
     if (g.useDepth.load() && g.depthBest != nullptr)
     {
@@ -1096,6 +1337,77 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtimes[i]) + 0x4640)(
             g.queue.Get(), 1, submitted);
     queue->flush_immediate_command_list();
+    if (g.pendingFlow)
+    {
+        g.pendingFlow = false;
+        ComPtr<ID3D12Fence> f;
+        if (SUCCEEDED(g.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&f))) &&
+            SUCCEEDED(g.queue->Signal(f.Get(), 1)))
+        {
+            for (int spin = 0; spin < 2000 && f->GetCompletedValue() < 1; ++spin)
+                Sleep(1);
+            auto half = [](uint16_t h) {
+                const int e = (h >> 10) & 0x1f;
+                const int m = h & 0x3ff;
+                const float v = e == 0 ? m / 1024.0f * 6.103515625e-5f
+                                       : std::ldexpf(1.0f + m / 1024.0f, e - 15);
+                return (h & 0x8000) ? -v : v;
+            };
+            const UINT fw = g.flowWidth, fh = g.flowHeight;
+            const UINT lumaPitch = (fw * 2 + 255) & ~255u;
+            const UINT flowPitch = (fw * 4 + 255) & ~255u;
+            void *a = nullptr, *b = nullptr;
+            D3D12_RANGE all { 0, 0 };
+            if (SUCCEEDED(g.flowReadLuma->Map(0, &all, &a)) &&
+                SUCCEEDED(g.flowReadFlow->Map(0, &all, &b)))
+            {
+                double lo = 1e30, hi = -1e30, sum = 0.0;
+                for (UINT y = 0; y < fh; ++y)
+                {
+                    auto *row = reinterpret_cast<const uint16_t *>(static_cast<const char *>(a) +
+                                                                   static_cast<size_t>(y) * lumaPitch);
+                    for (UINT x = 0; x < fw; ++x)
+                    {
+                        const double v = half(row[x]);
+                        lo = std::min(lo, v);
+                        hi = std::max(hi, v);
+                        sum += v;
+                    }
+                }
+                Log("flow probe, luminance %ux%u: min %.6f max %.6f mean %.6f%s", fw, fh, lo, hi,
+                    sum / (fw * fh),
+                    (hi - lo) < 1e-6 ? "  <-- flat, so there is nothing for a match to lock onto"
+                                     : "  <-- has detail, so matching had something to work with");
+
+                UINT64 zero = 0, atLimit = 0, n = 0;
+                double mag = 0.0;
+                for (UINT y = 0; y < fh; ++y)
+                {
+                    auto *row = reinterpret_cast<const uint16_t *>(static_cast<const char *>(b) +
+                                                                   static_cast<size_t>(y) * flowPitch);
+                    for (UINT x = 0; x < fw; ++x)
+                    {
+                        const double dx = half(row[x * 2]), dy = half(row[x * 2 + 1]);
+                        if (dx == 0.0 && dy == 0.0)
+                            ++zero;
+                        if (std::abs(dx) >= 12.0 || std::abs(dy) >= 12.0)
+                            ++atLimit;
+                        mag += std::abs(dx) + std::abs(dy);
+                        ++n;
+                    }
+                }
+                Log("flow probe, field: %llu%% of blocks still, %llu%% pinned at the search limit, "
+                    "mean |d| %.3f coarse pixels", static_cast<unsigned long long>(100 * zero / n),
+                    static_cast<unsigned long long>(100 * atLimit / n), mag / (2.0 * n));
+                Log("  a healthy field is mostly still with a minority moving; nearly all pinned at "
+                    "the limit means the match is following noise, not the picture.");
+                g.flowReadLuma->Unmap(0, nullptr);
+                g.flowReadFlow->Unmap(0, nullptr);
+            }
+        }
+        g.flowReadLuma.Reset();
+        g.flowReadFlow.Reset();
+    }
     if (g.pendingMeasure)
     {
         g.pendingMeasure = false;
@@ -1284,9 +1596,23 @@ void OnOverlay(effect_runtime *)
     bool inverted = g.depthInverted.load();
     if (ImGui::Checkbox("Depth Inverted", &inverted))
         g.depthInverted.store(inverted);
+    bool mv = g.useMotion.load();
+    if (ImGui::Checkbox("Motion Vectors", &mv))
+    {
+        g.useMotion.store(mv);
+        Log("menu: motion %s", mv ? "on" : "off");
+    }
+    ImGui::TextDisabled("Estimated from the image, not read from the game.");
+    if (mv)
+        Note(kWarn, "The PS2 never computed per-pixel motion, so this is inferred by comparing "
+                    "consecutive frames -- the same thing the NVIDIA route does on this target. It "
+                    "is wrong where pixels move without the geometry moving: reflections, fire, "
+                    "moving shadows, and anything appearing from behind something else. It also "
+                    "does nothing on its own while the engine's history is off, which it currently "
+                    "is: a motion vector says where a pixel was, and there is nothing kept to look "
+                    "it up in.");
     ImGui::BeginDisabled();
     bool no = false;
-    ImGui::Checkbox("Motion Vectors", &no);
     ImGui::Checkbox("Jitter", &no);
     ImGui::Checkbox("Exposure", &no);
     ImGui::EndDisabled();
