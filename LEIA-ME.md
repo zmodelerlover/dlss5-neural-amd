@@ -65,8 +65,9 @@ o PCSX2 foi instalado:
   `inis\`, `memcards\`, `cache\`. Não existe `Documents\PCSX2` nenhum.
 * **Instalador** — `Documents\PCSX2\gamesettings\`.
 
-Dentro do arquivo, `Renderer = 3` é Direct3D 11 e `15` é Direct3D 12. Apagar a linha também
-resolve; aí volta pra configuração global.
+**Você quer `Renderer = 15`.** 15 é Direct3D 12, que é a única coisa em que este add-on funciona.
+`Renderer = 3` é Direct3D 11 — se você achar essa linha, ela é o problema, não a solução. Apagar
+a linha também resolve: aí volta pra configuração global.
 
 ## Rodando
 

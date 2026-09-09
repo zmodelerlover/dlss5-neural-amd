@@ -103,8 +103,9 @@ depends on how PCSX2 was installed:
   `gamesettings\`, `inis\`, `memcards\`, `cache\`. There is no `Documents\PCSX2` at all.
 * **Installer** — `Documents\PCSX2\gamesettings\`.
 
-In that file, `Renderer = 3` is Direct3D 11 and `15` is Direct3D 12. Deleting the line is fine
-too; it falls back to your global setting.
+**You want `Renderer = 15`.** 15 is Direct3D 12, which is the only thing this add-on works on.
+`Renderer = 3` is Direct3D 11 — if you find that line, it is the problem, not the fix. Deleting
+the line entirely is also fine: it just falls back to your global setting.
 
 ### 6. Start a game
 
