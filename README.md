@@ -236,6 +236,36 @@ The other two targets build the same way: `-Target probe` (dumps what a game exp
 `-Target session`. CI on `windows-latest` builds all three from a bare checkout on every push,
 so if the badge is green the repository builds as-is.
 
+## What the network can actually be fed
+
+Right now: **colour only**, taken from the presented back buffer. Not because depth is missing,
+but because on D3D12 it is out of reach. Measured with the probe in `src/probe`, same game, same
+frame, only the renderer changed:
+
+| | PCSX2 on **D3D12** | PCSX2 on **D3D11** |
+|---|---|---|
+| render targets ReShade shows the add-on | **2** | **8** |
+| depth | none | **1536x1254 `R32G8X24_TYPELESS`**, 41 draws |
+| colour | 1918x1008, the presented back buffer | **1536x1254 at render resolution**, 52 draws |
+
+On D3D12 an add-on sees the swapchain and nothing else. `bind_render_targets_and_depth_stencil`
+fires **zero** times in 600 frames, with or without also subscribing to the draw events -- both
+tried, both measured. So the depth code sitting behind the Depth switch has nothing to bind to,
+and that is a property of the D3D12 path, not of the game.
+
+On D3D11 both guides are right there, and the two are the same size, so they need no realignment.
+The render-resolution colour is also a better input than what is used today: it is the image
+before it gets scaled down to the window.
+
+The catch is that the AMD network runtime is D3D12. Getting at those sources means running PCSX2
+on D3D11 and bridging the textures to a separate D3D12 device -- own device on the game's
+adapter, shared texture, shared fence. `src/session/session.cpp` is a working prototype of that
+crossing and already logs how long it takes. That is the next real step, and it is the same shape
+as what the NVIDIA route does here.
+
+Motion is a separate matter and not a plumbing problem: the PS2 never computed per-pixel motion,
+so there is nothing to capture on either API.
+
 ## Rebuilding the runtime yourself
 
 You don't need this — the DLL on the discord is already the rebuilt one. It's here for anyone

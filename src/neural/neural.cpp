@@ -346,6 +346,7 @@ struct State
     bool loggedProfile = false;
     bool loggedPin = false;
     UINT measureTries = 0;
+    UINT64 depthEvents = 0;
 };
 
 State g;
@@ -655,10 +656,16 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     return true;
 }
 
+// Observation is deliberately NOT gated on the Depth switch. It used to be, and that made the
+// question unanswerable: with the switch off -- the default -- this returned immediately, logged
+// nothing, and the status line then said "no candidate found", which reads as "this game has no
+// depth buffer" when it actually meant "nobody looked". Finding a candidate costs a pointer and a
+// GetDesc; only *using* it is gated, further down in the present path.
 void OnBindDepthStencil(command_list *cmd_list, uint32_t, const resource_view *, resource_view dsv)
 {
-    if (dsv.handle == 0 || !g.useDepth.load())
+    if (dsv.handle == 0)
         return;
+    ++g.depthEvents;
     device *dev = cmd_list != nullptr ? cmd_list->get_device() : nullptr;
     if (dev == nullptr || dev->get_api() != device_api::d3d12)
         return;
@@ -1182,6 +1189,13 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     if (++g.frame <= 3 || g.frame % 120 == 0)
         Log("frame %llu processed (%llu skipped)", static_cast<unsigned long long>(g.frame),
             static_cast<unsigned long long>(g.skipped));
+
+    // One line, once, so a log tells us whether depth is even reachable on this API.
+    if (g.frame == 600)
+        Log("guides after 600 frames: %llu depth-stencil bind events, best candidate %s. Motion: "
+            "the PS2 never computed per-pixel motion, so there is none to take.",
+            static_cast<unsigned long long>(g.depthEvents),
+            g.depthBest != nullptr ? "found" : "none");
 }
 
 // Anything that makes one evaluation slower is a driver-reset risk while Apply On Same Frame is
@@ -1290,17 +1304,20 @@ void OnOverlay(effect_runtime *)
     v = g.scale.load();
     if (ImGui::SliderFloat("Resolution Scale", &v, 0.25f, 2.0f, "%.2f", 0))
         g.scale.store(v);
-    ImGui::TextDisabled("Cost grows with the square. 0.50 is about 16 ms on an RX 9070 XT.");
+    ImGui::TextDisabled("Cost grows with the square. 0.50 is about 16 ms on an RX 9070 XT, which "
+                        "is already most of a 16.7 ms frame at 60 Hz.");
     if (v > 1.0f)
         Note(kDanger, "CAN RESET THE DISPLAY DRIVER. Above 1.00 one evaluation takes hundreds of "
                       "milliseconds. With Apply On Same Frame on, the game blocks for that whole "
                       "time, which trips the Windows driver timeout: the driver resets and the "
                       "game dies with DXGI_ERROR_DEVICE_REMOVED (887A0005). If you want to try "
                       "it anyway, turn Apply On Same Frame off first.");
-    else if (v > 0.75f)
-        Note(kWarn, "Past about 0.75 the evaluation usually stops fitting inside one frame at "
-                    "60 Hz. The result is skipped frames, and skipped frames are what flicker "
-                    "looks like. Watch the skip count below.");
+    else if (v > 0.50f)
+        Note(kWarn, "ABOVE 0.50 IS ALREADY RISKY. 0.50 is about 16 ms against a 16.7 ms frame, so "
+                    "there is no headroom left: past it the evaluation stops fitting inside a "
+                    "frame, you get skipped frames -- which is what flicker is -- and on a slower "
+                    "card the stall can grow far enough to reset the display driver. Raise it only "
+                    "if the skip count below stays low, and back off the moment it climbs.");
     ImGui::BeginDisabled();
     float ratio = 1.0f;
     ImGui::SliderFloat("Upscaling Ratio", &ratio, 1.0f, 2.0f, "%.2fx", 0);
@@ -1341,10 +1358,18 @@ void OnOverlay(effect_runtime *)
         ImGui::Text("Back buffer %ux%u  ->  network %ux%u", g.outWidth, g.outHeight, g.netWidth,
                     g.netHeight);
     if (g.depthBest != nullptr)
-        ImGui::Text("Depth %ux%u format %d", g.depthWidth, g.depthHeight,
-                    static_cast<int>(g.depthFormat));
+        ImGui::Text("Depth candidate: %ux%u format %d, %llu binds%s", g.depthWidth, g.depthHeight,
+                    static_cast<int>(g.depthFormat),
+                    static_cast<unsigned long long>(g.depthBinds),
+                    g.useDepth.load() ? ", feeding it" : " (Depth switch is off)");
+    else if (g.depthEvents == 0)
+        ImGui::TextDisabled("Depth: ReShade has not delivered a single depth-stencil bind on this "
+                            "API, so there is nothing to find. Not the same as the game having no "
+                            "depth buffer.");
     else
-        ImGui::TextDisabled("Depth: no candidate found.");
+        ImGui::TextDisabled("Depth: %llu binds seen, none usable (wrong format, multisampled, or "
+                            "shader reads denied). See the log.",
+                            static_cast<unsigned long long>(g.depthEvents));
     ImGui::TextDisabled("Log: dlss5-neural.log");
 }
 
@@ -1366,6 +1391,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             g_log = _wfopen(log.c_str(), L"w");
             Log("dlss5 neural: %s", ProfileForThisProcess().note);
         }
+        // Kept even though it has never fired on D3D12: measured, PCSX2 on D3D12 delivers zero
+        // depth-stencil binds in 600 frames, with or without also subscribing to the draw events.
+        // The probe tells you why -- on D3D12 ReShade shows an add-on only the two swapchain
+        // targets, while the same probe on D3D11 sees eight, depth included. See README,
+        // "What the network can actually be fed".
         reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(
             OnBindDepthStencil);
         reshade::register_event<reshade::addon_event::present>(OnPresent);
