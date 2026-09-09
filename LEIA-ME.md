@@ -18,18 +18,11 @@ Testado: RX 9070 XT, ReShade 6.8.0, PCSX2 2.3.14 e 2.8.2, God of War 1.
 
 ### 1. `dlss5-neural.addon64`
 
-Baixe dos [Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases), ou compile:
+Baixe dos **[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest)**.
 
-```powershell
-git clone https://github.com/zmodelerlover/dlss5-neural-amd
-cd dlss5-neural-amd
-.\build.ps1 -Target neural
-```
-
-**É só isso.** Não precisa baixar header nenhum antes: os headers do ReShade e do ImGui estão
-dentro do repositório, em `external/reshade/`. (Antes não estavam, e por isso não compilava para
-ninguém. Agora estão.) Você precisa do Visual Studio com o workload de C++ e do SDK do
-Windows 10/11 — o `build.ps1` acha os dois sozinho. Sai em `build\dlss5-neural.addon64`.
+Pronto. **Não precisa compilar nada** — o arquivo do release é compilado deste mesmo
+repositório. Compilar só serve se você quiser mexer no código, e tem
+[seção própria](#compilar-por-conta-própria-opcional) no fim.
 
 ### 2 e 3. `dlssnr_amd_pass1.dll` e `dlssnr_on_amd_weights.bin`
 
@@ -83,6 +76,57 @@ Count 1). Não precisa mexer em nada.
 | O jogo morre com `887A0005` | `DXGI_ERROR_DEVICE_REMOVED`, TDR do Windows. Ver [o ini do engine](#o-ini-do-engine). |
 | Roda mas "só muda um pouco a cor" | Encoding errado. Em back buffer SDR de 8 bits tem que ser **sRGB**. `scRGB-nl` lineariza uma imagem que já é sRGB e ainda escala por 203/branco, então a rede recebe uma imagem quase preta e não faz nada. |
 | `imgui.h` ou `reshade.hpp` não encontrado ao compilar | Você apagou a pasta `external/`. Ela está no repositório; `git checkout external` traz de volta. |
+
+## Compilar por conta própria (opcional)
+
+**Pule isso se você não vai mexer no código.** O `.addon64` dos
+[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest) é compilado deste
+repositório e é o mesmo arquivo que sairia aqui.
+
+**O que instalar antes.** Uma coisa só: o compilador C++ da Microsoft. Não precisa do Visual
+Studio completo — o **Build Tools for Visual Studio** é grátis e basta. Pegue em
+<https://visualstudio.microsoft.com/pt-br/downloads/>, em *Ferramentas para Visual Studio* →
+*Build Tools para Visual Studio*. No instalador dele marque só o workload **"Desenvolvimento
+para desktop com C++"** e instale. Esse workload já traz o SDK do Windows junto, que é a outra
+metade do que o build precisa. Se você já tem Visual Studio com C++, já tem tudo.
+
+**Depois, no PowerShell:**
+
+```powershell
+git clone https://github.com/zmodelerlover/dlss5-neural-amd
+cd dlss5-neural-amd
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Target neural
+```
+
+Repare no `-ExecutionPolicy Bypass`. O Windows se recusa a rodar `.ps1` baixado por padrão, então
+`.\build.ps1` sozinho normalmente falha com *"não pode ser carregado porque a execução de scripts
+foi desabilitada neste sistema"*. Essa mensagem é do Windows, não deste projeto. A linha acima
+contorna só naquele comando, sem mudar nada na sua máquina.
+
+**É esse o build inteiro.** Não precisa baixar nada antes, não tem submódulo, nem `vcpkg`, nem
+CMake, nem `.sln` pra abrir. Os headers do ReShade e do ImGui já estão em `external/reshade/`
+(antes não estavam, e era por isso que não compilava pra ninguém). O `build.ps1` acha o
+compilador e o SDK sozinho; se pegar o errado, passe `-VsPath` ou `-SdkPath`.
+
+**Deu certo se** as duas últimas linhas forem assim, e o `build\dlss5-neural.addon64` existir:
+
+```
+OK: ...\build\dlss5-neural.addon64
+dlss5-neural.addon64  73728  ...
+```
+
+**Se falhar:**
+
+| Mensagem | O que fazer |
+|---|---|
+| `a execução de scripts foi desabilitada` / `running scripts is disabled` | Você esqueceu o `powershell -ExecutionPolicy Bypass -File` na frente. |
+| `vswhere.exe not found` / `No Visual Studio install with the C++ tools` | O workload de C++ não está instalado. Rode o instalador do Build Tools e marque *Desenvolvimento para desktop com C++*. |
+| `Windows 10/11 SDK not found in the registry` | Mesmo instalador, mesmo workload — ele inclui o SDK. Ou passe `-SdkPath`. |
+| `fatal error C1083: 'imgui.h'` | Você apagou a pasta `external/`. `git checkout external` traz de volta. |
+| `git` não é reconhecido | Instale o Git for Windows, ou simplesmente use o build do release. |
+
+Os outros dois alvos compilam igual: `-Target probe` (mostra o que um jogo expõe) e
+`-Target session`.
 
 ### O ini do engine
 

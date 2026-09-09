@@ -40,20 +40,12 @@ get from the discord. That's the whole install.
 
 ### 1. Get the add-on
 
-Either download `dlss5-neural.addon64` from
-[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases), or build it:
+Download `dlss5-neural.addon64` from
+**[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest)**.
 
-```powershell
-git clone https://github.com/zmodelerlover/dlss5-neural-amd
-cd dlss5-neural-amd
-.\build.ps1 -Target neural
-```
-
-That is the entire build. Nothing to download first, no submodules, no `vcpkg`. The ReShade and
-ImGui headers are checked into `external/reshade/` (see
-[external/reshade/NOTICE.md](external/reshade/NOTICE.md) for what they are and where they came
-from). You need Visual Studio with the C++ workload and a Windows 10/11 SDK; `build.ps1` finds
-both by itself. The result lands in `build\dlss5-neural.addon64`.
+That's it. **You do not need to build anything** — the file in the release is compiled from this
+exact repository. Building is only if you want to change something, and it has
+[its own section](#building-it-yourself-optional) at the bottom.
 
 ### 2. Get the runtime and the weights
 
@@ -147,6 +139,59 @@ So the add-on writes the file itself if it isn't there, with `InlineWaitMs=100`.
 the network takes about 16 ms, so 100 is a wide margin, and past it you get a frame without the
 effect instead of a freeze. Delete the file and it gets written again; edit it and your version
 is kept. Don't raise `InlineWaitMs` far without knowing why.
+
+## Building it yourself (optional)
+
+**Skip this unless you want to change the code.** The `.addon64` in
+[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest) is built from this
+repository and is the same file you would produce here.
+
+**What to install first.** One thing: Microsoft's C++ compiler. You do not need the full Visual
+Studio IDE — **Build Tools for Visual Studio** is free and enough. Get it from
+<https://visualstudio.microsoft.com/downloads/>, under *Tools for Visual Studio* → *Build Tools
+for Visual Studio*. In its installer tick the single workload **"Desktop development with C++"**
+and install. That workload brings the Windows SDK with it, which is the other half of what the
+build needs. If you already have Visual Studio with C++, you already have all of this.
+
+**Then, in PowerShell:**
+
+```powershell
+git clone https://github.com/zmodelerlover/dlss5-neural-amd
+cd dlss5-neural-amd
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Target neural
+```
+
+Note the `-ExecutionPolicy Bypass`. Windows refuses to run downloaded `.ps1` files by default, so
+plain `.\build.ps1` usually fails with *"cannot be loaded because running scripts is disabled on
+this system"*. That message is Windows, not this project. The line above sidesteps it for that
+one command without changing anything on your machine.
+
+**That is the whole build.** Nothing to download first, no submodules, no `vcpkg`, no CMake, no
+`.sln` to open. The ReShade and ImGui headers are already in `external/reshade/` — see
+[external/reshade/NOTICE.md](external/reshade/NOTICE.md) for what they are and where they came
+from. `build.ps1` finds the compiler and the SDK by itself; if it picks the wrong one, pass
+`-VsPath` or `-SdkPath`.
+
+**It worked if** the last two lines look like this, and `build\dlss5-neural.addon64` exists:
+
+```
+OK: ...\build\dlss5-neural.addon64
+dlss5-neural.addon64  73728  ...
+```
+
+**If it fails:**
+
+| Message | Fix |
+|---|---|
+| `cannot be loaded because running scripts is disabled` | You dropped the `powershell -ExecutionPolicy Bypass -File` part. |
+| `vswhere.exe not found` / `No Visual Studio install with the C++ tools` | The C++ workload isn't installed. Re-run the Build Tools installer and tick *Desktop development with C++*. |
+| `Windows 10/11 SDK not found in the registry` | Same installer, same workload — it includes the SDK. Or pass `-SdkPath`. |
+| `fatal error C1083: 'imgui.h'` | You deleted `external/`. `git checkout external` puts it back. |
+| `git` is not recognised | Install Git for Windows, or just use the release build instead. |
+
+The other two targets build the same way: `-Target probe` (dumps what a game exposes) and
+`-Target session`. CI on `windows-latest` builds all three from a bare checkout on every push,
+so if the badge is green the repository builds as-is.
 
 ## Rebuilding the runtime yourself
 
