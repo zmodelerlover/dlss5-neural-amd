@@ -1,0 +1,24 @@
+# Nada de binario da rede: os pesos sao derivados da NVIDIA e o runtime vem de um projeto
+# de terceiro sem licenca declarada. Quem clonar fornece os seus.
+*.dll
+*.bin
+*.addon64
+*.exe
+*.obj
+*.lib
+*.exp
+*.pdb
+
+# Saidas de build e de execucao
+build/
+builds/
+*.log
+*.ppm
+*.raw
+
+# Headers de terceiros: o README diz quais buscar e em que versao
+external/
+
+# Scripts de uso unico, sem valor para quem clona
+patch_*.py
+check_ppm.py
