@@ -400,7 +400,7 @@ zero; `tools\check_shaders.ps1` passa nos 8 shaders.
 `dlss5-neural.addon64` atualizado. Mesmos `pass2/3` descartáveis.
 
 ### Referências da investigação (não são do projeto, não mexer)
-- `C:\Users\claudinhh\Desktop\renodx-dlss (1).addon64` — a tabela de UI do RenoDX
+- `%USERPROFILE%\Desktop\renodx-dlss (1).addon64` — a tabela de UI do RenoDX
 - `D:\SteamLibrary\steamapps\common\NBA 2K27\nvngx_dlssnr.dll` — o Style inteiro
 - IDBs (`.i64`) gerados ao lado dos dois binários
 

@@ -66,9 +66,9 @@ personagem é do contrato de entrada, não do port AMD.
 ### Backups feitos nesta sessão
 
 - `D:\pcsx2-...\runtime-com-teto\` — as três DLLs com teto, para voltar atrás
-- `C:\Users\claudinhh\Documents\PCSX2\inis\PCSX2.ini.bak-dlss5`
-- `C:\Users\claudinhh\Documents\PCSX2\gamesettings\SCUS-97399_*.ini.bak-dlss5` (GoW 1)
-- `C:\Users\claudinhh\Documents\PCSX2\gamesettings\SCUS-97481_*.ini.bak-dlss5` (GoW 2)
+- `%USERPROFILE%\Documents\PCSX2\inis\PCSX2.ini.bak-dlss5`
+- `%USERPROFILE%\Documents\PCSX2\gamesettings\SCUS-97399_*.ini.bak-dlss5` (GoW 1)
+- `%USERPROFILE%\Documents\PCSX2\gamesettings\SCUS-97481_*.ini.bak-dlss5` (GoW 2)
 - `D:\pcsx2-...\ReShade.ini.bak-dlss5`
 - `D:\SteamLibrary\...\Grand Theft Auto V Enhanced\v17-experimento-20260909\` — estado v1.7 do GTA
 
