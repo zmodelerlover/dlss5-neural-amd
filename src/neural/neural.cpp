@@ -1026,7 +1026,12 @@ struct State
     bool loggedDepth = false;
     ComPtr<ID3D12Resource> composed;
     ComPtr<ID3D12Resource> readbackBase, readbackNr;
-    bool measured = false;
+    // Both of these are written by the overlay's "Measure Residual Again" button, which sits above
+    // the point where that section takes g.lock, and read and written by the recording path under
+    // it. measureNow on the button was already atomic; these two are the same job left undone.
+    // The increment is the one that matters: the retry below is what stops a black boot frame
+    // from being reported as a final "the network did nothing" measurement.
+    std::atomic<bool> measured { false };
     bool pendingMeasure = false;
 
     uint64_t frame = 0;
@@ -1038,7 +1043,7 @@ struct State
     bool loggedProfile = false;
     bool loggedPin = false;
     float pinnedScale = -1.0f;
-    UINT measureTries = 0;
+    std::atomic<UINT> measureTries { 0 };
     // Raised on the bind event, which arrives on whatever thread is recording, and read from
     // present and the overlay. The increment sits outside g.lock on purpose -- observation must
     // not be gated on the Depth switch -- so the counter itself has to carry the guarantee.
@@ -1542,16 +1547,16 @@ void DrainReadbacks(UINT nw, UINT nh)
                 const double inputMean = nb ? meanBase / nb : 0.0;
                 const double gIn = ng ? gradIn / ng : 0.0;
                 const double gRes = ng ? gradRes / ng : 0.0;
-                if (inputMean <= 0.0 && g.measureTries < 12)
+                if (inputMean <= 0.0 && g.measureTries.load() < 12)
                 {
                     ++g.measureTries;
                     Log("measure: the network was handed a black frame (attempt %u); the game is "
                         "probably still on a loading screen. Retrying in 240 frames.",
-                        g.measureTries);
+                        g.measureTries.load());
                 }
                 else
                 {
-                    g.measured = true;
+                    g.measured.store(true);
                     Log("measure, network input: mean absolute %.6f (%llu samples)",
                         inputMean, static_cast<unsigned long long>(nb));
                     Log("  0.000000 means a black image was handed to the network.");
@@ -3505,7 +3510,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
     // on a black boot screen, and measuring there reports a black input and a zero residual
     // for a setup that is actually fine. Keep trying every 240 frames until the input has
     // something in it, then stop.
-    if (!g.measured && g.activePasses != 0 &&
+    if (!g.measured.load() && g.activePasses != 0 &&
         (g.measureNow.exchange(false) || (g.frame >= 240 && g.frame % 240 == 0)))
     {
         const UINT rowPitch = (nw * 8 + 255) & ~255u;
@@ -4558,8 +4563,8 @@ void OnOverlay(effect_runtime *)
 
         if (ImGui::Button(T("Measure Residual Again", "Medir Resíduo de Novo")))
         {
-            g.measured = false;
-            g.measureTries = 0;
+            g.measured.store(false);
+            g.measureTries.store(0);
             g.measureNow.store(true);
             Log("menu: residual measurement re-armed");
         }
