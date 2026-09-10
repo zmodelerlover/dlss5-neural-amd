@@ -326,7 +326,7 @@ Texture2D<float4> res  : register(t1);
 Texture2D<float4> dbgs : register(t2);
 RWTexture2D<float4> dst : register(u0);
 SamplerState smp : register(s0);
-cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float intensity; uint pad; };
+cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float intensity; uint pad; float limit; float fade; };
 float3 ToLinear(float3 c){ return c <= 0.04045 ? c/12.92 : pow(abs(c+0.055)/1.055, 2.4); }
 float3 ToSrgb(float3 c){ return c <= 0.0031308 ? c*12.92 : 1.055*pow(abs(c), 1.0/2.4) - 0.055; }
 [numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
@@ -350,6 +350,14 @@ float3 ToSrgb(float3 c){ return c <= 0.0031308 ? c*12.92 : 1.055*pow(abs(c), 1.0
   fix = res.SampleLevel(smp,uv,0).rgb;
  }
  fix *= intensity;
+ // The network works in tiles, and the tiles at the frame border have no neighbours on one
+ // side, so the correction there is extrapolated rather than seen. Bicubic upsampling then
+ // rings on top of it. Both show up as the same thing: bright specks and crawling colour in
+ // the corners and along the edges, worst where two borders meet. limit caps how far a
+ // single pixel of correction may go, fade rolls it off over a border band -- fade uses the
+ // smaller of the two distances, so a corner gets both rolloffs and lands hardest.
+ if (limit > 0.0) fix = clamp(fix, -limit, limit);
+ if (fade > 0.0) { float2 e = min(uv, 1.0 - uv) / fade; fix *= saturate(min(e.x, e.y)); }
  uint dbg = pad >> 1;
  if (dbg != 0) {
   float3 d;
@@ -806,6 +814,14 @@ struct State
     // matched none of the documented conventions (100 / 203 / 250).
     std::atomic<float> diffuseWhite { 100.0f };
     std::atomic<float> intensity { 1.0f };
+    // Two limits on the correction itself, applied in compose after the intensity mix. The
+    // network is tiled and the tiles at the frame border are extrapolated on one side, so the
+    // correction there is invented rather than seen; bicubic upsampling rings on top of it. The
+    // report is specks and crawling colour in the corners. limit caps a single pixel of
+    // correction, fade rolls the whole correction off over a border band. Both default to off,
+    // so nothing changes until they are turned up.
+    std::atomic<float> residualLimit { 0.0f };
+    std::atomic<float> residualFade { 0.0f };
     std::atomic<bool> bicubic { true };
     std::atomic<int> debugView { 0 };
     std::atomic<bool> measureNow { false };
@@ -861,7 +877,6 @@ struct State
     // Ten was copied from the ShortFuse route on the strength of its README, which is not a
     // reason to leave a machine-crashing control open that wide. Default stays 1.
     static constexpr UINT kMaxPasses = 3;
-    bool loggedInlineCap = false;
     bool loggedDeviceLost = false;
     bool loggedNoBackBuffer = false;
     // A bridge failure is usually transitory -- a rebuild caught mid-flight -- so it costs a
@@ -988,10 +1003,6 @@ struct State
     UINT depthBinds = 0, depthBestBinds = 0;
     ID3D12Resource *depthBest = nullptr;
     std::atomic<bool> useDepth { true };
-    // 1, not 0. Both runtimes default this field to 1: the NVIDIA DLL sets options+260 to 1
-    // when DLSSNR.DepthInverted is absent, and the AMD port's static initialiser sets
-    // dword_180076E10 = 1. Defaulting to false here quietly inverted the engine's own default.
-    std::atomic<bool> depthInverted { true };
     bool loggedDepth = false;
     ComPtr<ID3D12Resource> composed;
     ComPtr<ID3D12Resource> readbackBase, readbackNr;
@@ -1043,6 +1054,8 @@ void LoadSettings()
     g.passes.store(std::clamp(static_cast<int>(num(L"Passes", 1.0f)), 1,
                              static_cast<int>(State::kMaxPasses)));
     g.intensity.store(num(L"Intensity", g.intensity.load()));
+    g.residualLimit.store(std::max(0.0f, num(L"ResidualLimit", 0.0f)));
+    g.residualFade.store(std::clamp(num(L"EdgeFade", 0.0f), 0.0f, 0.49f));
     g.structure.store(num(L"Structure", g.structure.load()));
     g.skin.store(num(L"Skin", g.skin.load()));
     g.tone.store(num(L"Tone", g.tone.load()));
@@ -1056,7 +1069,6 @@ void LoadSettings()
     g.useMotion.store(flag(L"Motion", g.useMotion.load()));
     g.useHistory.store(flag(L"History", g.useHistory.load()));
     g.useDepth.store(flag(L"Depth", g.useDepth.load()));
-    g.depthInverted.store(flag(L"DepthInverted", g.depthInverted.load()));
     g.useGameGuides.store(flag(L"GameGuides", g.useGameGuides.load()));
     g.noBackBuffer.store(flag(L"NoBackBuffer", g.noBackBuffer.load()));
     g.noBridge.store(flag(L"NoBridge", g.noBridge.load()));
@@ -1109,6 +1121,8 @@ void SaveSettings()
     num(L"Tonemap", g.tonemap.load());
     num(L"Temporal", g.temporalMode.load());
     num(L"Intensity", g.intensity.load());
+    num(L"ResidualLimit", g.residualLimit.load());
+    num(L"EdgeFade", g.residualFade.load());
     num(L"Structure", g.structure.load());
     num(L"Skin", g.skin.load());
     num(L"Tone", g.tone.load());
@@ -1123,7 +1137,6 @@ void SaveSettings()
     flag(L"Motion", g.useMotion.load());
     flag(L"History", g.useHistory.load());
     flag(L"Depth", g.useDepth.load());
-    flag(L"DepthInverted", g.depthInverted.load());
     flag(L"GameGuides", g.useGameGuides.load());
     // Stage / Events / NoBridge / NoBackBuffer are deliberately not written back. They are
     // startup diagnostics, they cannot take effect live, and rewriting them here would quietly
@@ -2309,21 +2322,19 @@ bool InitEngine()
             n += std::snprintf(line + n, sizeof(line) - n, " [%zx]=%.3f", rva,
                                static_cast<double>(At<float>(h, rva)));
         Log("%s", line);
-        // 76e10 is where Depth Inverted is written, and unlike structure and skin nothing has
-        // ever shown it is read. The same test that made skin credible applies: dump the byte
-        // window the engine has just finished initialising. A field the engine owns holds a
-        // plausible default; a field nothing uses holds whatever the loader left. This is
-        // read-only and runs after init, so what it prints is the engine's own state.
+        // Dump the byte window the engine has just finished initialising. A field the engine
+        // owns holds a plausible default; a field nothing uses holds whatever the loader left.
+        // This is read-only and runs after init, so what it prints is the engine's own state.
         n = std::snprintf(line, sizeof(line), "engine bytes 0x76e10..0x76e27:");
         for (size_t rva = 0x76e10; rva <= 0x76e27 && n > 0 && n < static_cast<int>(sizeof(line));
              ++rva)
             n += std::snprintf(line + n, sizeof(line) - n, " %02x",
                                static_cast<unsigned>(At<uint8_t>(h, rva)));
         Log("%s", line);
-        Log("  76e10 is Depth Inverted (written as a 32-bit word, so the first four bytes above). "
-            "If it reads back as something this add-on never wrote, the engine owns it and the "
-            "switch is real. All zero proves nothing on its own -- confirm with the residual: "
-            "flip the switch, press Measure Residual Again, compare the two log lines.");
+        Log("  76e10 is DepthInverted, pinned to the engine's own default of 1 and no longer a "
+            "control. 76e40 UseAutoMask, 76e44 ToneChannels and 76e3c Scale are the fields the "
+            "Engine tab writes; what they read back as here is the engine's own state before "
+            "this add-on touches them.");
         Log("  written by this add-on: 76e30 tone, 76e34 structure, 76e38 skin. If one of those "
             "reads back as something this add-on never wrote, the engine owns it. To find out "
             "whether they change the picture, run the same scene twice with Skin at 0 and at 3 "
@@ -2359,7 +2370,10 @@ bool InitPipeline()
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable = { 2, ranges };
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants = { 0, 0, 8 };
+    // Ten, not eight: compose needs two more than the rest for the residual limit and the
+    // edge fade. A shader declaring a shorter cbuffer over a longer root constant block is
+    // fine, so the other six keep passing eight.
+    params[1].Constants = { 0, 0, 10 };
     D3D12_STATIC_SAMPLER_DESC smp {};
     smp.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     smp.AddressU = smp.AddressV = smp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -3113,8 +3127,12 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         // different distance than it did, which is worse than telling it nothing.
         Barrier(cmd, g.netMotion.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        // MotionScale rides on the same multiplier here as it does on the game's own vectors.
+        // Without this the slider only ever touched games that hand over a velocity buffer, and
+        // the estimated field -- the one that is a guess and most needs turning down -- had no
+        // control at all.
         dispatch(g.flowUpPipeline.Get(), 20, nw, nh, fw, fh,
-                 static_cast<float>(nw) / static_cast<float>(fw));
+                 static_cast<float>(nw) / static_cast<float>(fw) * g.motionScale.load());
         Barrier(cmd, g.netMotion.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
@@ -3343,7 +3361,12 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         At<int>(r, 0x76e20) = g.tonemap.load();
         At<uint8_t>(r, 0x76be0) = g.inlineMode.load() ? 1 : 0;
         At<uint8_t>(r, 0x76e1f) = haveDepth ? 1 : 0;
-        At<UINT>(r, 0x76e10) = g.depthInverted.load() ? 1u : 0u;
+        // 76e10 DepthInverted, pinned to the engine's own default. Both runtimes boot this at
+        // 1 -- the NVIDIA DLL writes options+260 = 1 when the parameter is absent, and the AMD
+        // port's static initialiser sets dword_180076E10 = 1 -- and no run here ever produced a
+        // reading that told the two settings apart. It was a switch that could only be wrong, so
+        // it is written, not exposed.
+        At<UINT>(r, 0x76e10) = 1u;
         At<uint8_t>(r, 0x76e14) = 1;
         At<float>(r, 0x76e30) = i == 0 ? g.tone.load() : 0.0f;
         At<float>(r, 0x76e34) = g.structure.load();
@@ -3466,11 +3489,14 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
     auto ctable = heap->GetGPUDescriptorHandleForHeapStart();
     ctable.ptr += 8 * inc;
     cmd->SetComputeRootDescriptorTable(0, ctable);
-    UINT cdims[8] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
-                    (g.bicubic.load() ? 1u : 0u) | (static_cast<UINT>(dbg) << 1) };
+    UINT cdims[10] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
+                     (g.bicubic.load() ? 1u : 0u) | (static_cast<UINT>(dbg) << 1), 0, 0 };
     std::memcpy(&cdims[5], &kWhite, sizeof(float));
     std::memcpy(&cdims[6], &strength, sizeof(float));
-    cmd->SetComputeRoot32BitConstants(1, 8, cdims, 0);
+    const float rlimit = g.residualLimit.load(), rfade = g.residualFade.load();
+    std::memcpy(&cdims[8], &rlimit, sizeof(float));
+    std::memcpy(&cdims[9], &rfade, sizeof(float));
+    cmd->SetComputeRoot32BitConstants(1, 10, cdims, 0);
     cmd->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
     Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -3502,26 +3528,14 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
 // How many passes to run this frame.
 //
 // Inline means the game is blocked on the GPU until every pass has finished, so N passes add
-// into one stall of N times a single evaluation. That was capped at 3 before, on the theory that
-// the machine went down to the driver timeout. It did not hold: two passes locked the machine,
-// and two evaluations are about 32 ms against a 2 s timeout. A cap on a number that was never
-// the cause is not a guard, so this is a requirement instead -- more than one pass runs in
-// async only, where nothing blocks and a pass that overruns costs a skipped frame.
+// into one stall of N times a single evaluation. That used to force the count back to 1 whenever
+// inline was on -- and inline is the default, so the slider moved, saved, and did nothing on
+// every default install. The reason for the force was the crash theory, and one full engine per
+// pass in VRAM is gone. Cost in inline is framerate, which the overlay colours and says.
 UINT WantedPasses()
 {
-    UINT wanted = static_cast<UINT>(
+    return static_cast<UINT>(
         std::clamp(g.passes.load(), 1, static_cast<int>(State::kMaxPasses)));
-    if (g.inlineMode.load() && wanted > 1)
-    {
-        if (!g.loggedInlineCap)
-        {
-            g.loggedInlineCap = true;
-            Log("Pass Count held at 1: extra passes need Apply On Same Frame off. With it on the "
-                "game blocks on the GPU for every pass in turn.");
-        }
-        wanted = 1;
-    }
-    return wanted;
 }
 
 // One engine, recorded once per pass. Nothing to fall back to and no extra files to install.
@@ -3786,6 +3800,26 @@ void Help(const char *en, const char *pt)
     ImGui::EndTooltip();
 }
 
+// How well each control is actually known, printed next to it. The question "which of these
+// does anything in the game" had to be answered by reading the source or three handoffs, and
+// the honest answer is not the same for any two controls. So it goes in the panel:
+//
+//   MEASURED  a 'measure, residual' reading moved when this changed. It does something.
+//   TRACED    the write reaches a consumer -- a decompiled reader, or our own shader -- but no
+//             reading here has ever separated it from its default.
+//   UNKNOWN   written into a real engine field whose effect nobody here has established.
+//   INERT     swept and measured to change nothing. Kept only to be re-checked elsewhere.
+enum Known { kMeasured, kTraced, kUnknown, kInert };
+void Tag(Known k)
+{
+    static const ImVec4 colours[] { { 0.4f, 1.0f, 0.4f, 1.0f },  { 0.55f, 0.75f, 1.0f, 1.0f },
+                                    { 1.0f, 0.80f, 0.30f, 1.0f }, { 0.6f, 0.6f, 0.6f, 1.0f } };
+    static const char *en[] { "MEASURED", "TRACED", "UNKNOWN", "INERT" };
+    static const char *pt[] { "MEDIDO", "RASTREADO", "DESCONHECIDO", "INERTE" };
+    ImGui::SameLine();
+    ImGui::TextColored(colours[k], "%s", T(en[k], pt[k]));
+}
+
 // Paints a control red or amber while its CURRENT VALUE is one that has caused trouble. Scoped
 // so it can be declared in an if-init and still wrap the widget:
 //     if (Risk r(kDanger, cond); ImGui::SliderFloat(...))
@@ -3874,6 +3908,7 @@ void OnOverlay(effect_runtime *)
              "alimenta.\n\n"
              "sRGB não converte nada -- e enquanto ele estiver selecionado o Branco Difuso não "
              "faz nada, porque a escala é forçada em 1.0.");
+        Tag(kMeasured);
 
         ImGui::BeginDisabled(g.encoding.load() == 0);
         float white = g.diffuseWhite.load();
@@ -3894,6 +3929,7 @@ void OnOverlay(effect_runtime *)
              "para PQ ou scRGB linear. Qualquer outro valor é chute, e uma escala errada aqui "
              "parece a rede reagindo demais ou de menos em tudo ao mesmo tempo.\n\n"
              "Inerte enquanto a Codificação for sRGB.");
+        Tag(kTraced);
 
         float v = g.intensity.load();
         if (ImGui::SliderFloat(T("Overall Intensity", "Intensidade Geral"), &v, 0.0f, 2.0f,
@@ -3908,6 +3944,53 @@ void OnOverlay(effect_runtime *)
              "Isto é uma mistura, não um parâmetro da rede: pode mostrar mais ou menos do que a "
              "rede fez, nunca fazer ela fazer mais. 0.00 dá a mesma imagem que desligar o add-on, "
              "o que faz dele o A/B mais rápido que existe.");
+        Tag(kMeasured);
+
+        v = g.residualLimit.load();
+        if (ImGui::SliderFloat(T("Residual Limit", "Limite do Resíduo"), &v, 0.0f, 0.50f,
+                               v <= 0.0f ? T("off", "desligado") : "%.3f", 0))
+            g.residualLimit.store(v);
+        Help("Caps how far the correction may push a single pixel, in linear units, per channel. "
+             "0 is off and nothing is capped.\n\n"
+             "The network is tiled, and the correction is a few percent of the signal almost "
+             "everywhere -- so a pixel where it is not is a pixel where the network extrapolated "
+             "instead of seeing. Those are the specks. Capping keeps every correction that is in "
+             "the normal range and flattens the outliers.\n\n"
+             "Start around 0.05 and lower it until the specks go. Too low and the whole effect "
+             "flattens, which Residual x8 shows immediately.",
+
+             "Limita o quanto a correção pode empurrar um pixel, em unidades lineares, por canal. "
+             "0 é desligado e nada é limitado.\n\n"
+             "A rede trabalha em blocos, e a correção é uns poucos por cento do sinal em quase "
+             "tudo -- então um pixel onde ela não é isso é um pixel onde a rede extrapolou em vez "
+             "de enxergar. São esses os pontinhos. Limitar mantém toda correção na faixa normal e "
+             "achata os fora da curva.\n\n"
+             "Comece perto de 0.05 e baixe até os pontinhos sumirem. Baixo demais achata o efeito "
+             "inteiro, o que o Resíduo x8 mostra na hora.");
+        Tag(kTraced);
+
+        v = g.residualFade.load();
+        if (ImGui::SliderFloat(T("Edge Fade", "Suavizar Bordas"), &v, 0.0f, 0.25f,
+                               v <= 0.0f ? T("off", "desligado") : "%.3f", 0))
+            g.residualFade.store(v);
+        Help("Rolls the correction off to nothing over a band at the frame border, given as a "
+             "fraction of the frame. 0.02 is a 2% band -- about 20 pixels at 1080p. 0 is off.\n\n"
+             "The tiles at the border have no neighbour on one side, so what the network returns "
+             "there is invented rather than seen, and bicubic upsampling rings on top of it. That "
+             "is the glitching in the corners: a corner is inside two border bands at once, so it "
+             "gets both rolloffs and is the first place to go wrong and the first place this "
+             "fixes.\n\n"
+             "Cheaper than turning the whole effect down, because it only touches the band.",
+
+             "Vai apagando a correção até zero numa faixa na borda do quadro, dada como fração do "
+             "quadro. 0.02 é uma faixa de 2% -- uns 20 pixels em 1080p. 0 é desligado.\n\n"
+             "Os blocos da borda não têm vizinho de um lado, então o que a rede devolve ali é "
+             "inventado, não visto, e o upsample bicúbico ainda toca sino em cima. É isso o "
+             "glitch nos cantos: um canto está dentro de duas faixas de borda ao mesmo tempo, "
+             "então leva as duas quedas -- é o primeiro lugar a estragar e o primeiro que isto "
+             "conserta.\n\n"
+             "Mais barato que baixar o efeito inteiro, porque só toca na faixa.");
+        Tag(kTraced);
 
         v = g.structure.load();
         if (ImGui::SliderFloat(T("Structure Intensity", "Intensidade de Estrutura"), &v, 0.0f,
@@ -3923,6 +4006,7 @@ void OnOverlay(effect_runtime *)
              "Medido no God of War 2: em 0 o resíduo despenca 25x, o que é a prova de que o que "
              "chega na tela vem da rede. De 1 para 3 a magnitude cresce uns 6% e a razão de "
              "estrutura vai de 0,18 para 0,28. Satura; 3 é o fim útil dele.");
+        Tag(kMeasured);
 
         v = g.skin.load();
         if (ImGui::SliderFloat(T("Skin Structure Strength", "Força de Estrutura na Pele"), &v,
@@ -3940,6 +4024,7 @@ void OnOverlay(effect_runtime *)
              "-1.00 é a sentinela com que o próprio motor liga, e é a evidência mais forte de "
              "que alguém lê esse campo: significa automático. Escrever 1.00 por cima, o que este "
              "add-on fazia no início, desliga o automático antes de você tocar no slider.");
+        Tag(kMeasured);
     }
 
     if (ImGui::CollapsingHeader(T("Performance", "Desempenho"), ImGuiTreeNodeFlags_DefaultOpen))
@@ -3973,6 +4058,7 @@ void OnOverlay(effect_runtime *)
              "dois quadros atrás. Nada trava, e uma avaliação que estoura custa um quadro pulado "
              "em vez de um congelamento. É o modo para qualquer coisa cara -- Escala de "
              "Resolução acima de 0.50, ou mais de um passe.");
+        Tag(kMeasured);
 
         float v = g.scale.load();
         if (Risk r(v > 1.0f && g.inlineMode.load() ? kDanger : kWarn, v > 0.50f);
@@ -3992,6 +4078,7 @@ void OnOverlay(effect_runtime *)
              "recebe um pixel em resolução cheia, então a coisa mais fina em que ela consegue "
              "agir tem dois pixels de tela de largura, e o que volta é cor, tom e sombreamento "
              "de larga escala. É essa a razão inteira de o efeito parecer um filtro de cor.");
+        Tag(kMeasured);
         if (g.outWidth != 0)
         {
             const UINT wantW = std::max<UINT>(64u, static_cast<UINT>(g.outWidth * v + 0.5f));
@@ -4028,6 +4115,11 @@ void OnOverlay(effect_runtime *)
         // machine down was almost certainly a second full engine in VRAM, and that is gone --
         // one module is now recorded N times. So this follows the same rule Resolution Scale
         // already does: let it move, colour it, say what it costs.
+        //
+        // Until this session WantedPasses still forced the count back to 1 whenever inline was
+        // on -- and inline is the default. The slider moved, saved to the ini, and did nothing
+        // on a default install. That force is gone; this is the fix for "Pass Count does not
+        // work".
         int passes = g.passes.load();
         const bool passDanger = g.inlineMode.load() && passes > 1 && sc > 1.0f;
         if (Risk r(passDanger ? kDanger : kWarn, passes > 1);
@@ -4062,6 +4154,7 @@ void OnOverlay(effect_runtime *)
              "A única leitura já tirada disto foi Passes=3 dando resíduo exatamente zero. "
              "Aumente para medir, não para jogar: rode uma cena em 1 e em 2 e compare a linha "
              "'measure, residual' no log.");
+        Tag(kTraced);
         if (passDanger)
             Note(kDanger, T("More than one pass at this Resolution Scale, on Same-frame timing, "
                             "is the combination that reaches the driver timeout. Switch Timing "
@@ -4092,6 +4185,7 @@ void OnOverlay(effect_runtime *)
              "frequência -- cor e brilho -- e isso sozinho já bastava para o efeito inteiro "
              "parecer um filtro de cor. Catmull-Rom mantém o resto.\n\n"
              "Desligue se arestas duras ficarem com halo. Nenhum efeito em Escala 1.00.");
+        Tag(kMeasured);
     }
 
     if (ImGui::CollapsingHeader(T("Guides", "Guias"), ImGuiTreeNodeFlags_DefaultOpen))
@@ -4169,6 +4263,7 @@ void OnOverlay(effect_runtime *)
              "jogo mais liga, copia cada um uma vez por quadro e leva pela ponte até o device da "
              "rede.\n\n"
              "Desligue para voltar a movimento estimado e nenhuma profundidade.");
+        Tag(kMeasured);
 
         bool depth = g.useDepth.load();
         if (ImGui::Checkbox(T("Depth", "Profundidade"), &depth))
@@ -4184,31 +4279,12 @@ void OnOverlay(effect_runtime *)
              "Profundidade é o que faz a rede parar de chutar geometria. Compra principalmente "
              "estabilidade e desoclusão, não textura mais afiada -- não espere que este "
              "transforme a imagem.");
+        Tag(kTraced);
 
-        bool inverted = g.depthInverted.load();
-        if (ImGui::Checkbox(T("Depth Inverted", "Profundidade Invertida"), &inverted))
-        {
-            g.depthInverted.store(inverted);
-            Log("menu: depth inverted %s", inverted ? "on" : "off");
-        }
-        Help("Whether near is 1.0 and far is 0.0, which is the reversed-Z convention most modern "
-             "engines use. The buffer does not state which way round it is, so this is a guess "
-             "you check: get it wrong and the engine reads the scene inside out.\n\n"
-             "Confirmed real. 76e10 is read from ten places in the runtime and its static "
-             "initialiser sets it to 1, which matches the NVIDIA DLL defaulting "
-             "DLSSNR.DepthInverted to 1 when the parameter is absent. It now defaults to on for "
-             "the same reason -- this add-on used to default it off, which inverted the engine's "
-             "own default on every run.",
-
-             "Se perto é 1.0 e longe é 0.0, que é a convenção Z-invertido que a maioria dos "
-             "motores modernos usa. O buffer não diz de que lado ele está, então isto é um chute "
-             "se confere: errado, o motor lê a cena do avesso.\n\n"
-             "Confirmado real. O 76e10 é lido de dez lugares no runtime e o inicializador "
-             "estático dele põe 1, o que bate com a DLL da NVIDIA usando 1 como padrão de "
-             "DLSSNR.DepthInverted quando o parâmetro não vem. Agora vem ligado pelo mesmo "
-             "motivo -- este add-on vinha desligado, o que invertia o padrão do motor toda "
-             "execução.");
-
+        // Depth Inverted used to be a checkbox here. It is gone: 76e10 is pinned to the
+        // engine's own default of 1 in the record path. No run on either target ever
+        // produced a reading that told the two settings apart, so the only thing the switch
+        // could do was be set wrong.
         bool hist = g.useHistory.load();
         if (Risk r(kWarn, hist); ImGui::Checkbox(T("History", "Histórico"), &hist))
         {
@@ -4231,6 +4307,7 @@ void OnOverlay(effect_runtime *)
              "Experimental: escreve um ponteiro no runtime num offset fixo, e um ponteiro errado "
              "ali congela o jogo em vez de falhar. Se a imagem borrar ou o jogo parar de "
              "responder, esta é a primeira coisa a desligar.");
+        Tag(kTraced);
         if (hist)
             Note(kWarn, T("Experimental -- first thing to turn off if the game hangs or smears.",
                           "Experimental -- primeira coisa a desligar se o jogo congelar ou "
@@ -4255,25 +4332,37 @@ void OnOverlay(effect_runtime *)
                  "velocidade para ler. É errado onde pixels se movem sem a geometria se mover: "
                  "reflexos, fogo, sombras em movimento, e qualquer coisa que aparece de trás de "
                  "outra. A rota da NVIDIA faz o mesmo aqui.");
+        Tag(kMeasured);
 
-        if (mv && g.gameMotionActive)
+        if (mv)
         {
             float v = g.motionScale.load();
             if (ImGui::SliderFloat(T("Motion Scale", "Escala do Movimento"), &v, -2.0f, 2.0f,
                                    "%.2f", 0))
                 g.motionScale.store(v);
-            Help("The game's vectors are taken as a UV-space delta and multiplied up to pixels. "
-                 "Sign and magnitude are engine convention, not something the buffer states, so "
-                 "this is the knob: -1.00 flips the direction, 0.50 suits a buffer in NDC.\n\n"
+            Help("How much motion the network is told there is. It multiplies the field on its "
+                 "way into the engine, whichever field that is -- the game's own velocity buffer "
+                 "or the estimated one. 0.00 says nothing moved, 1.00 is as measured, -1.00 "
+                 "flips the direction, 0.50 suits a buffer stored in NDC.\n\n"
+                 "It used to apply to the game's vectors only, and it was hidden on every target "
+                 "without them -- so the estimated field, the one that is a guess and the one "
+                 "most in need of turning down, had no control at all. Both go through it now.\n\n"
                  "Set it by eye: put Debug View on 'Motion vectors' and pan the camera. The field "
-                 "should follow the camera steadily. Shimmer means it is wrong.",
+                 "should follow the camera steadily. Shimmer means it is too high -- turn it down "
+                 "rather than turning motion off, which is the blunt version of the same thing.",
 
-                 "Os vetores do jogo são tomados como um delta em espaço UV e multiplicados até "
-                 "pixels. Sinal e magnitude são convenção do motor, não algo que o buffer "
-                 "declara, então este é o botão: -1.00 inverte a direção, 0.50 serve para um "
-                 "buffer em NDC.\n\n"
+                 "Quanto movimento a rede é informada que existe. Multiplica o campo no caminho "
+                 "para o motor, seja qual for o campo -- o buffer de velocidade do próprio jogo "
+                 "ou o estimado. 0.00 diz que nada se moveu, 1.00 é como foi medido, -1.00 "
+                 "inverte a direção, 0.50 serve para um buffer guardado em NDC.\n\n"
+                 "Antes valia só para os vetores do jogo, e ficava escondido em todo alvo sem "
+                 "eles -- então o campo estimado, que é um chute e é o que mais precisa ser "
+                 "baixado, não tinha controle nenhum. Agora os dois passam por ele.\n\n"
                  "Ajuste no olho: ponha a Visão de Debug em 'Vetores de movimento' e gire a "
-                 "câmera. O campo tem que acompanhar a câmera, firme. Cintilar significa errado.");
+                 "câmera. O campo tem que acompanhar a câmera, firme. Cintilar quer dizer alto "
+                 "demais -- baixe, em vez de desligar o movimento, que é a versão bruta da mesma "
+                 "coisa.");
+            Tag(kTraced);
         }
         if (mv && !g.gameMotionActive)
         {
@@ -4313,6 +4402,7 @@ void OnOverlay(effect_runtime *)
                  "contraste.\n\n"
                  "Só é usado quando o movimento é estimado. Num jogo que entrega vetores de "
                  "velocidade de verdade isto não faz nada, por isso fica escondido.");
+            Tag(kMeasured);
             v = g.flowRatio.load();
             if (ImGui::SliderFloat(T("Flow Accept Ratio", "Razão de Aceite do Fluxo"), &v, 0.50f,
                                    1.00f, "%.2f", 0))
@@ -4348,6 +4438,7 @@ void OnOverlay(effect_runtime *)
                  "A sonda de fluxo no quadro 300 imprime o que um par realmente fez: procure a "
                  "porcentagem de blocos reportados parados.\n\n"
                  "Só é usado quando o movimento é estimado.");
+            Tag(kMeasured);
         }
     }
 
@@ -4389,6 +4480,7 @@ void OnOverlay(effect_runtime *)
              "Portão de Contraste do Fluxo.\n\n"
              "Profundidade x500: multiplicada porque a profundidade do PS2 chega a uns 0,002 e é "
              "preto puro fora isso. A Intensidade Geral escala esta visão.");
+        Tag(kMeasured);
 
         if (ImGui::Button(T("Measure Residual Again", "Medir Resíduo de Novo")))
         {
@@ -4412,12 +4504,22 @@ void OnOverlay(effect_runtime *)
     if (ImGui::CollapsingHeader(T("Engine", "Motor")))
     {
         ImGui::TextDisabled(T("The engine's own option struct. Every offset below came from "
-                              "decompiling the runtime's ini reader, not from guesswork.",
+                              "decompiling the runtime's ini reader, not from guesswork -- but "
+                              "an offset being real says nothing about what writing it does. "
+                              "The tag after each control says how far that is actually known.",
                               "A struct de opções do próprio motor. Todo offset abaixo veio de "
-                              "decompilar o leitor de ini do runtime, não de chute."));
+                              "decompilar o leitor de ini do runtime, não de chute -- mas um "
+                              "offset ser real não diz nada sobre o que escrever nele faz. A "
+                              "etiqueta depois de cada controle diz até onde isso é sabido."));
+        ImGui::TextDisabled(T("Every default here is the engine's own, so an untouched tab "
+                              "changes nothing.",
+                              "Todo padrão aqui é o do próprio motor, então esta aba intocada "
+                              "não muda nada."));
+        ImGui::Separator();
 
         bool mask = g.autoMask.load() != 0;
-        if (ImGui::Checkbox(T("Character Mask", "Máscara de Personagem"), &mask))
+        if (Risk r(kDanger, !mask);
+            ImGui::Checkbox(T("Character Mask", "Máscara de Personagem"), &mask))
         {
             g.autoMask.store(mask ? 1 : 0);
             Log("menu: automask %d", mask ? 1 : 0);
@@ -4435,6 +4537,16 @@ void OnOverlay(effect_runtime *)
              "O padrão é 1 e este add-on nunca escrevia esse campo, então sempre esteve ligado "
              "por omissão. Desligar é um teste de verdade: se a Pele parar de fazer até os 1,5% "
              "medidos, era a máscara que carregava aquilo.");
+        Tag(kMeasured);
+        if (!mask)
+            Note(kDanger, T("Off removes the effect from the whole frame, not just from "
+                            "characters -- seen in game. The engine derives its structure and "
+                            "tone parameters through this mask, so with it off there is nothing "
+                            "left to derive them from. Turn it back on unless you are measuring.",
+                            "Desligado tira o efeito do quadro inteiro, não só dos personagens "
+                            "-- visto no jogo. O motor deriva os parâmetros de estrutura e tom "
+                            "através desta máscara, então com ela desligada não sobra de onde "
+                            "derivar. Religue, a não ser que esteja medindo."));
 
         int tmode = g.temporalMode.load();
         if (ImGui::Combo(T("Temporal", "Temporal"), &tmode,
@@ -4462,6 +4574,7 @@ void OnOverlay(effect_runtime *)
              "apontar.\n\n"
              "Automático liga sempre que existe campo de movimento, que é o comportamento "
              "antigo. Desligado e Ligado são explícitos, para A/B.");
+        Tag(kTraced);
 
         int tone = g.tonemap.load();
         if (ImGui::SliderInt(T("Tonemap", "Tonemap"), &tone, -1, 3, "%d", 0))
@@ -4474,6 +4587,7 @@ void OnOverlay(effect_runtime *)
              "Tonemap, em 76e20. O padrão do próprio motor é -1, ou seja, deixa ele decidir. "
              "Este add-on forçava 0 na inicialização, o que ninguém escolheu e nunca foi medido "
              "contra nada. Agora segue este controle, e este controle vem com o -1 do motor.");
+        Tag(kUnknown);
 
         int ch = g.toneChannels.load();
         if (ImGui::SliderInt(T("Tone Channels", "Canais de Tom"), &ch, 0, 3, "%d", 0))
@@ -4487,6 +4601,7 @@ void OnOverlay(effect_runtime *)
              "que existia até o leitor ser decompilado. Padrão 0. O que ela faz é desconhecido "
              "-- está aqui para ser testada em A/B contra o resíduo, como tudo que tem efeito "
              "desconhecido.");
+        Tag(kUnknown);
 
         float es = g.engineScale.load();
         if (ImGui::SliderFloat(T("Engine Scale", "Escala do Motor"), &es, 0.0f, 1.0f, "%.5f", 0))
@@ -4502,43 +4617,53 @@ void OnOverlay(effect_runtime *)
              "de ini do motor chamada Scale, e 0,03125 é exatamente 1/32.\n\n"
              "Nada a ver com a Escala de Resolução em Desempenho, que é nossa. Nada se sabe "
              "sobre o que esta escala. Mexa em passos pequenos e olhe o resíduo.");
+        Tag(kUnknown);
+        ImGui::SameLine();
+        // A 0..1 slider at five decimals cannot be dragged back onto exactly 1/32, and this is a
+        // field nobody knows the effect of -- so leaving it a hair off its default is a way to
+        // change the picture and never find out why.
+        if (ImGui::SmallButton(T("Reset to 1/32", "Voltar para 1/32")))
+        {
+            g.engineScale.store(0.03125f);
+            Log("menu: engine scale back to the default 0.03125");
+        }
 
         ImGui::Separator();
-        ImGui::TextDisabled(T("Model A / B / C: the AMD port did not implement it.",
-                              "Model A / B / C: o porte AMD não implementou."));
-        Help("Model A/B/C is real and it does change the picture -- on NVIDIA. It is "
-             "DLSSNR.Style, an int at options offset 236 in nvngx_dlssnr.dll, read as 0, 1 or 2.\n\n"
-             "It is NOT three networks. That DLL carries one weight set: 156 distinct block* "
-             "tensor names, each appearing exactly once. So Style picks a behaviour over the same "
-             "weights, which means it is portable in principle -- it needs no data we do not "
-             "already have.\n\n"
-             "The AMD port simply skipped it. Its option block is mapped field by field and every "
-             "slot is accounted for: 76e10 DepthInverted, 76e1c Enabled, 76e1d Temporal, 76e1e "
-             "UseFsrInputs, 76e1f UseDepth, 76e20 Tonemap, 76e28 weight-picker UI state, 76e30 "
-             "LocalTone, 76e34 LocalStructure, 76e38 SkinStructure, 76e3c Scale, 76e40 "
-             "UseAutoMask, 76e44 ToneChannels. The porter transcribed Style's neighbours -- "
-             "UseAutoMask at +240 and SkinStructure at +244, sentinel and all -- and left out "
-             "+236.\n\n"
-             "So writing a Style value here would land in a field nothing reads. Getting it "
-             "working means porting what Style does inside the network, which starts with "
-             "tracing what consumes options+236 in the NVIDIA DLL.",
+        ImGui::TextDisabled(T("Model A / B / C: not portable to this runtime. Closed.",
+                              "Model A / B / C: não é portável para este runtime. Encerrado."));
+        Help("Model A/B/C is real and it does change the picture -- on NVIDIA. It is DLSSNR.Style, "
+             "an int at options offset 236 in nvngx_dlssnr.dll. Style 0 is Model A and is the "
+             "literal baseline: it has no table entry and overwrites nothing. Style 1 and 2 pick "
+             "a row out of an 8x68-byte table and lerp fourteen floats into options+292..+344, "
+             "scaled by LocalToneStrength. Three of those fourteen are non-zero across both rows. "
+             "It is one weight set, not three networks.~~"
+             "It cannot be ported here, and this was chased to the end rather than assumed. The "
+             "three constants -0.10, -0.25 and -0.15 do not exist in the AMD binary. The AMD "
+             "option block is mapped field by field and no slot is Style. Nothing in that binary "
+             "writes a span of fourteen floats. And the HIP kernels on the appearance path are "
+             "too small to take them: the style vector is 56 bytes, while k_final_head and "
+             "k_post_block each receive a 32-byte struct by value.~~"
+             "Whoever did the port compiled the network with the neutral style baked in. The "
+             "kernels are precompiled GCN code objects inside the DLL with no source, so adding "
+             "the fields means recompiling them. Model A is the only one that exists on this "
+             "side. Not reopening it.",
 
              "Model A/B/C é real e muda a imagem sim -- na NVIDIA. É o DLSSNR.Style, um int no "
-             "offset 236 da struct de opções do nvngx_dlssnr.dll, lido como 0, 1 ou 2.\n\n"
-             "NÃO são três redes. Aquela DLL carrega um conjunto de pesos só: 156 nomes de "
-             "tensor block* distintos, cada um aparecendo exatamente uma vez. Então o Style "
-             "escolhe um comportamento sobre os mesmos pesos, o que significa que é portável em "
-             "princípio -- não precisa de nenhum dado que a gente já não tenha.\n\n"
-             "O porte AMD simplesmente não implementou. O bloco de opções dele está mapeado "
-             "campo a campo e todo slot está explicado: 76e10 DepthInverted, 76e1c Enabled, "
-             "76e1d Temporal, 76e1e UseFsrInputs, 76e1f UseDepth, 76e20 Tonemap, 76e28 estado da "
-             "UI do seletor de pesos, 76e30 LocalTone, 76e34 LocalStructure, 76e38 "
-             "SkinStructure, 76e3c Scale, 76e40 UseAutoMask, 76e44 ToneChannels. O portador "
-             "transcreveu os vizinhos do Style -- UseAutoMask no +240 e SkinStructure no +244, "
-             "com sentinela e tudo -- e deixou o +236 de fora.\n\n"
-             "Ou seja, escrever um valor de Style aqui cairia num campo que ninguém lê. Fazer "
-             "funcionar significa portar o que o Style faz dentro da rede, e isso começa "
-             "rastreando o que consome options+236 na DLL da NVIDIA.");
+             "offset 236 da struct de opções do nvngx_dlssnr.dll. Style 0 é o Model A e é o "
+             "baseline literal: não tem entrada na tabela e não sobrescreve nada. Style 1 e 2 "
+             "pegam uma linha de uma tabela de 8x68 bytes e interpolam catorze floats para "
+             "options+292..+344, escalados pelo LocalToneStrength. Três desses catorze são "
+             "diferentes de zero nas duas linhas. É um conjunto de pesos só, não três redes.~~"
+             "Não dá para portar para cá, e isso foi perseguido até o fim, não assumido. As três "
+             "constantes -0,10, -0,25 e -0,15 não existem no binário AMD. O bloco de opções do "
+             "AMD está mapeado campo a campo e nenhum slot é Style. Nada naquele binário escreve "
+             "uma sequência de catorze floats. E os kernels HIP do caminho de aparência não têm "
+             "espaço: o vetor de style são 56 bytes, e o k_final_head e o k_post_block recebem um "
+             "struct de 32 bytes por valor.~~"
+             "Quem portou compilou a rede com o style neutro embutido. Os kernels são code "
+             "objects GCN pré-compilados dentro da DLL, sem fonte, então acrescentar os campos "
+             "significa recompilar os kernels. Model A é o único que existe deste lado. Não "
+             "vamos reabrir.");
     }
 
     if (ImGui::CollapsingHeader(T("Advanced", "Avançado")))
@@ -4556,6 +4681,7 @@ void OnOverlay(effect_runtime *)
              "baseline, o que bate com a nota do RenoDX de que Global Tone não é visível no "
              "caminho NGX recuperado. Está aqui para ser reconferido num alvo diferente, não "
              "para ser usado. Deixado em 1.");
+        Tag(kInert);
 
         ImGui::Text(T("Engine offsets written: 76e30 tone, 76e34 structure, 76e38 skin",
                       "Offsets escritos no motor: 76e30 tom, 76e34 estrutura, 76e38 pele"));
@@ -4658,6 +4784,33 @@ void OnOverlay(effect_runtime *)
                           "Um controle só fica colorido pelo valor que está segurando, então "
                           "baixar o valor limpa a cor. Passe o mouse em qualquer (?) para o que "
                           "um controle faz e o que foi medido sobre ele."));
+    // The other legend. "Which of these actually does something in the game" was a question you
+    // could only answer by reading the source, so the answer is printed next to each control and
+    // spelled out once here.
+    ImGui::TextDisabled(T("Tags:", "Etiquetas:"));
+    ImGui::SameLine();
+    Tag(kMeasured);
+    ImGui::SameLine();
+    ImGui::TextDisabled(T("a residual reading moved when it changed.", "uma leitura de resíduo "
+                          "mudou quando ele mudou."));
+    ImGui::TextDisabled(" ");
+    ImGui::SameLine();
+    Tag(kTraced);
+    ImGui::SameLine();
+    ImGui::TextDisabled(T("reaches a consumer, never separated from its default here.",
+                          "chega num consumidor, mas nunca foi separado do padrão dele aqui."));
+    ImGui::TextDisabled(" ");
+    ImGui::SameLine();
+    Tag(kUnknown);
+    ImGui::SameLine();
+    ImGui::TextDisabled(T("a real engine field whose effect nobody here has established.",
+                          "um campo real do motor cujo efeito ninguém aqui estabeleceu."));
+    ImGui::TextDisabled(" ");
+    ImGui::SameLine();
+    Tag(kInert);
+    ImGui::SameLine();
+    ImGui::TextDisabled(T("swept and measured to change nothing.",
+                          "varrido e medido como não mudando nada."));
 
     ImGui::Separator();
     if (ImGui::Button(T("Save Settings", "Salvar Ajustes")))
