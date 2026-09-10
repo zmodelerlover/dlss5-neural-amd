@@ -308,13 +308,89 @@ pré-compilados dentro da DLL, sem fonte. Adicionar as entradas exigiria recompi
 
 ---
 
-## 8. Arquivos e estado
+## 8. Documentação e release — o que foi publicado
 
-### `D:\dlss5` (working tree)
-- `src/neural/neural.cpp` — todo o trabalho desta sessão
-- `build.ps1` — ganhou `/utf-8` (necessário para o português no painel)
+Tudo commitado no branch `master` e empurrado para o remote **`preview`**
+(`dlss5-neural-amd-preview`). **`origin` — o repo público — continua em `ac6d8cb` e não recebeu
+nada.**
 
-Build limpo. `tools\check_shaders.ps1` passa nos 8 shaders.
+```
+da8c72f  Split the quick start into a DirectX 11 path and a PS2 emulator path
+7d2c2a1  Say plainly that the target table is cosmetic and add ETS2 to it
+8988e6e  Refocus the readme on D3D11 games and emulators
+b1f039f  Correct the quick start for D3D11 and tighten the settings docs
+5dec807  Say plainly that tokens are the metered cost
+9feb048  Add a Ko-fi section and the GitHub sponsor button
+4cff54a  State plainly that Model A/B/C will not be implemented
+7bd28f2  Date the v0.3.0 entry                          <- a tag v0.3.0 aponta AQUI
+a9009fb  Document the runtime option struct and the v0.3.0 changes
+356f780  Rework the overlay and the pass path, and correct four engine defaults
+```
+
+**A tag `v0.3.0` ficou em `7bd28f2`, oito commits atrás do topo.** Não pega o "will not be
+implemented", nem a seção de doação, nem a reescrita do README. Decidir se move ou se a próxima
+tag cobre.
+
+### `CHANGELOG.md` (novo, na raiz)
+
+Entrada `v0.3.0` escrita **contra o que está público**, não contra a sessão anterior — então
+cobre as sessões 2 e 3 juntas. Tem "If you are upgrading" no topo (começa desligado; pode apagar
+`pass2..10.dll`) e "Known, and not fixed" no fim.
+
+### README — refocado em DX11 + emuladores
+
+O foco declarado do projeto mudou nesta sessão: **jogos Direct3D 11 e emuladores**. O README
+inteiro foi reescrito em cima disso, e o Quick start está separado em **Case 1 — DirectX 11
+games** e **Case 2 — PS2 emulator (PCSX2)**, com os arquivos e o "ligar" fora das abas porque são
+idênticos nos dois.
+
+Alvos rodados, agora declarados no topo: **ETS2** (o melhor resultado, comparável ao mesmo
+network na NVIDIA), **PCSX2**, **NFS 2015**.
+
+Também tem seção `## Keeping this going` com botão Ko-fi (`T6T213OVFE`) e `.github/FUNDING.yml`
+para o botão Sponsor. O `<script>` do widget Ko-fi **não funciona** em README do GitHub — é
+sanitizado — então é o botão estático.
+
+### O achado que mais importava para adoção
+
+**A tabela `kTargets` é puramente cosmética.** `tier` e `scale` só vão para o log, `note` só
+aparece no status, e nada é gated por ela. Um jogo fora da lista roda idêntico.
+
+Mas o README dizia *"adding a game is one row in a table"*, o que fazia parecer whitelist — quem
+tem qualquer outro jogo concluiria que precisa clonar, editar C++ e recompilar, e desistiria
+antes de tentar. Corrigido no README **e** com um comentário no próprio `kTargets` avisando para
+não ler como whitelist. ETS2 adicionado à tabela e os sufixos "Direct3D 12" removidos das notas,
+que contradiziam as instruções novas.
+
+**`eurotrucks2.exe` é chute** para a linha do ETS2. Se estiver errado o único efeito é o painel
+dizer *uncatalogued target* — não quebra nada.
+
+### Erros de README corrigidos
+
+Todos eram afirmações que ficaram falsas depois das sessões 2 e 3:
+
+- O passo 5 mandava usar **D3D12** e dizia que `Renderer = 3` (D3D11) "é o problema, não a
+  solução". Invertido.
+- O passo 6 dizia que **nada é salvo entre execuções**. Existe Save Settings.
+- Não avisava que **começa desligado** — a primeira coisa que um leigo precisa saber.
+- A seção "What the network can actually be fed" terminava em *"the depth buffer is empty, and
+  that is the wall"*. Conclusão da sessão 2 que a própria sessão 2 resolveu. 68 linhas → 41.
+- `dlss5-neural.addon64 73728` no "deu certo se a saída for assim" — o build tem 181248.
+- Três linhas de Troubleshooting obsoletas, incluindo uma que ensinava a copiar e renomear
+  `pass2.dll`, que não existe mais.
+- `src/session/session.cpp` descrito como "small session logger" — é o harness da ponte.
+
+**Nota de método:** o verificador de âncoras que eu usava estava errado — colapsava espaços, e o
+GitHub troca **cada** espaço por um hífen, então um travessão removido deixa dois hífens no slug.
+Os 8 links internos conferem contra os 24 headings com o verificador corrigido.
+
+---
+
+## 9. Arquivos e estado
+
+### `D:\dlss5`
+Working tree limpa, tudo commitado. Os três alvos (`neural`, `probe`, `session`) compilam do
+zero; `tools\check_shaders.ps1` passa nos 8 shaders.
 
 ### `D:\SteamLibrary\steamapps\common\Need for Speed`
 `dlss5-neural.addon64` atualizado. `dlss5-neural.ini` com `Tone=1`.
@@ -323,28 +399,38 @@ Build limpo. `tools\check_shaders.ps1` passa nos 8 shaders.
 ### `D:\pcsx2-v2.8.2-test`
 `dlss5-neural.addon64` atualizado. Mesmos `pass2/3` descartáveis.
 
-### Referências usadas na investigação (não são do projeto, não mexer)
-- `C:\Users\claudinhh\Desktop\renodx-dlss (1).addon64` — de onde saiu a tabela de UI do RenoDX
-- `D:\SteamLibrary\steamapps\common\NBA 2K27\nvngx_dlssnr.dll` — de onde saiu o Style inteiro
-- IDBs gerados ao lado dos dois binários (`.i64`)
+### Referências da investigação (não são do projeto, não mexer)
+- `C:\Users\claudinhh\Desktop\renodx-dlss (1).addon64` — a tabela de UI do RenoDX
+- `D:\SteamLibrary\steamapps\common\NBA 2K27\nvngx_dlssnr.dll` — o Style inteiro
+- IDBs (`.i64`) gerados ao lado dos dois binários
 
 ---
 
-## 9. O que fazer em seguida, em ordem de valor
+## 10. O que fazer em seguida, em ordem de valor
 
-1. **Olhar o Diffuse White na tela.** É a correção de maior impacto visual desta sessão (§5.1) e
-   ninguém viu o resultado ainda.
-2. **Medir os cinco controles novos** com `measure, residual`: Character Mask, Engine Scale,
-   Temporal explícito, Tone Channels, Depth Inverted no padrão certo. Uma tarde, e responde
-   perguntas de verdade.
-3. **Confirmar que `Passes=2` não trava mais.** Async, mesma cena, 1 contra 2.
-4. **Medir os guides em gameplay** — continua pendente da sessão 2, e só quem joga consegue.
-5. **Conferir os acentos no painel** em português.
-6. **Nada foi commitado.**
+1. **Olhar o Diffuse White na tela.** É a correção de maior impacto visual (§5.1) e ninguém viu o
+   resultado ainda. Deveria ser feito antes de o público ver o release.
+2. **Conferir os acentos do painel em português.** Se a fonte do ReShade não tiver os glifos
+   Latin-1, aparecem quadrados. Também vale conferir antes de publicar.
+3. **Medir os cinco controles novos** com `measure, residual`: Character Mask, Engine Scale,
+   Temporal explícito, Tone Channels, Depth Inverted no padrão certo.
+4. **Confirmar que `Passes=2` não trava mais.** Async, mesma cena, 1 contra 2.
+5. **Medir os guides em gameplay** — pendente desde a sessão 2, e só quem joga consegue.
+6. **Decidir a tag `v0.3.0`** (§8) e se/quando `origin` recebe.
 
-## 10. O que não perseguir
+## 11. O que não perseguir
 
-- **Model A/B/C.** Encerrado nesta sessão com evidência completa (§7).
+- **Model A/B/C.** Encerrado com evidência completa (§7), e declarado como *will not be
+  implemented* no README e no CHANGELOG. Motivo público: o porte AMD é closed source e os kernels
+  são code objects pré-compilados.
+- **Rodar a rede numa GPU diferente da do jogo.** Perguntado por uma usuária (jogo numa placa,
+  network na 9070 XT). O add-on casa o LUID do adaptador do jogo porque o transporte é textura
+  compartilhada e fence, e isso só funciona entre devices da **mesma** GPU física. Cross-adapter
+  exigiria readback para RAM e re-upload por PCIe todo frame nos dois sentidos. Anotado como
+  pedido, não como plano.
+- **Injetar o ReShade dentro do Lossless Scaling / Magpie.** Nesse ponto só existe a imagem final
+  capturada — não há depth para achar. O caminho certo é injetar no jogo; o LS captura o frame já
+  processado depois.
 - **Ray Reconstruction.** Sem ray tracing não há ruído para reconstruir.
 - **Igualar o vídeo da NVIDIA com a rede sozinha.** Boa parte vem da reconstrução temporal
   (DLAA/SR), que é outra DLL e não tem porte AMD.
