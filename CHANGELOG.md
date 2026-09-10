@@ -145,6 +145,28 @@ That turned up fields nothing had ever written:
   never published. **Model A is the only model that exists on this side.** Written up in the
   README so the question stays closed rather than being rediscovered every few months.
 
+### Fixed after the first outside review
+
+Reported by @dumbjack, read straight out of the source. All five were confirmed present before
+being fixed.
+
+- **Two data races.** `historyValid` is cleared by the overlay's History checkbox and read and
+  set by present, and the overlay does not hold the lock at that point. `depthEvents` is raised
+  on the bind event, off the lock, and read from present and the overlay. Both are atomic now.
+- **A depth target that could dangle.** The best depth-stencil candidate was kept as a bare
+  pointer to a resource the *game* owns. A level load, a resize or a device reset frees it, and
+  the depth path was still calling `GetDesc`, two barriers and a `CopyResource` against it on a
+  later frame. It holds a reference of its own now -- **and it is released on swapchain
+  teardown**, which the original report did not cover: holding a reference on a game resource
+  across the game's own teardown is the shape of the DXGI resize bug this add-on already had
+  once.
+- **A wrong runtime DLL was read into memory before being rejected.** The runtime is one
+  fixed-size binary, so the size settles it from the directory entry; the read and the hash are
+  unchanged for a file that matches.
+- **Two leaks on `Bridge::Ensure`'s failure paths**, in both the add-on and the session harness.
+  `Ensure` calls `Destroy()` on the way in, so a retry would have reclaimed them -- but the depth
+  path latches instead of retrying.
+
 ### New tools
 
 Two standalone programs, built with `.uild.ps1 -Target <name> -Exe`. Neither needs a game.
