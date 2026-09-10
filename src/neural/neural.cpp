@@ -328,9 +328,25 @@ Texture2D<float4> res  : register(t1);
 Texture2D<float4> dbgs : register(t2);
 RWTexture2D<float4> dst : register(u0);
 SamplerState smp : register(s0);
-cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float intensity; uint pad; float limit; float fade; };
+cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float intensity; uint pad; float limit; float fade; float colour; float guard; };
+static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 float3 ToLinear(float3 c){ return c <= 0.04045 ? c/12.92 : pow(abs(c+0.055)/1.055, 2.4); }
 float3 ToSrgb(float3 c){ return c <= 0.0031308 ? c*12.92 : 1.055*pow(abs(c), 1.0/2.4) - 0.055; }
+// The largest fraction of the correction that leaves every channel inside [0,1], applied to the
+// whole triple at once. Clamping per channel instead is a hue rotation -- whichever channel hits
+// the wall first decides the colour of the rest -- and that rotation is what a big correction
+// showed up as: blown, wrong-coloured pixels rather than a stronger version of the same picture.
+// Exactly nothing when the sum was already representable. hhkbble's cube scaling, from the
+// multi-pass work on the OptiScaler DLSS-NR fork.
+float3 CubeScale(float3 p, float3 t){
+ float3 d = t - p;
+ float a = 1.0;
+ [unroll] for (int i = 0; i < 3; ++i) {
+  if (d[i] > 1e-6) a = min(a, (1.0 - p[i]) / d[i]);
+  else if (d[i] < -1e-6) a = min(a, (0.0 - p[i]) / d[i]);
+ }
+ return p + saturate(a) * d;
+}
 [numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
  if(p.x>=dw || p.y>=dh) return;
  float2 uv = (float2(p.xy)+0.5)/float2(dw,dh);
@@ -374,10 +390,54 @@ float3 ToSrgb(float3 c){ return c <= 0.0031308 ? c*12.92 : 1.055*pow(abs(c), 1.0
   return;
  }
  float3 c = full.Load(int3(p.xy,0)).rgb;
- float3 v = (mode != 0) ? ToLinear(saturate(c)) * k : c;
- v = v + fix;
- if (mode != 0) v = ToSrgb(saturate(v / max(k, 1e-6)));
- dst[p.xy] = float4(saturate(v), 1.0);
+ // The picture the network was shown, rebuilt here instead of read back. The copy shader is a
+ // pure function of the pixel, so this reproduces it exactly and at full resolution -- which
+ // means the only thing carried up from the reduced raster is the correction itself, and the two
+ // pictures being compared below are at the same scale. Everything from here on works in that
+ // normalised space, where 1.0 is white, so the encoding drops out of the arithmetic.
+ float3 P = (mode != 0) ? ToLinear(saturate(c)) : c;
+ float3 E = fix / ((mode != 0) ? max(k, 1e-6) : 1.0);
+ float3 v;
+ if (guard <= 0.0) {
+  // Additive. What this add-on did until now, kept so the two can be compared in one session:
+  // the correction is added per channel and whatever leaves the cube is clipped per channel.
+  v = P + E;
+ } else {
+  // Ratio composition, after the OptiScaler DLSS-NR fork and RenoDX's DLSS 5 addon before it.
+  //
+  // The point is that nothing here adds a colour difference to a picture. The network's answer is
+  // made into a whole picture of its own (M), its luminance is compared against the frame's as a
+  // ratio, that ratio is bounded, and the two well-formed pictures are blended. A bounded ratio
+  // cannot move hue; a difference can, and with more than one pass it did -- N passes meant N
+  // times the difference, which clipped, and a clipped channel is a hue rotation. That is what
+  // "3 passes looks deep fried" is.
+  float3 M = CubeScale(P, P + E);
+  float pl = dot(P, kLuma), ml = dot(M, kLuma);
+  // A ratio against a near-black pixel is unbounded, and clamping it is not the same as taming
+  // it: a shadow pixel sits around a thousandth, so a tiny edit becomes an enormous ratio, hits
+  // the guard, and that pixel boils frame to frame. The same floor on both sides leaves bright
+  // pixels alone -- there it vanishes against the luminance -- and lets the ratio fall smoothly
+  // to one as the light goes out. No edit at all is the right answer for a pixel with no light.
+  const float floorY = 1.0 / 512.0;
+  float ratio = (ml + floorY) / (pl + floorY);
+  // Two-sided, and one scalar taken from luminance applied to the whole triple. A per-channel
+  // bound would be the hue distorter this whole path exists to avoid.
+  float bounded = clamp(ratio, 1.0 / guard, guard);
+  // The network can hand back an empty picture for an input it could not read. Rescaling that
+  // collapses the frame to black -- and it is the one case where the two ends of the blend below
+  // do not share a luminance -- so the frame goes through on its own brightness instead.
+  float3 lit = ml > 1e-5 ? M * (bounded / max(ratio, 1e-6)) : P * bounded;
+  // Both ends of this blend now carry the same luminance and differ only in chroma, so Colour
+  // Strength moves colour and nothing else. 0 keeps the game's own hue exactly, with only the
+  // light carrying what the network decided; 1 brings the network's colour with it.
+  v = lerp(P * bounded, lit, saturate(colour));
+  // A last scale rather than a clip, for the same reason as CubeScale: bounded can be larger
+  // than ratio, so the scaling above can push a channel past 1 again.
+  float peak = max(v.r, max(v.g, v.b));
+  if (peak > 1.0) v /= peak;
+  v = max(v, 0.0);
+ }
+ dst[p.xy] = float4((mode != 0) ? ToSrgb(saturate(v)) : saturate(v), 1.0);
 })";
 
 // Optical flow, in three passes. The PS2 never computed per-pixel motion, so there is nothing to
@@ -584,6 +644,12 @@ using HipSetFn = int (*)(int);
 
 bool RuntimeHashMatches(const std::filesystem::path &file)
 {
+    // The runtime is one fixed-size binary, so anything of a different size is the wrong file --
+    // and that is knowable from the directory entry. Reading it in to find out pulls the whole of
+    // whatever was pointed at into memory first, which is a strange way to reject a wrong DLL.
+    std::error_code sizeError;
+    if (std::filesystem::file_size(file, sizeError) != kRuntimeSize || sizeError)
+        return false;
     std::ifstream in(file, std::ios::binary);
     std::vector<unsigned char> data((std::istreambuf_iterator<char>(in)), {});
     if (data.size() != kRuntimeSize)
@@ -651,6 +717,10 @@ struct Bridge
             FAILED(own->OpenSharedHandle(handle, IID_PPV_ARGS(&on12))))
         {
             Log("bridge %s: sharing failed.", name);
+            // The texture is alive by here, and the handle may be too. Ensure calls Destroy() on
+            // the way in, so a retry would reclaim them -- but the depth path latches instead of
+            // retrying, and a failure path should not depend on someone else trying again.
+            Destroy();
             return false;
         }
         width = w;
@@ -824,6 +894,27 @@ struct State
     // so nothing changes until they are turned up.
     std::atomic<float> residualLimit { 0.0f };
     std::atomic<float> residualFade { 0.0f };
+    // How the network's answer is put back onto the frame. Above zero this is the highlight
+    // guard -- the most compose may move a pixel's luminance, in either direction -- and it
+    // doubles as the switch: zero selects the old additive composition, which is kept only so
+    // the two can be compared inside one session.
+    //
+    // Additive is what made Pass Count useless. Two passes is twice the difference and three is
+    // three times it, added per channel and then clipped per channel, and a clipped channel is a
+    // hue rotation -- so the count did not read as more detail, it read as more saturation and
+    // then as garbage. The ratio path bounds luminance instead and leaves hue to a blend between
+    // two finished pictures, which is what the OptiScaler DLSS-NR fork does and where the
+    // arrangement comes from. 2.0 is that fork's own default.
+    std::atomic<float> ratioGuard { 2.0f };
+    // The guard is applied once, to the finished composition, while the passes compound the
+    // ratio it bounds. Left fixed, the third pass spends most of its contribution against the
+    // clamp -- the fork's own tooltip says to raise it by hand with the count. Doing it here
+    // instead means one extra pass buys one extra multiple of headroom.
+    std::atomic<bool> guardTracksPasses { true };
+    // Whether the network's colour arrives with its light. Both ends of the blend carry the same
+    // luminance, so this cannot shift hue on its own: at 0 every pixel keeps the game's exact
+    // colour and only its brightness carries the network's verdict.
+    std::atomic<float> colourStrength { 1.0f };
     std::atomic<bool> bicubic { true };
     std::atomic<int> debugView { 0 };
     std::atomic<bool> measureNow { false };
@@ -905,6 +996,19 @@ struct State
     // this whole project either hardcoded to 1 or forced back to 1, so no run has ever
     // produced evidence that a second pass is recorded at all -- only that it was asked for.
     bool loggedPassDetail = false;
+    // Per-pass profiles, the same idea as the reference fork's "Per pass" tree: what each run of
+    // the network over this frame is told, where it should differ from the values above.
+    //
+    // A later pass is looking at a picture the first pass already edited, so asking it for the
+    // same amount again is asking it to sharpen its own sharpening -- which is the other half of
+    // why a high count looks wrong. Turning structure and tone down as the chain goes on is the
+    // control for that, and it is the one thing the composition cannot do from outside.
+    //
+    // All off by default, so an install that never opens the tree behaves exactly as before.
+    std::atomic<bool> passOverride[kMaxPasses] {};
+    std::atomic<float> passStructure[kMaxPasses] {};
+    std::atomic<float> passTone[kMaxPasses] {};
+    std::atomic<float> passSkin[kMaxPasses] {};
     HipSetFn hipSet = nullptr;
     int hipDevice = -1;
     bool engineReady = false;
@@ -924,7 +1028,10 @@ struct State
     ComPtr<ID3D12Resource> lumaA, lumaB, flowSmall, flowCoarse;
     ComPtr<ID3D12Resource> history;
     std::atomic<bool> useHistory { true };
-    bool historyValid = false;
+    // Cleared by the overlay's History checkbox and read and set by present. The overlay only
+    // takes g.lock for its Status section at the bottom, and the checkbox is above that, so the
+    // two threads share no lock here. Atomic, like the switches beside it.
+    std::atomic<bool> historyValid { false };
     bool loggedHistory = false;
     UINT flowWidth = 0, flowHeight = 0;
     std::atomic<bool> useMotion { true };
@@ -1007,7 +1114,10 @@ struct State
     UINT depthWidth = 0, depthHeight = 0;
     DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
     UINT depthBinds = 0, depthBestBinds = 0;
-    ID3D12Resource *depthBest = nullptr;
+    // Holds a reference of its own. This is a resource the GAME owns: a level load, a resize or
+    // a device reset frees it, and a bare pointer then points into freed memory while the depth
+    // path is still calling GetDesc, two barriers and a CopyResource against it on a later frame.
+    ComPtr<ID3D12Resource> depthBest;
     std::atomic<bool> useDepth { true };
     bool loggedDepth = false;
     ComPtr<ID3D12Resource> composed;
@@ -1025,7 +1135,10 @@ struct State
     bool loggedPin = false;
     float pinnedScale = -1.0f;
     UINT measureTries = 0;
-    UINT64 depthEvents = 0;
+    // Raised on the bind event, which arrives on whatever thread is recording, and read from
+    // present and the overlay. The increment sits outside g.lock on purpose -- observation must
+    // not be gated on the Depth switch -- so the counter itself has to carry the guarantee.
+    std::atomic<UINT64> depthEvents { 0 };
 };
 
 State g;
@@ -1062,9 +1175,26 @@ void LoadSettings()
     g.intensity.store(num(L"Intensity", g.intensity.load()));
     g.residualLimit.store(std::max(0.0f, num(L"ResidualLimit", 0.0f)));
     g.residualFade.store(std::clamp(num(L"EdgeFade", 0.0f), 0.0f, 0.49f));
+    g.ratioGuard.store(std::clamp(num(L"Guard", g.ratioGuard.load()), 0.0f, 8.0f));
+    g.guardTracksPasses.store(flag(L"GuardPerPass", g.guardTracksPasses.load()));
+    g.colourStrength.store(std::clamp(num(L"ColourStrength", g.colourStrength.load()), 0.0f, 1.0f));
     g.structure.store(num(L"Structure", g.structure.load()));
     g.skin.store(num(L"Skin", g.skin.load()));
     g.tone.store(num(L"Tone", g.tone.load()));
+    // Per-pass profiles. Seeded from the globals so a pass whose override is switched on for the
+    // first time starts where the chain already was, rather than at zero.
+    for (UINT i = 0; i < State::kMaxPasses; ++i)
+    {
+        wchar_t key[32];
+        swprintf_s(key, L"Pass%uOverride", i + 1);
+        g.passOverride[i].store(flag(key, false));
+        swprintf_s(key, L"Pass%uStructure", i + 1);
+        g.passStructure[i].store(num(key, g.structure.load()));
+        swprintf_s(key, L"Pass%uTone", i + 1);
+        g.passTone[i].store(num(key, g.tone.load()));
+        swprintf_s(key, L"Pass%uSkin", i + 1);
+        g.passSkin[i].store(num(key, g.skin.load()));
+    }
     g.flowGate.store(num(L"FlowGate", g.flowGate.load()));
     g.flowRatio.store(num(L"FlowRatio", g.flowRatio.load()));
     g.encoding.store(static_cast<int>(num(L"Encoding", 0.0f)));
@@ -1095,6 +1225,17 @@ void LoadSettings()
         g.inlineMode.load() ? 1 : 0, g.bicubic.load() ? 1 : 0, g.useMotion.load() ? 1 : 0,
         g.useHistory.load() ? 1 : 0, static_cast<double>(g.flowGate.load()),
         static_cast<double>(g.flowRatio.load()), g.debugView.load());
+    Log("compose: %s, guard %.2f%s, colour strength %.2f",
+        g.ratioGuard.load() > 0.0f ? "ratio" : "additive",
+        static_cast<double>(g.ratioGuard.load()),
+        g.guardTracksPasses.load() ? " (+1 per extra pass)" : "",
+        static_cast<double>(g.colourStrength.load()));
+    for (UINT i = 0; i < State::kMaxPasses; ++i)
+        if (g.passOverride[i].load())
+            Log("  pass %u profile: structure %.2f tone %.2f skin %.2f", i + 1,
+                static_cast<double>(g.passStructure[i].load()),
+                static_cast<double>(g.passTone[i].load()),
+                static_cast<double>(g.passSkin[i].load()));
 }
 
 // The other half of LoadSettings, which was missing: everything the overlay changed was lost on
@@ -1129,9 +1270,24 @@ void SaveSettings()
     num(L"Intensity", g.intensity.load());
     num(L"ResidualLimit", g.residualLimit.load());
     num(L"EdgeFade", g.residualFade.load());
+    num(L"Guard", g.ratioGuard.load());
+    num(L"ColourStrength", g.colourStrength.load());
+    flag(L"GuardPerPass", g.guardTracksPasses.load());
     num(L"Structure", g.structure.load());
     num(L"Skin", g.skin.load());
     num(L"Tone", g.tone.load());
+    for (UINT i = 0; i < State::kMaxPasses; ++i)
+    {
+        wchar_t key[32];
+        swprintf_s(key, L"Pass%uOverride", i + 1);
+        flag(key, g.passOverride[i].load());
+        swprintf_s(key, L"Pass%uStructure", i + 1);
+        num(key, g.passStructure[i].load());
+        swprintf_s(key, L"Pass%uTone", i + 1);
+        num(key, g.passTone[i].load());
+        swprintf_s(key, L"Pass%uSkin", i + 1);
+        num(key, g.passSkin[i].load());
+    }
     num(L"FlowGate", g.flowGate.load());
     num(L"FlowRatio", g.flowRatio.load());
     num(L"Encoding", g.encoding.load());
@@ -2376,10 +2532,10 @@ bool InitPipeline()
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable = { 2, ranges };
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    // Ten, not eight: compose needs two more than the rest for the residual limit and the
-    // edge fade. A shader declaring a shorter cbuffer over a longer root constant block is
-    // fine, so the other six keep passing eight.
-    params[1].Constants = { 0, 0, 10 };
+    // Twelve, not eight: compose needs four more than the rest -- the residual limit, the edge
+    // fade, the colour strength and the highlight guard. A shader declaring a shorter cbuffer
+    // over a longer root constant block is fine, so the other six keep passing eight.
+    params[1].Constants = { 0, 0, 12 };
     D3D12_STATIC_SAMPLER_DESC smp {};
     smp.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     smp.AddressU = smp.AddressV = smp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -2534,7 +2690,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
          !CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.history, "history")))
         return false;
     if (netChanged)
-        g.historyValid = false;
+        g.historyValid.store(false);
     if (netChanged)
     {
         g.flowWidth = fw;
@@ -2665,7 +2821,7 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
         return;
     auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
     std::lock_guard guard(g.lock);
-    if (native == g.depthBest)
+    if (native == g.depthBest.Get())
     {
         ++g.depthBinds;
         return;
@@ -2687,7 +2843,7 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
         return;
     if (g.depthBest == nullptr || d.Width * d.Height > static_cast<UINT64>(g.depthWidth) * g.depthHeight)
     {
-        g.depthBest = native;
+        g.depthBest = native;  // ComPtr: takes a reference
         g.depthWidth = static_cast<UINT>(d.Width);
         g.depthHeight = d.Height;
         g.depthFormat = d.Format;
@@ -2720,7 +2876,7 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
     auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
 
     std::lock_guard guard(g.lock);
-    if (!g.useDepth.load() || native != g.depthBest || g.device == nullptr)
+    if (!g.useDepth.load() || native != g.depthBest.Get() || g.device == nullptr)
         return false;
     ++g.depthClears;
 
@@ -2805,6 +2961,15 @@ void ReleaseSwapchainSized()
     }
     g_depthTally.clear();
     g_motionTally.clear();
+    // depthBest now holds a reference of its own, so it has to be let go here as well as
+    // remembered. Holding a reference on a resource the game owns across its own teardown is
+    // the same shape as the bug that broke this add-on's swapchain resize once already: the
+    // game cannot finish releasing what we are still pointing at. The next bind re-finds it.
+    g.depthBest.Reset();
+    g.depthCandidate = nullptr;
+    g.depthWidth = g.depthHeight = 0;
+    g.depthFormat = DXGI_FORMAT_UNKNOWN;
+    g.depthBinds = g.depthBestBinds = 0;
     g.gameDepthActive = g.gameMotionActive = false;
     g.outWidth = g.outHeight = 0;
 }
@@ -2872,6 +3037,34 @@ bool ToggleRequested()
     const bool pressed = now && !down;
     down = now;
     return pressed;
+}
+
+// What compose is allowed to move a pixel by, this frame.
+//
+// Zero stays zero -- that is the additive path, not a guard of nothing. Above it, the guard is a
+// bound on the *finished* composition while the passes compound the ratio inside it, so a fixed
+// value means the second and third pass spend their contribution against the clamp and cost
+// frametime for nothing. One extra pass, one extra multiple of headroom.
+float EffectiveGuard()
+{
+    const float base = g.ratioGuard.load();
+    if (base <= 0.0f || !g.guardTracksPasses.load())
+        return base;
+    const UINT running = std::max(1u, g.activePasses);
+    return base + static_cast<float>(running - 1);
+}
+
+// What one pass of the network is told. The globals unless that pass carries its own profile.
+struct PassTune
+{
+    float structure, tone, skin;
+};
+
+PassTune TuningFor(UINT pass)
+{
+    if (pass < State::kMaxPasses && g.passOverride[pass].load())
+        return { g.passStructure[pass].load(), g.passTone[pass].load(), g.passSkin[pass].load() };
+    return { g.structure.load(), g.tone.load(), g.skin.load() };
 }
 
 // Everything the network does in one frame, recorded into whatever command list it is handed.
@@ -3208,7 +3401,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
     const bool fromGame = g.gameDepthActive && g.guideDepth.local != nullptr;
     if (g.useDepth.load() && (fromGame || g.depthSnapshot != nullptr || g.depthBest != nullptr))
     {
-        g.depthCandidate = g.depthBest;
+        g.depthCandidate = g.depthBest.Get();
         const bool fromSnapshot = !fromGame && g.depthSnapshot != nullptr;
         ID3D12Resource *depthSource = fromGame      ? g.guideDepth.local.Get()
                                       : fromSnapshot ? g.depthSnapshot.Get()
@@ -3341,7 +3534,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         //
         // Off by default because these are hardcoded offsets into one specific build: a wrong
         // pointer here does not fail, it hangs the game.
-        const bool wantHistory = g.useHistory.load() && g.historyValid && g.history != nullptr;
+        const bool wantHistory = g.useHistory.load() && g.historyValid.load() && g.history != nullptr;
         At<uint8_t>(r, 0x765f8) = wantHistory ? 1 : 0;
         At<void *>(r, 0x765f0) = wantHistory ? static_cast<void *>(g.history.Get()) : nullptr;
         if (wantHistory && !g.loggedHistory)
@@ -3375,12 +3568,15 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         At<UINT>(r, 0x76e10) = 1u;
         At<uint8_t>(r, 0x76e14) = 1;
         // Was `i == 0 ? tone : 0.0f`, which zeroed Local Tone on every pass after the first
-        // while structure and skin were written at full value on all of them. Nobody chose
-        // that asymmetry and nothing measured it -- and it makes a 1-vs-2 comparison read as
-        // two changes instead of one. All three fields now get the same value every pass.
-        At<float>(r, 0x76e30) = g.tone.load();
-        At<float>(r, 0x76e34) = g.structure.load();
-        At<float>(r, 0x76e38) = g.skin.load();
+        // while structure and skin were written at full value on all of them. Nobody chose that
+        // asymmetry and nothing measured it. All three now come from the same place, and that
+        // place is per-pass: pass 2 is looking at a picture pass 1 already edited, so telling it
+        // to do the same amount again is telling it to sharpen its own sharpening. Off by
+        // default, in which case every pass gets the globals exactly as before.
+        const PassTune tune = TuningFor(i);
+        At<float>(r, 0x76e30) = tune.tone;
+        At<float>(r, 0x76e34) = tune.structure;
+        At<float>(r, 0x76e38) = tune.skin;
 
         Packet packet {};
         packet.list = cmd;
@@ -3530,14 +3726,18 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
     auto ctable = heap->GetGPUDescriptorHandleForHeapStart();
     ctable.ptr += 8 * inc;
     cmd->SetComputeRootDescriptorTable(0, ctable);
-    UINT cdims[10] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
-                     (g.bicubic.load() ? 1u : 0u) | (static_cast<UINT>(dbg) << 1), 0, 0 };
+    UINT cdims[12] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
+                     (g.bicubic.load() ? 1u : 0u) | (static_cast<UINT>(dbg) << 1), 0, 0, 0, 0 };
     std::memcpy(&cdims[5], &kWhite, sizeof(float));
     std::memcpy(&cdims[6], &strength, sizeof(float));
     const float rlimit = g.residualLimit.load(), rfade = g.residualFade.load();
     std::memcpy(&cdims[8], &rlimit, sizeof(float));
     std::memcpy(&cdims[9], &rfade, sizeof(float));
-    cmd->SetComputeRoot32BitConstants(1, 10, cdims, 0);
+    const float cstrength = g.colourStrength.load();
+    const float guardEff = EffectiveGuard();
+    std::memcpy(&cdims[10], &cstrength, sizeof(float));
+    std::memcpy(&cdims[11], &guardEff, sizeof(float));
+    cmd->SetComputeRoot32BitConstants(1, 12, cdims, 0);
     cmd->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
     Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -3560,7 +3760,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g.historyValid = true;
+        g.historyValid.store(true);
     }
 
     return true;
@@ -3820,7 +4020,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     if (g.frame == 600)
         Log("guides after 600 frames: %llu depth-stencil bind events, best candidate %s. Motion: "
             "the PS2 never computed per-pixel motion, so there is none to take.",
-            static_cast<unsigned long long>(g.depthEvents),
+            static_cast<unsigned long long>(g.depthEvents.load()),
             g.depthBest != nullptr ? "found" : "none");
 }
 
@@ -4008,6 +4208,118 @@ void OnOverlay(effect_runtime *)
              "o que faz dele o A/B mais rápido que existe.");
         Tag(kMeasured);
 
+        // How the correction is put back onto the frame. This is the arrangement Pass Count
+        // needed: additive composition made a second pass mean twice the difference, clipped per
+        // channel, and a clipped channel is a hue rotation rather than more detail.
+        {
+            int comp = g.ratioGuard.load() > 0.0f ? 1 : 0;
+            const char *items[] = { T("Additive (old)", "Aditiva (antiga)"),
+                                    T("Ratio (bounded)", "Razão (limitada)") };
+            if (ImGui::Combo(T("Composition", "Composição"), &comp, items, 2))
+            {
+                g.ratioGuard.store(comp == 1 ? 2.0f : 0.0f);
+                Log("menu: composition %s", comp == 1 ? "ratio" : "additive");
+            }
+            Help("How the network's answer is put back onto the frame.\n\n"
+                 "Additive adds the correction to the picture, channel by channel, and clips "
+                 "whatever leaves the range. That is what this add-on always did, and it is why "
+                 "Pass Count was useless: two passes is twice the difference and three is three "
+                 "times it, and a clipped channel is a hue rotation -- so the count did not read "
+                 "as more detail, it read as more saturation and then as a mess.\n\n"
+                 "Ratio turns the answer into a picture of its own, compares its luminance "
+                 "against the frame's as a ratio, bounds that ratio, and blends two finished "
+                 "pictures. A bounded ratio cannot move hue. This is what the OptiScaler DLSS-NR "
+                 "fork does, and RenoDX's DLSS 5 addon before it.\n\n"
+                 "Kept switchable so both can be seen in one session. Ratio is the default.",
+
+                 "Como a resposta da rede volta para o quadro.\n\n"
+                 "Aditiva soma a correção na imagem, canal por canal, e corta o que sair da "
+                 "faixa. É o que este add-on sempre fez, e é por isso que o Número de Passes não "
+                 "servia: dois passes é o dobro da diferença e três é o triplo, e canal cortado é "
+                 "rotação de matiz -- então a contagem não aparecia como mais detalhe, aparecia "
+                 "como mais saturação e depois como sujeira.\n\n"
+                 "Razão transforma a resposta numa imagem própria, compara a luminância dela com "
+                 "a do quadro como razão, limita essa razão, e mistura duas imagens inteiras. Uma "
+                 "razão limitada não move matiz. É o que o fork DLSS-NR do OptiScaler faz, e o "
+                 "addon DLSS 5 do RenoDX antes dele.\n\n"
+                 "Deixado trocável para dar para ver os dois na mesma sessão. Razão é o padrão.");
+            Tag(kTraced);
+        }
+
+        ImGui::BeginDisabled(g.ratioGuard.load() <= 0.0f);
+        v = g.colourStrength.load();
+        if (ImGui::SliderFloat(T("Colour Strength", "Força da Cor"), &v, 0.0f, 1.0f, "%.2f", 0))
+            g.colourStrength.store(v);
+        Help("Whether the network's colour arrives with its light.\n\n"
+             "0 keeps the game's own hue exactly: every pixel is the original colour and only its "
+             "brightness carries what the network decided. This is the setting for \"it changed "
+             "the colours\" -- at 0 it cannot, by construction. 1 brings the network's colour "
+             "with it.\n\n"
+             "It cannot shift hue on its own either way: both ends of the blend carry the same "
+             "luminance, so this moves chroma and nothing else.\n\n"
+             "Inert on Additive composition.",
+
+             "Se a cor da rede vem junto com a luz dela.\n\n"
+             "0 mantém a matiz do jogo exatamente: cada pixel fica com a cor original e só o "
+             "brilho carrega o que a rede decidiu. É este o controle para \"mudou as cores\" -- "
+             "em 0 ele não consegue mudar, por construção. 1 traz a cor da rede junto.\n\n"
+             "Também não desloca matiz sozinho nos dois sentidos: as duas pontas da mistura "
+             "carregam a mesma luminância, então isto mexe em croma e mais nada.\n\n"
+             "Inerte na composição Aditiva.");
+        Tag(kTraced);
+
+        v = g.ratioGuard.load();
+        if (v > 0.0f && ImGui::SliderFloat(T("Highlight Guard", "Trava de Realce"), &v, 1.0f, 8.0f,
+                                           "%.1fx", 0))
+            g.ratioGuard.store(v);
+        Help("The most compose may move any pixel, as a multiple of what it already was, in both "
+             "directions. A pixel may not be brightened past this nor darkened past its "
+             "reciprocal.\n\n"
+             "One scalar, taken from luminance and applied to the whole triple, so it bounds "
+             "brightness without touching hue. Lights are where the network has least to say and "
+             "where an unbounded answer does the most damage.\n\n"
+             "2.0x is the reference fork's default and leaves detail intact. Raise it only if "
+             "bright areas look clipped.",
+
+             "O máximo que a composição pode mover um pixel, como múltiplo do que ele já era, nos "
+             "dois sentidos. Um pixel não pode ser clareado além disto nem escurecido além do "
+             "inverso.\n\n"
+             "Um escalar só, tirado da luminância e aplicado no trio inteiro, então limita brilho "
+             "sem tocar em matiz. Luzes são onde a rede tem menos a dizer e onde uma resposta sem "
+             "limite estraga mais.\n\n"
+             "2.0x é o padrão do fork de referência e não come detalhe. Só aumente se áreas "
+             "claras parecerem estouradas.");
+        Tag(kTraced);
+
+        bool track = g.guardTracksPasses.load();
+        if (ImGui::Checkbox(T("Guard follows Pass Count", "Trava acompanha o Número de Passes"),
+                            &track))
+        {
+            g.guardTracksPasses.store(track);
+            Log("menu: guard follows pass count %d", track ? 1 : 0);
+        }
+        Help("Adds one multiple of headroom per extra pass, so 2.0x becomes 3.0x at two passes "
+             "and 4.0x at three.\n\n"
+             "The guard is applied once, to the finished composition, while the passes compound "
+             "the ratio inside it. Left fixed, the third pass spends most of its contribution "
+             "against the clamp -- it costs a whole extra network run and most of it is thrown "
+             "away. The reference fork tells you to raise the guard by hand with the count; this "
+             "does it.\n\n"
+             "Turn it off to hold one bound across every count, which is the honest way to see "
+             "what an extra pass is actually contributing.",
+
+             "Acrescenta um múltiplo de folga por passe extra, então 2.0x vira 3.0x em dois "
+             "passes e 4.0x em três.\n\n"
+             "A trava é aplicada uma vez, na composição pronta, enquanto os passes acumulam a "
+             "razão dentro dela. Fixa, o terceiro passe gasta quase toda a contribuição dele "
+             "contra o limite -- custa uma rodada inteira da rede e joga a maior parte fora. O "
+             "fork de referência manda subir a trava na mão junto com a contagem; isto faz "
+             "isso.\n\n"
+             "Desligue para manter um limite só em todas as contagens, que é o jeito honesto de "
+             "ver o que um passe extra está de fato somando.");
+        Tag(kTraced);
+        ImGui::EndDisabled();
+
         v = g.residualLimit.load();
         if (ImGui::SliderFloat(T("Residual Limit", "Limite do Resíduo"), &v, 0.0f, 0.50f,
                                v <= 0.0f ? T("off", "desligado") : "%.3f", 0))
@@ -4191,8 +4503,17 @@ void OnOverlay(effect_runtime *)
             g.passes.store(passes);
             Log("menu: pass count %d", passes);
         }
-        Help("Runs the network over its own output, N times per frame. It is the one declared "
-             "difference of the ShortFuse route, and it has never been shown to help here.\n\n"
+        Help("Runs the network over its own output, N times per frame, anchored on the picture it "
+             "was first shown -- so compose receives the whole chain's correction, not the last "
+             "pass's difference from the one before it.\n\n"
+             "It used to be worthless, and the reason was the composition, not the count: the "
+             "correction was added per channel, so N passes was N times the difference and a "
+             "clipped channel came back as a hue rotation. That is why more passes read as more "
+             "saturation and, at 3, as a mess. Set Composition to Ratio under Image and the count "
+             "is bounded instead of compounding.\n\n"
+             "The other half is inside the network: pass 2 is editing pass 1's work, so telling "
+             "it to do the same amount again is telling it to sharpen its own sharpening. Per "
+             "pass, below, is where that is turned down.\n\n"
              "It used to load a separate copy of the runtime per pass, which put a second full "
              "engine -- 147 MB of weights plus activation buffers -- in VRAM next to the game's "
              "own working set. Two passes was enough to take the machine down. It now records "
@@ -4204,8 +4525,17 @@ void OnOverlay(effect_runtime *)
              "Raise it to measure, not to play: run a scene at 1 and at 2 and compare the "
              "'measure, residual' line in the log.",
 
-             "Roda a rede sobre a própria saída, N vezes por quadro. É a única diferença "
-             "declarada da rota do ShortFuse, e nunca se mostrou útil aqui.\n\n"
+             "Roda a rede sobre a própria saída, N vezes por quadro, ancorado na imagem que ela "
+             "viu primeiro -- então a composição recebe a correção da cadeia inteira, não a "
+             "diferença do último passe para o anterior.\n\n"
+             "Antes não servia para nada, e o motivo era a composição, não a contagem: a correção "
+             "era somada canal por canal, então N passes era N vezes a diferença e canal cortado "
+             "voltava como rotação de matiz. É por isso que mais passes apareciam como mais "
+             "saturação e, em 3, como sujeira. Ponha a Composição em Razão na aba Imagem e a "
+             "contagem passa a ser limitada em vez de acumular.\n\n"
+             "A outra metade é dentro da rede: o passe 2 está editando o trabalho do passe 1, "
+             "então mandar ele fazer a mesma quantidade de novo é mandar ele afiar a própria "
+             "afiação. Por passe, abaixo, é onde isso se abaixa.\n\n"
              "Antes carregava uma cópia separada do runtime por passe, o que punha um segundo "
              "motor inteiro -- 147 MB de pesos mais buffers de ativação -- na VRAM ao lado do "
              "working set do jogo. Dois passes bastavam para derrubar a máquina. Agora grava um "
@@ -4236,6 +4566,53 @@ void OnOverlay(effect_runtime *)
                           "com o job id antes e depois: um id que não anda é um passe que não fez "
                           "nada. Leia isso primeiro, depois compare o 'measure, residual' em 1 e "
                           "em 2."));
+
+        // Per-pass profiles, the reference fork's "Per pass" tree. A later pass is looking at a
+        // picture an earlier one already edited, so the same numbers again ask it to sharpen its
+        // own sharpening -- and that is the half of "3 passes looks deep fried" that the
+        // composition cannot reach from outside, because it happens inside the network.
+        if (passes > 1 && ImGui::TreeNode(T("Per pass", "Por passe")))
+        {
+            ImGui::TextUnformatted(T("What each run of the network is told, where it should "
+                                     "differ from the values below.",
+                                     "O que cada rodada da rede recebe, onde deve diferir dos "
+                                     "valores abaixo."));
+            for (int i = 0; i < passes; ++i)
+            {
+                char label[32];
+                snprintf(label, sizeof(label), T("Pass %d", "Passe %d"), i + 1);
+                if (!ImGui::TreeNode(label))
+                    continue;
+                ImGui::PushID(i);
+                bool own = g.passOverride[i].load();
+                if (ImGui::Checkbox(T("Own settings", "Ajustes próprios"), &own))
+                {
+                    g.passOverride[i].store(own);
+                    Log("menu: pass %d profile %s", i + 1, own ? "on" : "off");
+                }
+                ImGui::BeginDisabled(!own);
+                float pv = g.passStructure[i].load();
+                if (ImGui::SliderFloat(T("Structure", "Estrutura"), &pv, 0.0f, 3.0f, "%.2f", 0))
+                    g.passStructure[i].store(pv);
+                pv = g.passTone[i].load();
+                if (ImGui::SliderFloat(T("Local Tone", "Tom Local"), &pv, 0.0f, 3.0f, "%.2f", 0))
+                    g.passTone[i].store(pv);
+                pv = g.passSkin[i].load();
+                if (ImGui::SliderFloat(T("Skin", "Pele"), &pv, 0.0f, 3.0f, "%.2f", 0))
+                    g.passSkin[i].store(pv);
+                ImGui::EndDisabled();
+                ImGui::PopID();
+                ImGui::TreePop();
+            }
+            Note(kWarn, T("A pass with its own settings off follows the Engine tab, exactly as "
+                          "before. The useful shape is a taper -- full on pass 1, less on 2, "
+                          "less again on 3 -- because each pass is editing the last one's work.",
+                          "Um passe com os ajustes próprios desligados segue a aba Motor, "
+                          "exatamente como antes. O formato útil é uma queda -- cheio no passe "
+                          "1, menos no 2, menos ainda no 3 -- porque cada passe está editando o "
+                          "trabalho do anterior."));
+            ImGui::TreePop();
+        }
 
         bool bic = g.bicubic.load();
         if (ImGui::Checkbox(T("Bicubic Residual Upsample", "Upsample Bicúbico do Resíduo"), &bic))
@@ -4358,7 +4735,7 @@ void OnOverlay(effect_runtime *)
         if (Risk r(kWarn, hist); ImGui::Checkbox(T("History", "Histórico"), &hist))
         {
             g.useHistory.store(hist);
-            g.historyValid = false;
+            g.historyValid.store(false);
             Log("menu: history %s", hist ? "on" : "off");
         }
         Help("Hands the engine last frame's output to carry forward.\n\n"
@@ -4815,13 +5192,13 @@ void OnOverlay(effect_runtime *)
                         g.useDepth.load() ? T(", feeding it", ", alimentando")
                                           : T(" (Depth switch is off)",
                                               " (chave de Profundidade desligada)"));
-        else if (g.depthEvents == 0)
+        else if (g.depthEvents.load() == 0)
             ImGui::TextDisabled(T("Depth: no depth-stencil bind delivered on this API.",
                                   "Profundidade: nenhum bind de depth-stencil entregue nesta API."));
         else
             ImGui::TextDisabled(T("Depth: %llu binds seen, none usable.",
                                   "Profundidade: %llu binds vistos, nenhum usável."),
-                                static_cast<unsigned long long>(g.depthEvents));
+                                static_cast<unsigned long long>(g.depthEvents.load()));
         ImGui::TextDisabled(T("Log: dlss5-neural.log", "Log: dlss5-neural.log"));
     }
 

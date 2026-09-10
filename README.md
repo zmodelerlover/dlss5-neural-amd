@@ -38,13 +38,13 @@ Discord: https://discord.gg/wYhvS3JSHM — for DLSS 5 in general, not a support 
 
 PCSX2, no audio. Click a thumbnail, or use the plain links if the thumbnails do not load.
 
-[![PCSX2 running the network, clip 1](media/pcsx2-0307.jpg)](https://github.com/zmodelerlover/dlss5-neural-amd/raw/master/media/pcsx2-0307.mp4)
+[![PCSX2 running the network, clip 1](https://github.com/zmodelerlover/dlss5-neural-amd/releases/download/media-v1/pcsx2-0307.jpg)](https://github.com/zmodelerlover/dlss5-neural-amd/releases/download/media-v1/pcsx2-0307.mp4)
 
-**[Clip 1 (mp4, 7 MB)](https://github.com/zmodelerlover/dlss5-neural-amd/raw/master/media/pcsx2-0307.mp4)**
+**[Clip 1 (mp4, 7 MB)](https://github.com/zmodelerlover/dlss5-neural-amd/releases/download/media-v1/pcsx2-0307.mp4)**
 
-[![PCSX2 running the network, clip 2](media/pcsx2-0320.jpg)](https://github.com/zmodelerlover/dlss5-neural-amd/raw/master/media/pcsx2-0320.mp4)
+[![PCSX2 running the network, clip 2](https://github.com/zmodelerlover/dlss5-neural-amd/releases/download/media-v1/pcsx2-0320.jpg)](https://github.com/zmodelerlover/dlss5-neural-amd/releases/download/media-v1/pcsx2-0320.mp4)
 
-**[Clip 2 (mp4, 25 MB)](https://github.com/zmodelerlover/dlss5-neural-amd/raw/master/media/pcsx2-0320.mp4)**
+**[Clip 2 (mp4, 25 MB)](https://github.com/zmodelerlover/dlss5-neural-amd/releases/download/media-v1/pcsx2-0320.mp4)**
 
 ---
 
@@ -53,7 +53,7 @@ PCSX2, no audio. Click a thumbnail, or use the plain links if the thumbnails do 
 | | |
 |---|---|
 | **GPU** | AMD **RDNA3 or RDNA4** with the **HIP 7** runtime, i.e. `amdhip64_7.dll` on the search path. HIP 6 will not do. A current Adrenalin driver ships it. Does nothing on NVIDIA or Intel. |
-| **Renderer** | **Direct3D 11** (recommended) or **Direct3D 12**. On Vulkan or OpenGL the add-on loads and then sits there. |
+| **Renderer** | **Direct3D 11** (recommended) or **Direct3D 12**. On Vulkan or OpenGL the add-on loads and then sits there. Vulkan is being worked on -- `src/vkprobe` and `src/vkbridge` show the transport it needs is possible on AMD -- but nothing ships yet. |
 | **ReShade** | The **add-on** build, 6.x. The plain one will not load add-ons. Tested on 6.8.0. |
 | **Disk** | About 150 MB for the network weights. |
 
@@ -212,7 +212,22 @@ which is why the effect reads as a colour filter. 1.00 costs four times what 0.5
 
 **Pass Count** is an instrument, not a quality setting. It has never measured better, and the
 only reading ever taken of it was `Passes=3` giving a residual of exactly zero. Raise it to
-compare two `measure, residual` lines, not to play.
+compare two `measure, residual` lines, not to play. Until this release it was also forced back
+to 1 on *Same frame* timing, which is the default -- so on a default install the slider moved
+and did nothing. It is honoured now, and the log prints one `pass N of M` line per pass with the
+engine's job id before and after.
+
+**Residual Limit** and **Edge Fade** are for the corners. The network works in tiles, and the
+tiles at the frame border have no neighbour on one side, so what comes back there is
+extrapolated rather than seen -- which shows up as specks and crawling colour, worst where two
+borders meet. Limit caps how far the correction may push one pixel; Edge Fade rolls it off over
+a band at the border, and a corner is inside two bands at once. Both are off by default.
+
+**The tag beside each control** says how far it is actually known: `MEASURED` means a residual
+reading moved when it changed, `TRACED` means the write reaches a consumer but nothing here has
+separated it from its default, `UNKNOWN` means a real engine field whose effect nobody has
+established, `INERT` means swept and measured to change nothing. The legend is at the bottom of
+the panel.
 
 **Save Settings** writes everything to `dlss5-neural.ini` next to the exe; without it the panel
 is a scratchpad. **Language** switches the whole panel, tooltips included, between English and
@@ -416,6 +431,9 @@ identical from the couch and need completely different fixes.
 | `src/neural/neural.cpp` | the add-on. One file. |
 | `src/probe/probe.cpp` | render target probe — dumps what a game actually exposes. `-Target probe`. |
 | `src/session/session.cpp` | the D3D11-to-D3D12 bridge on its own, with timings. Runs no network. `-Target session`. |
+| `src/vkprobe/vkprobe.cpp` | asks the Vulkan driver whether it will import D3D12 textures and fences. A console program: `-Target vkprobe -Exe`. |
+| `src/vkbridge/vkbridge.cpp` | round-trips known bytes across that boundary both ways and compares them. `-Target vkbridge -Exe`. |
+| `src/vkshared/vk_raw.inc` | the slice of Vulkan those two need, declared against the spec so no Vulkan SDK is required. |
 | `external/reshade/` | ReShade + ImGui headers, vendored so a clean clone builds. See `NOTICE.md`. |
 | `tools/patch_runtime.py` | rebuilds the runtime from `version.dll`. |
 | `tools/runtime-patches.json` | the five patches, with offsets and bytes. |
@@ -423,7 +441,6 @@ identical from the couch and need completely different fixes.
 | `tools/check_shaders.ps1` | extracts the HLSL out of `neural.cpp` and runs `fxc` on it. A shader typo otherwise only shows up as a log line inside the game. |
 | `build.ps1` | builds an add-on with `cl.exe`, no VS project. |
 | `CHANGELOG.md` | what changed between releases. |
-| `docs/` | session notes: what was measured, what was tried and rejected, and why. |
 
 ## Stuff I didn't get to
 
@@ -451,51 +468,17 @@ None of this is settled, it is just where things stand. One card, three programs
 ## Model A/B/C: will not be implemented
 
 The NVIDIA add-on has a **Model** combo with A, B and C, and switching it does change the
-picture. Its own tooltip says it goes through "the prerelease `DLSSNR.Style` field". People ask
-for it here, so: this is what it is, and why it is not coming.
+picture. It goes through the prerelease `DLSSNR.Style` field. People ask for it here, so, plainly:
 
-`DLSSNR.Style` is an int in the options struct. It gets clamped against a count that comes from
-the network description — the number of models is data, not code — and then used to look up an
-entry in a table of 8 slots of 68 bytes. The entry holds a bitmask plus a short vector of
-floats. Each set bit lerps one slot of a 14-float block from a neutral value toward the entry's
-value, scaled by `LocalToneStrength` clamped to 0..1. Those 14 floats are then copied
-contiguously into the parameter block the kernels receive.
+**It is not coming, and it is not a matter of effort.** The AMD port of the runtime is closed
+source. Its kernels ship as precompiled GCN code objects inside `dlssnr_amd_pass1.dll`, they
+were compiled with the neutral style folded in, and the style inputs are simply not in the
+compiled binary. Adding one means recompiling those kernels, which needs sources that were
+never published. Nothing an add-on does from outside can put a parameter into a kernel that
+does not have one.
 
-Two of the eight slots are populated, so three models:
-
-| | Model A | Model B | Model C |
-|---|---|---|---|
-| mask | `0x00` | `0x34` | `0x20` |
-| slot 75 | — | **-0.10** | — |
-| slot 77 | — | **-0.25** | — |
-| slot 78 | — | **-0.10** | **-0.15** |
-
-Model A is style 0, which matches no entry and falls back to a neutral descriptor. It is the
-literal baseline, which is why there are only two entries for three models.
-
-**They are not three networks.** `nvngx_dlssnr.dll` carries 156 distinct `block*` tensor names,
-each appearing exactly once — one weight set, three configurations over it. That is the good
-news, because it means porting this would need no data that isn't already here.
-
-The bad news is the AMD side. Its option block is mapped field by field above and none of the
-slots is Style. The three constants do not appear anywhere in the binary. Nothing writes a
-14-float span. And the kernels settle it: their argument metadata gives the size of the struct
-each one takes by value, and the style vector alone is 56 bytes, while `k_final_head` and
-`k_post_block_1h_32_fp8` — exactly where appearance knobs would land — are **32 bytes total**.
-There is no room, and the kernels are precompiled GCN code objects inside the DLL.
-
-Whoever did the AMD port compiled the network with the neutral style folded in and dropped the
-inputs. Not a missing offset, not a hidden field: the input is not in the compiled binary.
-
-**So this will not be implemented, and it is not a matter of effort or of finding the right
-offset.** The AMD port is closed source. Its kernels ship as precompiled GCN code objects inside
-`dlssnr_amd_pass1.dll`, and adding a network input means recompiling them, which needs sources
-that were never published. Nothing an add-on does from outside can put a parameter into a kernel
-that does not have one.
-
-Please don't file this as a missing feature. **Model A is the only model that exists on this
-side**, and the work above is written down precisely so nobody spends another week rediscovering
-that.
+This was traced end to end on the NVIDIA side before being closed. **Model A is the only
+model that exists on this side** -- please do not file it as a missing feature.
 
 ## Keeping this going
 
