@@ -12,6 +12,8 @@
 #include <bcrypt.h>
 #include <wrl/client.h>
 
+#include "../vkshared/vk_raw.inc"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -3583,6 +3585,8 @@ bool BringUpEngines(UINT &)
     return InitPipeline() && InitEngine();
 }
 
+#include "vk_route.inc"
+
 void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, uint32_t,
                const rect *)
 {
@@ -3606,6 +3610,24 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     device *dev = sc != nullptr ? sc->get_device() : nullptr;
     if (dev == nullptr || queue == nullptr)
         return;
+
+    // Vulkan. The host -- RPCS3 is the one this was built for -- never makes a D3D12 call, so
+    // the network cannot run on its device. Same answer as D3D11: a second D3D12 device of our
+    // own, and shared textures between the two. The crossing runs the other way round, because
+    // memory exported from Vulkan is opaque and D3D12 cannot open it. See vk_route.inc.
+    if (dev->get_api() == device_api::vulkan)
+    {
+        if (g.noBridge.load() || g.goneSwapchain.load() == sc)
+            return;
+        if (!LoadGraphicsApi())
+        {
+            g.unavailable = true;
+            g.reason = "the D3D12 or DXGI entry points could not be resolved";
+            return;
+        }
+        vkroute::Present(queue, sc);
+        return;
+    }
 
     if (dev->get_api() == device_api::d3d11)
     {
@@ -3675,7 +3697,8 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         if (!g.loggedWrongApi)
         {
             g.loggedWrongApi = true;
-            Log("a runtime in this process is neither D3D12 nor D3D11; ignored.");
+            Log("a runtime in this process is not D3D12, D3D11 or Vulkan; ignored. OpenGL is the "
+                "one that lands here, and it has no route.");
         }
         return;
     }
