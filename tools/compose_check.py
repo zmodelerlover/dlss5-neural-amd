@@ -52,6 +52,14 @@ def compose_additive(P, E):
     return [min(1.0, max(0.0, p + e)) for p, e in zip(P, E)]
 
 
+def limit_residual(E, limit):
+    """The whole triple scaled, never one channel clamped. Mirrors the `limit` block."""
+    if limit <= 0.0:
+        return list(E)
+    mag = max(abs(x) for x in E)
+    return [x * (limit / mag) for x in E] if mag > limit else list(E)
+
+
 def chroma_direction(c):
     """Hue as a normalised direction away from grey. None for a pixel with no colour in it."""
     y = luma(c)
@@ -135,8 +143,22 @@ def main():
     assert not close(before, additive, 0.05), "additive was expected to rotate this hue"
     assert close(before, ratio, 1e-4), "ratio at colour 0 must not rotate hue"
 
+    # 5. The residual limit keeps the correction's direction and only gives up its size, and it
+    #    is exactly nothing for a correction that was already inside it. The blown tile this
+    #    exists for -- a measured maximum of 4.16 against a mean of 0.072 -- is what a per-channel
+    #    clamp turned into a blown *coloured* tile.
+    blown = [4.16, 0.9, 0.2]
+    limited = limit_residual(blown, 0.25)
+    assert abs(max(abs(x) for x in limited) - 0.25) < 1e-9, "the limit did not bind"
+    for a, b in zip(blown, limited):
+        assert abs(a * (0.25 / 4.16) - b) < 1e-9, "the limit changed the correction's direction"
+    small = [0.01, -0.02, 0.005]
+    assert close(limit_residual(small, 0.25), small), "an ordinary correction must be untouched"
+    assert close(limit_residual(blown, 0.0), blown), "0 must mean off"
+
     print("compose: zero edit is a no-op, colour 0 holds hue, the guard bounds luminance,")
-    print("         nothing leaves the cube, and the additive hue rotation is gone.")
+    print("         nothing leaves the cube, the additive hue rotation is gone, and the")
+    print("         residual limit scales the correction instead of clamping a channel.")
 
 
 if __name__ == "__main__":

@@ -368,13 +368,28 @@ float3 CubeScale(float3 p, float3 t){
   fix = res.SampleLevel(smp,uv,0).rgb;
  }
  fix *= intensity;
- // The network works in tiles, and the tiles at the frame border have no neighbours on one
- // side, so the correction there is extrapolated rather than seen. Bicubic upsampling then
- // rings on top of it. Both show up as the same thing: bright specks and crawling colour in
- // the corners and along the edges, worst where two borders meet. limit caps how far a
- // single pixel of correction may go, fade rolls it off over a border band -- fade uses the
- // smaller of the two distances, so a corner gets both rolloffs and lands hardest.
- if (limit > 0.0) fix = clamp(fix, -limit, limit);
+ // Normalised before anything is decided about it, so "how big is this correction" means the
+ // same thing whatever the encoding is: 1.0 is white. The correction arrives in the network's
+ // own space, which is the frame's linear light times the Diffuse White scale, and a limit
+ // expressed in that space would mean something different at 100 nits and at 1000.
+ fix /= (mode != 0) ? max(k, 1e-6) : 1.0;
+ // The network works in tiles, and a tile where it extrapolated rather than saw returns a
+ // correction nothing like the few percent it returns everywhere else -- one measured run came
+ // back with a mean of 0.072 and a **maximum of 4.16**, in a picture whose own mean is 0.13.
+ // That is where the blown blocks come from, and every extra pass runs on top of the last one's
+ // blown block, so it compounds rather than averaging out.
+ //
+ // Scaled as a whole triple rather than clamped per channel. A per-channel clamp on an outlier
+ // is a hue rotation -- the same failure the composition below exists to avoid -- so it turned
+ // a blown block into a blown *coloured* block. Here the direction of the correction survives
+ // and only its size gives way, and a correction already inside the limit is untouched.
+ if (limit > 0.0) {
+  float mag = max(abs(fix.r), max(abs(fix.g), abs(fix.b)));
+  if (mag > limit) fix *= limit / mag;
+ }
+ // The tiles at the frame border have no neighbour on one side, and bicubic upsampling rings on
+ // top of that. fade rolls the correction off over a band, using the smaller of the two
+ // distances, so a corner gets both rolloffs and lands hardest.
  if (fade > 0.0) { float2 e = min(uv, 1.0 - uv) / fade; fix *= saturate(min(e.x, e.y)); }
  uint dbg = pad >> 1;
  if (dbg != 0) {
@@ -396,7 +411,7 @@ float3 CubeScale(float3 p, float3 t){
  // pictures being compared below are at the same scale. Everything from here on works in that
  // normalised space, where 1.0 is white, so the encoding drops out of the arithmetic.
  float3 P = (mode != 0) ? ToLinear(saturate(c)) : c;
- float3 E = fix / ((mode != 0) ? max(k, 1e-6) : 1.0);
+ float3 E = fix;
  float3 v;
  if (guard <= 0.0) {
   // Additive. What this add-on did until now, kept so the two can be compared in one session:
@@ -892,8 +907,18 @@ struct State
     // report is specks and crawling colour in the corners. limit caps a single pixel of
     // correction, fade rolls the whole correction off over a border band. Both default to off,
     // so nothing changes until they are turned up.
-    std::atomic<float> residualLimit { 0.0f };
+    // Measured, not chosen: a two-pass run on God of War reported a mean correction of 0.072 with
+    // a **maximum of 4.16**, against a picture whose own mean is 0.13. A correction four times
+    // brighter than white is not something the network saw, it is a tile where it extrapolated --
+    // and it is exactly the blown block on screen. Off was the old default and it let all of that
+    // through. 0.25 is still more than three times the typical correction, so an ordinary pixel
+    // never meets it.
+    std::atomic<float> residualLimit { 0.25f };
     std::atomic<float> residualFade { 0.0f };
+    // Halve what each later pass is told to do. Pass 2 is editing pass 1's work, and the residual
+    // measurement says the chain compounds rather than averages: one pass is a mean of 0.021, two
+    // is 0.072. Overridden by any per-pass profile that is switched on.
+    std::atomic<bool> passTaper { true };
     // How the network's answer is put back onto the frame. Above zero this is the highlight
     // guard -- the most compose may move a pixel's luminance, in either direction -- and it
     // doubles as the switch: zero selects the old additive composition, which is kept only so
@@ -1173,8 +1198,9 @@ void LoadSettings()
     g.passes.store(std::clamp(static_cast<int>(num(L"Passes", 1.0f)), 1,
                              static_cast<int>(State::kMaxPasses)));
     g.intensity.store(num(L"Intensity", g.intensity.load()));
-    g.residualLimit.store(std::max(0.0f, num(L"ResidualLimit", 0.0f)));
+    g.residualLimit.store(std::max(0.0f, num(L"ResidualLimit", g.residualLimit.load())));
     g.residualFade.store(std::clamp(num(L"EdgeFade", 0.0f), 0.0f, 0.49f));
+    g.passTaper.store(flag(L"PassTaper", g.passTaper.load()));
     g.ratioGuard.store(std::clamp(num(L"Guard", g.ratioGuard.load()), 0.0f, 8.0f));
     g.guardTracksPasses.store(flag(L"GuardPerPass", g.guardTracksPasses.load()));
     g.colourStrength.store(std::clamp(num(L"ColourStrength", g.colourStrength.load()), 0.0f, 1.0f));
@@ -1210,6 +1236,18 @@ void LoadSettings()
     g.noBridge.store(flag(L"NoBridge", g.noBridge.load()));
     g.stage.store(static_cast<int>(num(L"Stage", 3.0f)));
     g.events = static_cast<int>(num(L"Events", 31.0f));
+    // Diagnostic, in the same family as Stage / Events / NoBridge: read at load, never written
+    // back, and off unless the file asks for it. The add-on starts switched off on purpose and
+    // the switch is a keypress, which means a route can only be exercised by a person standing
+    // at the machine -- and the Vulkan route is the one that has to be booted, watched and shut
+    // down without one. Anything left holding this on gets an add-on that starts on, which is
+    // why it is not in the overlay and not saved.
+    if (flag(L"StartOn", false))
+    {
+        g.enabled.store(true);
+        Log("StartOn=1 in the ini: the add-on is on from the first frame. Diagnostic only -- it "
+            "is never written back, so removing the line is enough to undo it.");
+    }
     g.motionScale.store(num(L"MotionScale", g.motionScale.load()));
     g.autoMask.store(static_cast<int>(num(L"AutoMask", 1.0f)));
     g.toneChannels.store(static_cast<int>(num(L"ToneChannels", 0.0f)));
@@ -1225,11 +1263,15 @@ void LoadSettings()
         g.inlineMode.load() ? 1 : 0, g.bicubic.load() ? 1 : 0, g.useMotion.load() ? 1 : 0,
         g.useHistory.load() ? 1 : 0, static_cast<double>(g.flowGate.load()),
         static_cast<double>(g.flowRatio.load()), g.debugView.load());
-    Log("compose: %s, guard %.2f%s, colour strength %.2f",
+    Log("compose: %s, guard %.2f%s, colour strength %.2f, residual limit %.3f, edge fade %.3f, "
+        "later passes %s",
         g.ratioGuard.load() > 0.0f ? "ratio" : "additive",
         static_cast<double>(g.ratioGuard.load()),
         g.guardTracksPasses.load() ? " (+1 per extra pass)" : "",
-        static_cast<double>(g.colourStrength.load()));
+        static_cast<double>(g.colourStrength.load()),
+        static_cast<double>(g.residualLimit.load()),
+        static_cast<double>(g.residualFade.load()),
+        g.passTaper.load() ? "tapered by half each" : "at full strength");
     for (UINT i = 0; i < State::kMaxPasses; ++i)
         if (g.passOverride[i].load())
             Log("  pass %u profile: structure %.2f tone %.2f skin %.2f", i + 1,
@@ -1273,6 +1315,7 @@ void SaveSettings()
     num(L"Guard", g.ratioGuard.load());
     num(L"ColourStrength", g.colourStrength.load());
     flag(L"GuardPerPass", g.guardTracksPasses.load());
+    flag(L"PassTaper", g.passTaper.load());
     num(L"Structure", g.structure.load());
     num(L"Skin", g.skin.load());
     num(L"Tone", g.tone.load());
@@ -3064,7 +3107,16 @@ PassTune TuningFor(UINT pass)
 {
     if (pass < State::kMaxPasses && g.passOverride[pass].load())
         return { g.passStructure[pass].load(), g.passTone[pass].load(), g.passSkin[pass].load() };
-    return { g.structure.load(), g.tone.load(), g.skin.load() };
+    PassTune t { g.structure.load(), g.tone.load(), g.skin.load() };
+    // Skin is left alone on purpose: -1 is the engine's own default and it means "follow local
+    // structure", not "no skin structure", so scaling it is scaling a mode rather than a strength.
+    if (pass > 0 && g.passTaper.load())
+    {
+        const float k = std::pow(0.5f, static_cast<float>(pass));
+        t.structure *= k;
+        t.tone *= k;
+    }
+    return t;
 }
 
 // Everything the network does in one frame, recorded into whatever command list it is handed.
@@ -4324,22 +4376,31 @@ void OnOverlay(effect_runtime *)
         if (ImGui::SliderFloat(T("Residual Limit", "Limite do Resíduo"), &v, 0.0f, 0.50f,
                                v <= 0.0f ? T("off", "desligado") : "%.3f", 0))
             g.residualLimit.store(v);
-        Help("Caps how far the correction may push a single pixel, in linear units, per channel. "
-             "0 is off and nothing is capped.\n\n"
-             "The network is tiled, and the correction is a few percent of the signal almost "
-             "everywhere -- so a pixel where it is not is a pixel where the network extrapolated "
-             "instead of seeing. Those are the specks. Capping keeps every correction that is in "
-             "the normal range and flattens the outliers.\n\n"
-             "Start around 0.05 and lower it until the specks go. Too low and the whole effect "
-             "flattens, which Residual x8 shows immediately.",
+        Help("Caps how far the correction may push a single pixel, as a fraction of white. 0 is "
+             "off and nothing is capped.\n\n"
+             "This is the control for the blown blocks. A measured two-pass run on God of War "
+             "reported a mean correction of 0.072 with a MAXIMUM OF 4.16 -- four times brighter "
+             "than white, in a picture whose own mean is 0.13. That is not something the network "
+             "saw; it is a tile where it extrapolated. Every extra pass then runs on top of that "
+             "blown tile, so it compounds instead of averaging away.\n\n"
+             "The whole correction is scaled, not clamped per channel: clamping one channel of a "
+             "triple is a hue rotation, which turned a blown block into a blown coloured one.\n\n"
+             "0.25 by default, which is over three times the typical correction, so an ordinary "
+             "pixel never meets it. Lower it until the blocks go; too low flattens the whole "
+             "effect, which Residual x8 shows immediately.",
 
-             "Limita o quanto a correção pode empurrar um pixel, em unidades lineares, por canal. "
-             "0 é desligado e nada é limitado.\n\n"
-             "A rede trabalha em blocos, e a correção é uns poucos por cento do sinal em quase "
-             "tudo -- então um pixel onde ela não é isso é um pixel onde a rede extrapolou em vez "
-             "de enxergar. São esses os pontinhos. Limitar mantém toda correção na faixa normal e "
-             "achata os fora da curva.\n\n"
-             "Comece perto de 0.05 e baixe até os pontinhos sumirem. Baixo demais achata o efeito "
+             "Limita o quanto a correção pode empurrar um pixel, como fração do branco. 0 é "
+             "desligado e nada é limitado.\n\n"
+             "É este o controle dos blocos estourados. Uma medição de dois passes no God of War "
+             "deu correção média 0.072 com MÁXIMO DE 4.16 -- quatro vezes mais claro que o "
+             "branco, numa imagem cuja média é 0.13. Isso não é algo que a rede viu; é um bloco "
+             "onde ela extrapolou. Cada passe extra roda em cima desse bloco estourado, então "
+             "acumula em vez de diluir.\n\n"
+             "A correção inteira é escalada, não cortada canal por canal: cortar um canal de um "
+             "trio é rotação de matiz, o que transformava bloco estourado em bloco estourado e "
+             "colorido.\n\n"
+             "0.25 por padrão, que é mais de três vezes a correção típica, então pixel normal "
+             "nunca encosta nele. Baixe até os blocos sumirem; baixo demais achata o efeito "
              "inteiro, o que o Resíduo x8 mostra na hora.");
         Tag(kTraced);
 
@@ -4566,6 +4627,39 @@ void OnOverlay(effect_runtime *)
                           "com o job id antes e depois: um id que não anda é um passe que não fez "
                           "nada. Leia isso primeiro, depois compare o 'measure, residual' em 1 e "
                           "em 2."));
+
+        if (passes > 1)
+        {
+            bool taper = g.passTaper.load();
+            if (ImGui::Checkbox(T("Taper later passes", "Diminuir passes seguintes"), &taper))
+            {
+                g.passTaper.store(taper);
+                Log("menu: pass taper %s", taper ? "on" : "off");
+            }
+            Help("Halves Structure and Local Tone for each pass after the first: full on pass 1, "
+                 "half on pass 2, a quarter on pass 3.\n\n"
+                 "Measured, not a preference. One pass returns a mean correction of 0.021; two "
+                 "passes returns 0.072, which is not twice, it is three and a half times. The "
+                 "chain compounds because each pass is editing the last one's work -- and where "
+                 "the first pass extrapolated, the second extrapolates on top of that. Half as "
+                 "much per pass keeps the chain's total near one pass's and lets the extra runs "
+                 "spend themselves on what the first one missed.\n\n"
+                 "Skin is not tapered: -1 is the engine's own default and it means \"follow local "
+                 "structure\", so it is a mode, not a strength.\n\n"
+                 "Any pass with its own settings below ignores this.",
+
+                 "Corta pela metade a Estrutura e o Tom Local a cada passe depois do primeiro: "
+                 "cheio no passe 1, metade no 2, um quarto no 3.\n\n"
+                 "Medido, não é gosto. Um passe devolve correção média 0.021; dois passes devolvem "
+                 "0.072, que não é o dobro, é três vezes e meia. A cadeia acumula porque cada "
+                 "passe está editando o trabalho do anterior -- e onde o primeiro extrapolou, o "
+                 "segundo extrapola em cima. Metade por passe mantém o total da cadeia perto do "
+                 "de um passe e deixa as rodadas extras gastarem no que a primeira não pegou.\n\n"
+                 "Pele não é diminuída: -1 é o padrão do próprio motor e significa \"seguir a "
+                 "estrutura local\", então é um modo, não uma força.\n\n"
+                 "Qualquer passe com ajustes próprios abaixo ignora isto.");
+            Tag(kTraced);
+        }
 
         // Per-pass profiles, the reference fork's "Per pass" tree. A later pass is looking at a
         // picture an earlier one already edited, so the same numbers again ask it to sharpen its
