@@ -899,6 +899,10 @@ struct State
     HMODULE runtime = nullptr;
     UINT lastJob = 0;
     UINT activePasses = 0;
+    // One-shot, the first frame that actually asks for more than one pass. Pass Count spent
+    // this whole project either hardcoded to 1 or forced back to 1, so no run has ever
+    // produced evidence that a second pass is recorded at all -- only that it was asked for.
+    bool loggedPassDetail = false;
     HipSetFn hipSet = nullptr;
     int hipDevice = -1;
     bool engineReady = false;
@@ -3368,7 +3372,11 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         // it is written, not exposed.
         At<UINT>(r, 0x76e10) = 1u;
         At<uint8_t>(r, 0x76e14) = 1;
-        At<float>(r, 0x76e30) = i == 0 ? g.tone.load() : 0.0f;
+        // Was `i == 0 ? tone : 0.0f`, which zeroed Local Tone on every pass after the first
+        // while structure and skin were written at full value on all of them. Nobody chose
+        // that asymmetry and nothing measured it -- and it makes a 1-vs-2 comparison read as
+        // two changes instead of one. All three fields now get the same value every pass.
+        At<float>(r, 0x76e30) = g.tone.load();
         At<float>(r, 0x76e34) = g.structure.load();
         At<float>(r, 0x76e38) = g.skin.load();
 
@@ -3384,7 +3392,14 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         packet.exposureState = 4;
         packet.scaleX = 1.0f;
         packet.scaleY = 1.0f;
+        // Read before the call so the report below can say whether this pass moved anything.
+        // The marker at 76d68 cannot answer that on its own: pass 1 sets it to cmd, so on pass 2
+        // the equality test below is comparing cmd against cmd whatever the engine did, and a
+        // silently refused pass 2 would be counted as accepted. The job id is the field that
+        // changes per evaluation, so an id that does not move is a pass that did not run.
+        const UINT jobBefore = At<UINT>(r, 0x76d74);
         reinterpret_cast<RecordFn>(reinterpret_cast<uintptr_t>(r) + 0xa0b0)(&packet);
+        const UINT jobAfter = At<UINT>(r, 0x76d74);
 
         if (At<uint8_t>(r, 0x767fa) != 0)
         {
@@ -3400,10 +3415,20 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
                     static_cast<unsigned long long>(g.skipped));
             break;
         }
-        g.lastJob = At<UINT>(r, 0x76d74);
+        g.lastJob = jobAfter;
         if (auto *abortWord = At<volatile LONG *>(r, 0x76c68))
             InterlockedExchange(abortWord, 0);
         ++accepted;
+
+        // Reported, not enforced. Whether the engine bumps the job id once per recording or once
+        // per submission is not established, so acting on this would risk breaking out of the
+        // loop on a pass that was in fact fine -- which is exactly the failure being fixed. It
+        // prints instead, and the log then says plainly whether a second pass is real work.
+        if (wanted > 1 && !g.loggedPassDetail)
+            Log("pass %u of %u: job id %u -> %u (%s), list marker %s", i + 1, wanted, jobBefore,
+                jobAfter, jobAfter != jobBefore ? "moved, the engine recorded something"
+                                               : "DID NOT MOVE -- this pass may be a no-op",
+                At<ID3D12CommandList *>(r, 0x76d68) == cmd ? "ours" : "not ours");
 
         // The next pass has to read what this one wrote. Every pass records into this same
         // command list and nothing orders them against each other, so the second pass could
@@ -3412,6 +3437,12 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         // correction would be exactly zero, which is precisely what Passes>1 measured:
         // residual 0.000000 against 0.021 with a single pass. The passes are sequential by
         // intent, so make the pipeline agree.
+        //
+        // Note this barrier has never executed on a working run: Pass Count was forced back to 1
+        // on the default timing until this session, so `i + 1 < wanted` was never true. If a
+        // Passes=2 run loses the device, this is the first thing to suspect -- a UAV barrier is
+        // only valid on a resource the caller left in UNORDERED_ACCESS, and what state the engine
+        // leaves netColour in is its own business, not something read out of it from here.
         if (i + 1 < wanted)
         {
             D3D12_RESOURCE_BARRIER between {};
@@ -3421,6 +3452,14 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         }
     }
     g.activePasses = accepted;
+    if (wanted > 1 && !g.loggedPassDetail)
+    {
+        g.loggedPassDetail = true;
+        Log("pass count: %u asked for, %u accepted. Compare the 'measure, residual' line against "
+            "a run at 1 -- an extra pass that records but changes nothing reads as the same "
+            "residual, and an extra pass that is a no-op reads as the same residual too. The "
+            "per-pass job ids above are what tells those two apart.", wanted, accepted);
+    }
     if (accepted != 0)
         g.lastJobAt = GetTickCount64();
     if (nativeFailure)
@@ -4163,10 +4202,17 @@ void OnOverlay(effect_runtime *)
                             "a combinação que alcança o timeout do driver. Troque o Momento para "
                             "Assíncrono ou baixe a escala."));
         else if (passes > 1)
-            Note(kWarn, T("Unmeasured. Compare the 'measure, residual' line at 1 and at 2 before "
-                          "trusting it.",
-                          "Não medido. Compare a linha 'measure, residual' em 1 e em 2 antes de "
-                          "confiar."));
+            Note(kWarn, T("Unmeasured, and until this build the count was forced back to 1 on "
+                          "Same-frame timing -- so no run has ever shown a second pass being "
+                          "recorded. The log now prints one 'pass N of M' line per pass with the "
+                          "job id before and after: an id that does not move is a pass that did "
+                          "nothing. Read that first, then compare 'measure, residual' at 1 and 2.",
+                          "Não medido, e até esta build a contagem era forçada de volta para 1 no "
+                          "modo Mesmo quadro -- então nenhuma execução mostrou um segundo passe "
+                          "sendo gravado. O log agora imprime uma linha 'pass N of M' por passe "
+                          "com o job id antes e depois: um id que não anda é um passe que não fez "
+                          "nada. Leia isso primeiro, depois compare o 'measure, residual' em 1 e "
+                          "em 2."));
 
         bool bic = g.bicubic.load();
         if (ImGui::Checkbox(T("Bicubic Residual Upsample", "Upsample Bicúbico do Resíduo"), &bic))
