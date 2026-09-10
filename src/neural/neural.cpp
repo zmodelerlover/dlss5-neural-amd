@@ -788,6 +788,10 @@ struct Guide
     // main scene pass outbinds shadow maps and reflection probes by an order of magnitude.
     ComPtr<ID3D11Resource> chosen;
     UINT chosenBinds = 0;
+    // Who is trying to take the slot, and for how many presents running. Identity only -- never
+    // dereferenced, and cleared the moment it stops winning -- so no reference is needed.
+    ID3D11Resource *challenger = nullptr;
+    UINT challengerFrames = 0;
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
@@ -872,20 +876,51 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally)
         tally.clear();
         return;
     }
-    const bool same = guide.chosen.Get() == best->res.Get();
-    guide.chosenBinds = best->binds;
-    if (!same)
+    if (guide.chosen.Get() == best->res.Get())
     {
-        guide.chosen = best->res;  // takes a reference; the tally's is about to go
-        guide.width = best->width;
-        guide.height = best->height;
-        guide.format = best->format;
-        guide.ready = false;
-        guide.logged = false;
-        guide.failed = false;
-        Log("guide %s: taking %ux%u format %u, bound %u times this frame", guide.name,
-            best->width, best->height, static_cast<unsigned>(best->format), best->binds);
+        guide.chosenBinds = best->binds;
+        guide.challenger = nullptr;
+        guide.challengerFrames = 0;
+        tally.clear();
+        return;
     }
+
+    // A challenger has to win more than one frame.
+    //
+    // The tally is cleared every present, so "most-bound" was decided by a single frame, and a
+    // single frame is not always a representative one. The GTA San Andreas log has the depth
+    // guide walk away from a buffer bound 96440 times to one bound *9 times*, on the frame the
+    // game changed resolution and stopped drawing its scene pass: the incumbent simply was not
+    // in that frame's tally, so a nine-bind buffer won by being the only thing there. Every frame
+    // after that fed the network the wrong depth, and nothing demotes a chosen guide, so it never
+    // recovered.
+    //
+    // Three frames is enough to outlast a resolution change, a loading screen or an alt-tab, and
+    // short enough that a real switch costs nothing anyone can see.
+    if (guide.challenger != best->res.Get())
+    {
+        guide.challenger = best->res.Get();
+        guide.challengerFrames = 1;
+        tally.clear();
+        return;
+    }
+    if (++guide.challengerFrames < 3)
+    {
+        tally.clear();
+        return;
+    }
+    guide.challenger = nullptr;
+    guide.challengerFrames = 0;
+    guide.chosenBinds = best->binds;
+    guide.chosen = best->res;  // takes a reference; the tally's is about to go
+    guide.width = best->width;
+    guide.height = best->height;
+    guide.format = best->format;
+    guide.ready = false;
+    guide.logged = false;
+    guide.failed = false;
+    Log("guide %s: taking %ux%u format %u, bound %u times a frame for three frames running",
+        guide.name, best->width, best->height, static_cast<unsigned>(best->format), best->binds);
     tally.clear();
 }
 
@@ -3031,6 +3066,10 @@ void ReleaseSwapchainSized()
         guide->bridge.Destroy();
         guide->local.Reset();
         guide->ready = false;
+        // A raw identity pointer must not outlive the resources it was compared against: the
+        // next allocation the game makes can land on the same address.
+        guide->challenger = nullptr;
+        guide->challengerFrames = 0;
     }
     g_depthTally.clear();
     g_motionTally.clear();
