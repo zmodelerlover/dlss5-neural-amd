@@ -1,5 +1,7 @@
 # dlss5-neural-amd
 
+**THIS IS A PROOF-OF-CONCEPT, NOT EVEN CLOSE TO FINAL VERSION, FORK IT, SHARE IT, LETS GROW TOGETHER**
+
 ReShade add-on that runs the DLSS-NR network on AMD cards.
 
 Every tool for DLSS 5 (renodx-dlss, DLSS5-Feeder, DLSS5-Swapper) calls NVIDIA's
