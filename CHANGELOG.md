@@ -37,6 +37,32 @@ hue.
   the crawling, boiling colour in dark scenes.
 - `tools/compose_check.py` asserts the four properties the composition is built to have.
 
+### The blown blocks, measured
+
+A two-pass run on God of War reported a mean correction of **0.072 with a maximum of 4.16**, in a
+picture whose own mean is 0.13. A correction four times brighter than white is not something the
+network saw — it is a tile where it extrapolated, and every extra pass runs on top of that blown
+tile. One pass measures 0.021, two measures 0.072: not twice, three and a half times.
+
+- **Residual Limit now defaults to 0.25** and is a fraction of white rather than a raw linear
+  value, so it means the same thing at every encoding. It was off by default, which let all of the
+  above through.
+- It **scales the whole correction** instead of clamping each channel. A per-channel clamp on an
+  outlier is a hue rotation, which is what turned a blown block into a blown *coloured* block.
+
+### Local Tone is a first-pass control again
+
+`i == 0 ? tone : 0.0f` was removed last release as an asymmetry nobody had chosen. Somebody had:
+upstream's `PassProfiles.h` makes exactly that choice, in one line —
+`pass == 0 ? cfg.DlssNrLocalTone.value_or_default() : 0.0f`. Local tone is a tone decision about the
+frame, and a second pass re-deciding the tone of a frame whose tone the first pass already moved is
+how a chain runs away from the picture it started with. Restored. Structure and Skin still go to
+every pass at full value, which is also what upstream does.
+
+**Taper later passes** (off by default) halves Structure per pass on top of that. It is ours, not
+upstream's, and nothing here has measured that it is the right answer — so it is offered and not
+taken.
+
 ## v0.3.0 — 2026-09-10
 
 Everything below is new since what is currently published. The short version: **D3D11 works, and
