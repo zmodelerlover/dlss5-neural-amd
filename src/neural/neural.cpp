@@ -3094,7 +3094,14 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         g.device->CreateShaderResourceView(cur, &srv, slot(16));
         g.device->CreateShaderResourceView(prev, &srv, slot(17));
         srv.Format = DXGI_FORMAT_R16G16_FLOAT;
-        g.device->CreateShaderResourceView(g.flowCoarse.Get(), &srv, slot(18));
+        // t2 is where the search starts from, and it is only read when useGuess is set -- the
+        // coarse dispatch below passes 0 and starts from zero. Pointing it at flowCoarse, which
+        // is also that dispatch's UAV, leaves the same resource bound as an SRV and a UAV at
+        // once, in UNORDERED_ACCESS, on the strength of a guard in the shader. flowSmall is the
+        // previous frame's field: same format, in a readable state, and the sensible seed if the
+        // coarse pass is ever handed a nonzero useGuess. The refine pass at base 24 is already
+        // clean -- it reads flowCoarse and writes flowSmall, so the two differ.
+        g.device->CreateShaderResourceView(g.flowSmall.Get(), &srv, slot(18));
         uav.Format = DXGI_FORMAT_R16G16_FLOAT;
         g.device->CreateUnorderedAccessView(g.flowCoarse.Get(), nullptr, &uav, slot(19));
 
