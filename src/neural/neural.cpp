@@ -663,8 +663,22 @@ bool RuntimeHashMatches(const std::filesystem::path &file)
     // and that is knowable from the directory entry. Reading it in to find out pulls the whole of
     // whatever was pointed at into memory first, which is a strange way to reject a wrong DLL.
     std::error_code sizeError;
-    if (std::filesystem::file_size(file, sizeError) != kRuntimeSize || sizeError)
+    const auto size = std::filesystem::file_size(file, sizeError);
+    if (sizeError)
         return false;
+    // Say which file was rejected and what it is, not just that something was. This check refuses
+    // any build of the runtime but the one whose layout these offsets were read out of, and a
+    // user who has a *newer* dlssnr_amd_pass1.dll hits it through no fault of their own -- the
+    // add-on then printed one cryptic line and shut down. Every offset in InitEngine is a raw
+    // write into that DLL's globals, so accepting a different build is not an option; saying
+    // plainly which build is wanted is.
+    if (size != kRuntimeSize)
+    {
+        Log("dlssnr_amd_pass1.dll is %llu bytes; this add-on is built against the %zu-byte build "
+            "and every address it writes belongs to that one. Refused.",
+            static_cast<unsigned long long>(size), kRuntimeSize);
+        return false;
+    }
     std::ifstream in(file, std::ios::binary);
     std::vector<unsigned char> data((std::istreambuf_iterator<char>(in)), {});
     if (data.size() != kRuntimeSize)
@@ -676,7 +690,17 @@ bool RuntimeHashMatches(const std::filesystem::path &file)
     const auto result =
         BCryptHash(alg, nullptr, 0, data.data(), static_cast<ULONG>(data.size()), digest, 32);
     BCryptCloseAlgorithmProvider(alg, 0);
-    return result >= 0 && std::memcmp(digest, kRuntimeSha256, 32) == 0;
+    if (result >= 0 && std::memcmp(digest, kRuntimeSha256, 32) == 0)
+        return true;
+    char got[80] {}, want[80] {};
+    for (int i = 0; i < 16; ++i)
+    {
+        std::snprintf(got + i * 2, 3, "%02x", digest[i]);
+        std::snprintf(want + i * 2, 3, "%02x", kRuntimeSha256[i]);
+    }
+    Log("dlssnr_amd_pass1.dll is the right size but a different build: SHA-256 starts %s..., and "
+        "this add-on is built against %s.... Refused.", got, want);
+    return false;
 }
 
 // One texture that lives on both devices at once. Created on D3D11 (the game's device owns it),
@@ -2468,7 +2492,11 @@ bool InitEngine()
     }
     if (!RuntimeHashMatches(dll))
     {
-        Log("dlssnr_amd_pass1.dll hash mismatch; refused.");
+        // Said in the panel too. This is the one failure a user can actually fix, and the log
+        // line above it says which file and which build, so pointing at the log is worth it.
+        g.reason = "dlssnr_amd_pass1.dll is a different build to the one this add-on is built "
+                   "against; see dlss5-neural.log";
+        Log("off: %s", g.reason);
         return false;
     }
     if (!InitHip())
@@ -3969,8 +3997,13 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         if (!BringUpEngines(wanted))
         {
             g.unavailable = true;
-            g.reason = "could not bring the engine up on the bridge device";
-            Log("off: %s", g.reason);
+            // Do not paper over a reason the bring-up already gave. The hash refusal names the
+            // file the user has to replace; "could not bring the engine up" names nothing.
+            if (*g.reason == 0)
+            {
+                g.reason = "could not bring the engine up on the bridge device";
+                Log("off: %s", g.reason);
+            }
             return;
         }
         g.loadedPasses = wanted;
@@ -4006,8 +4039,11 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     if (!BringUpEngines(wanted))
     {
         g.unavailable = true;
-        g.reason = "could not bring the engine up";
-        Log("off: %s", g.reason);
+        if (*g.reason == 0)
+        {
+            g.reason = "could not bring the engine up";
+            Log("off: %s", g.reason);
+        }
         return;
     }
     g.loadedPasses = wanted;
