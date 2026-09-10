@@ -4,12 +4,6 @@
   "original_size": 7248384,
   "changes": [
     {
-      "offset": "0x6006",
-      "before": "ff15e4a40700",
-      "after": "31c090909090",
-      "reason": "disable standalone hook installer thread"
-    },
-    {
       "offset": "0x8583",
       "before": "ff156f490800",
       "after": "909090909090",
@@ -23,6 +17,10 @@
     }
   ],
   "dropped": [
+    {
+      "was": "0x6006 on v0.2.17 (0x1ffc on v0.2.14): the CreateThread that starts the runtime's own setup thread",
+      "reason": "On v0.2.14 that thread only installed D3D12/DXGI detours, so killing it was free. On v0.2.17 the same thread also resolves the proxy: it builds the system paths for d3d12.dll and dxgi.dll and loads them, which is where the forwarded exports come from. Nopping the CreateThread leaves those null and the first call through one of them lands on address 0 -- measured, as a crash on the first frame after Enabled, with the engine's own handler reporting 0xc0000005 at 0000000000000000. The thread proc grew from 1.3 KB to 3 KB between the two builds and shares 41 of its first 600 bytes with the old one, which is the shape of a function that took on a second job. The detours it installs are harmless here: this add-on creates its D3D12 device before it ever loads the runtime, and a D3D11 host never calls D3D12CreateDevice."
+    },
     {
       "was": "0x62bed on v0.2.14",
       "reason": "the shader edit that made a timed-out frame keep its input. v0.2.17 offers it as ToneChannels bit 4 with bit 2 clear, which the add-on now sets, so there is nothing to patch"
