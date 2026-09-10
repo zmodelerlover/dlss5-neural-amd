@@ -45,6 +45,22 @@ delete them.
   Correction, Global Tone Strength, Model, Jitter, Exposure, Upscaling Ratio, and the old
   greyed-out Character Mask. They were disabled mirrors of the NVIDIA panel with one reachable
   value each.
+- **Every control now says how well it is known.** A tag beside each one — `MEASURED`,
+  `TRACED`, `UNKNOWN` or `INERT` — with a legend at the bottom of the panel. "Which of these
+  actually does something in the game" previously had no answer short of reading the source, and
+  the honest answer is not the same for any two controls.
+- **Residual Limit** and **Edge Fade**, both off by default. The network works in tiles, and the
+  tiles at the frame border have no neighbour on one side, so the correction there is
+  extrapolated rather than seen; bicubic upsampling then rings on top of it. That is the specks
+  and crawling colour in the corners. Limit caps how far one pixel of correction may go; Edge
+  Fade rolls the correction off over a border band, and a corner sits inside two bands at once,
+  so it gets both.
+- **Character Mask turns red when off, with a warning.** Switching it off does not just disable
+  the skin term — it removes the effect from the whole frame, because the engine derives its
+  structure and tone parameters through that mask.
+- **Engine Scale has a "Reset to 1/32" button.** A five-decimal slider cannot be dragged back
+  onto exactly `0.03125`, and this is a field whose effect nobody has established, so leaving it
+  a hair off its default is a way to change the picture and never find out why.
 
 ### New controls, from mapping the runtime
 
@@ -67,8 +83,8 @@ That turned up fields nothing had ever written:
   scale of exactly 1.0, it multiplied the whole linear image by **2.03**. Now `white /
   reference`, with 100 for Linear and 203 for scRGB-nl. **This changes the picture.**
 - **Depth Inverted defaulted off while both runtimes default it on.** The add-on inverted the
-  engine's own default on every run. It is also a real field — read from ten places — which
-  earlier notes had marked as unverified.
+  engine's own default on every run. It is a real field — read from ten places — which earlier
+  notes had marked as unverified. It is now written as 1 unconditionally; see below.
 - **Tonemap was forced to 0 at init.** The engine's own default is -1. Nobody chose 0 and it was
   never measured against anything.
 - **`0x76e1d` was mislabelled.** It is `Temporal`, not "the motion field is valid" — the
@@ -83,6 +99,24 @@ That turned up fields nothing had ever written:
   driver timeout.
 - **Pass Count did nothing at all on D3D11.** The loop that honoured the value existed only on
   the D3D12 path, so on every D3D11 target the setting was never read.
+- **Pass Count still did nothing on a default install.** After the fix above, the count was
+  forced back to 1 whenever Timing was *Same frame* — and *Same frame* is the default. The
+  slider moved, saved to the ini, and changed nothing. The force is gone; the cost of a second
+  pass in inline is framerate, which the panel colours and says. The log now prints one
+  `pass N of M` line per pass with the engine's job id before and after, so an extra pass that
+  is a no-op can be told apart from one that runs and changes nothing — two cases that had been
+  producing the same reading.
+- **Local Tone was zeroed on every pass after the first**, while structure and skin were written
+  at full value on all of them. Nobody chose that, and it made a 1-vs-2 comparison read as two
+  changes instead of one. All three fields now get the same value on every pass.
+- **Motion Scale only ever applied to games that hand over a velocity buffer**, and it was
+  hidden on every target without one. So the estimated motion field — the one that is a guess
+  and the one most in need of turning down — had no control at all. Both fields go through it
+  now, and the slider is visible whenever motion is on.
+- **Depth Inverted is gone.** It was a switch that could only be set wrong: no run on either
+  target ever produced a reading that separated the two settings, so it is now pinned to the
+  engine's own default of 1 and not exposed. (The previous entry about it defaulting off still
+  stands — that was a real bug, this removes the control that carried it.)
 - **A bridge failure costs a rebuild, not the rest of the run.** It used to latch, after which
   the add-on returned from every present in silence and left the last image it wrote on screen.
 - **The DXGI resize failure.** Loading the runtime pulled `d3d12.dll` into a D3D11 process, which
@@ -111,6 +145,25 @@ That turned up fields nothing had ever written:
   never published. **Model A is the only model that exists on this side.** Written up in the
   README so the question stays closed rather than being rediscovered every few months.
 
+### New tools
+
+Two standalone programs, built with `.uild.ps1 -Target <name> -Exe`. Neither needs a game.
+
+- **`vkprobe`** asks the installed Vulkan driver whether it will let Vulkan import D3D12 textures
+  and D3D12 fences, per format and per handle type, and prints a table. That is the precondition
+  for ever running this under a Vulkan host such as RPCS3, and it is a question the driver
+  answers before anything is created.
+- **`vkbridge`** round-trips known bytes across that boundary in both directions and compares
+  them.
+
+On an RX 9070 XT both pass: `D3D12_RESOURCE` textures import, `D3D12_FENCE` imports as a
+timeline semaphore, and every format the add-on carries survives the crossing byte for byte.
+Notably `D3D12_HEAP` is *not* supported on that driver while `D3D12_RESOURCE` is — so the handle
+type is not a free choice.
+
+**This does not mean Vulkan works yet.** No Vulkan route is shipped in this release; what these
+two prove is that the transport it would need is possible on AMD, which was not known before.
+
 ### Known, and not fixed
 
 - The Pass Count machine hang has **not been reproduced or confirmed absent** since the rework.
@@ -120,6 +173,13 @@ That turned up fields nothing had ever written:
 - The `exposure` slot of the network's input packet is still never filled.
 - Guide contents have not been measured during real gameplay, only on menus, where flat depth and
   zero motion are expected.
+- **Residual Limit and Edge Fade are unmeasured.** They are off by default, so an untouched
+  install behaves exactly as before, but neither has been compared against a `measure, residual`
+  reading.
+- **The between-pass barrier has never executed.** It sits behind `Pass Count > 1`, which until
+  this release was forced back to 1 on the default timing. If a two-pass run loses the display
+  device, that is the first thing to suspect.
+- No Vulkan or OpenGL route. The add-on loads under a Vulkan host and then sits there.
 
 ## v0.2.0
 
