@@ -329,16 +329,28 @@ Two wrong turns on the way, recorded because the reasoning was plausible and sti
   should have come first: arm the engine but skip the record call, and see whether it still
   crashes. It did not, which put the fault inside one call and ended the speculation.
 
-Measured after the fix, God of War II under PCSX2, 960x540, RX 9070 XT:
+Measured after the fix, God of War II under PCSX2, 960x540, one pass, RX 9070 XT, 45 seconds
+each:
 
 | | v0.2.14 | v0.2.17 |
 |---|---|---|
-| per job | 15-16 ms | 9-10 ms |
+| jobs in 45 s | ~2500 | ~2500 |
+| per job, reported | 15-16 ms, alternating with 0 ms | 9-10 ms, every sample |
 | residual, 1 pass | 0.101091 | 0.000317 |
 | residual, 2 passes | not taken | 0.000588 |
 
-The time per job is the headline: the same network, the same scene, **a third faster**. The
-residual is the thing to look at next and not to celebrate yet. On v0.2.14 it came back as
+**This is not a speed-up, and the first draft of this entry wrongly said it was.** That claim came
+from comparing v0.2.14's opening jobs against v0.2.17's steady state, which is not a comparison.
+Read down the whole run and the throughput is identical: about 2500 jobs in 45 seconds either way,
+roughly 18 ms of wall clock per job on both.
+
+What did change is that the number stopped wobbling. v0.2.14 alternates between 15-16 ms and a
+flat **0 ms** for half its samples, which is not a job that took no time, it is a job whose timing
+was never captured. v0.2.17 reports 9-10 ms on every sample and splits out a figure v0.2.14 never
+had, "network on the GPU", separately from the wait on the capture. Two builds measuring different
+things, one of them badly. Steadier reporting is worth having and is not the same as being faster.
+
+The residual is the thing to look at next and not to celebrate yet. On v0.2.14 it came back as
 0.101091 against an input mean of 0.101140 -- the same number, which is what a correction measured
 against an empty base looks like, not a correction. The new figures are small and they scale 1.85x
 from one pass to two, which is much closer to honest accumulation than the 3.5x this project has
