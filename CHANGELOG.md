@@ -288,6 +288,62 @@ appended to `dlssnr_on_amd_setup.exe`; every change was always ours. `tools/extr
 now lifts that payload out without executing the installer, verified against v0.2.14 through
 v0.2.17.
 
+### The v0.2.17 port, and the one offset that got away
+
+Everything above was written before any of it had run. It crashed on the first frame after
+Enabled, twice, with the engine's own handler reporting `0xc0000005 at 0000000000000000` -- a jump
+into nothing, on no module, before the first job.
+
+The offsets were not the problem. The add-on read the engine's own defaults back correctly at the
+new addresses (`8d9d0` LocalTone 0.0, `8d9d4` LocalStructure 1.0, `8d9d8` SkinStructure -1.0), and
+both passes recorded. What got away was a **fourth entry point**: the add-on calls the runtime's
+frame-notify function directly, and that call is written as `base + 0x4640` in three places rather
+than through the `At<>` helper, so the sweep that relocated everything else never saw it. In
+v0.2.17 that function lives at **0x9170**, and `base + 0x4640` lands in the middle of something
+else.
+
+The pairing is not a guess. Both functions reference the command-list marker twice, at exactly
+`+0x98` and `+0xD5` from their own entry, and the second binary patch sits at exactly `+0x13` in
+both. Three identical relative offsets.
+
+Found by adding **`NullJumpProbe`** to the add-on, which stays. A vectored handler that fires only
+on an access violation at address zero, reads the return address a `call` leaves at RSP, and logs
+which module it points into and at what offset. One run, one line:
+
+```
+fault probe: jumped to null; stack+0 returns to dlss5-neural.addon64+0x6705
+```
+
+That named the culprit as the add-on rather than the runtime, and 0x6705 disassembles to the
+instruction after `add rax, 4640h; call rax`. A project that drives a foreign binary through raw
+offsets should own that probe permanently: the cost is a handler that returns CONTINUE_SEARCH, and
+the alternative is guessing.
+
+Two wrong turns on the way, recorded because the reasoning was plausible and still wrong:
+
+- **Dropping the first binary patch.** The setup thread it kills grew from 1.3 KB to 3 KB and
+  loads `d3d12.dll` and `dxgi.dll` by full system path, which read like proxy resolution. It is
+  not: it builds a dummy device, window and swapchain purely to read five vtable slots and detour
+  them. Killing it is still right, and the patch is back.
+- **Blaming the offsets.** They were all correct. The measurement that settled it was cheap and
+  should have come first: arm the engine but skip the record call, and see whether it still
+  crashes. It did not, which put the fault inside one call and ended the speculation.
+
+Measured after the fix, God of War II under PCSX2, 960x540, RX 9070 XT:
+
+| | v0.2.14 | v0.2.17 |
+|---|---|---|
+| per job | 15-16 ms | 9-10 ms |
+| residual, 1 pass | 0.101091 | 0.000317 |
+| residual, 2 passes | not taken | 0.000588 |
+
+The time per job is the headline: the same network, the same scene, **a third faster**. The
+residual is the thing to look at next and not to celebrate yet. On v0.2.14 it came back as
+0.101091 against an input mean of 0.101140 -- the same number, which is what a correction measured
+against an empty base looks like, not a correction. The new figures are small and they scale 1.85x
+from one pass to two, which is much closer to honest accumulation than the 3.5x this project has
+been chasing. Whether that is a better measurement or a weaker effect has to be settled on screen.
+
 ### Known, and not fixed
 
 - The Pass Count machine hang has **not been reproduced or confirmed absent** since the rework.

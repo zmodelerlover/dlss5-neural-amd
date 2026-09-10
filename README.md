@@ -393,9 +393,8 @@ python tools\patch_runtime.py version.dll tools\runtime-patches.json dlssnr_amd_
 
 Both print hashes. Compare them against `tools/SHA256SUMS.txt`.
 
-`tools/runtime-patches.json` is the spec: two patches, with offsets, the bytes before, the bytes
-after, and why, plus a `dropped` list of three things this deliberately does **not** do, each with
-the reason it is not done.
+`tools/runtime-patches.json` is the spec: three patches, with offsets, the bytes before, the
+bytes after, and why, plus a `dropped` list of two things this deliberately does **not** do.
 
 The interesting one of those two is the GPU wait spin cap, which bounds the wait shader at 262144
 iterations, about 6 ms. The network takes 16 ms at half scale and 125-187 ms at full, so with the

@@ -868,7 +868,7 @@ void Present(command_queue *queue, swapchain *sc)
     ID3D12CommandList *lists[] { cmd12 };
     g.workQueue->ExecuteCommandLists(1, lists);
     if (g.activePasses != 0)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + 0x4640)(
+        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + 0x9170)(
             g.workQueue.Get(), 1, lists);
     g.ringValue[slot] = ++g.ringSerial;
     g.workQueue->Signal(g.ringFence.Get(), g.ringSerial);

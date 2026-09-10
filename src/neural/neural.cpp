@@ -630,10 +630,10 @@ void Barrier(ID3D12GraphicsCommandList *c, ID3D12Resource *r, D3D12_RESOURCE_STA
 // the add-on loads. Every offset below was re-derived against this build. v0.2.14, used
 // until now, has a different .data layout, and the add-on refuses it by name rather than
 // writing into the wrong globals.
-constexpr unsigned char kRuntimeSha256[32] = { 0xc8, 0xa5, 0xd3, 0xaf, 0x65, 0xf3, 0x50, 0x58,
-                                               0xa2, 0x27, 0x4f, 0xa3, 0xfb, 0xd3, 0xaa, 0x7a,
-                                               0x71, 0x3f, 0xf8, 0x6c, 0x33, 0x75, 0xe1, 0x2d,
-                                               0x74, 0xaf, 0x7d, 0x96, 0x18, 0x27, 0x90, 0x66 };
+constexpr unsigned char kRuntimeSha256[32] = { 0xdd, 0xd8, 0x2d, 0x31, 0x3a, 0xa7, 0x4c, 0x2e,
+                                               0x76, 0x02, 0xd1, 0x7d, 0xfb, 0x7e, 0x7c, 0xd9,
+                                               0x0c, 0xca, 0x9b, 0xfc, 0x03, 0x06, 0xf5, 0x81,
+                                               0x68, 0x4d, 0x35, 0xd7, 0x5d, 0x1b, 0x35, 0x0b };
 constexpr size_t kRuntimeSize = 7248384;
 
 template <class T> T &At(HMODULE h, size_t rva)
@@ -2337,7 +2337,7 @@ void BridgePresent(device *dev, swapchain *sc)
     ID3D12CommandList *lists[] { cmd };
     g.workQueue->ExecuteCommandLists(1, lists);
     if (g.activePasses != 0)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + 0x4640)(
+        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + 0x9170)(
             g.workQueue.Get(), 1, lists);
     g.ringValue[i] = ++g.ringSerial;
     g.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
@@ -2569,6 +2569,52 @@ std::filesystem::path RuntimeCopyUsingPrivateD3D12(const std::filesystem::path &
     return patched;
 }
 
+
+// Who jumped to null, and from where.
+//
+// A call through a null pointer faults with ExceptionAddress == 0, and the engine's own handler
+// prints exactly that and nothing else, which names the victim and not the culprit. The return
+// address a `call` pushes is still sitting at RSP, so one read of it says which instruction in
+// the runtime made the call, as an offset from the module base -- and that is a line in IDA.
+//
+// First-chance and read-only: this returns CONTINUE_SEARCH always, so it changes no behaviour.
+LONG CALLBACK NullJumpProbe(EXCEPTION_POINTERS *e)
+{
+    static LONG reported = 0;
+    if (e == nullptr || e->ExceptionRecord == nullptr || e->ContextRecord == nullptr)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION ||
+        e->ExceptionRecord->ExceptionAddress != nullptr)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedExchange(&reported, 1) != 0)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    const uintptr_t rsp = static_cast<uintptr_t>(e->ContextRecord->Rsp);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(g.runtime);
+    for (int i = 0; i < 8; ++i)
+    {
+        uintptr_t slot = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void *>(rsp + i * 8), &slot,
+                              sizeof(slot), nullptr) == 0)
+            continue;
+        HMODULE owner {};
+        char name[MAX_PATH] {};
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(slot), &owner) &&
+            GetModuleFileNameA(owner, name, MAX_PATH) != 0)
+        {
+            const char *leaf = std::strrchr(name, '\\');
+            Log("fault probe: jumped to null; stack+%d returns to %s+0x%llx%s", i * 8,
+                leaf ? leaf + 1 : name,
+                static_cast<unsigned long long>(slot - reinterpret_cast<uintptr_t>(owner)),
+                owner == g.runtime ? "   <<< THE RUNTIME" : "");
+        }
+    }
+    (void) base;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 bool InitEngine()
 {
     if (g.runtime != nullptr)
@@ -2613,6 +2659,15 @@ bool InitEngine()
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                        reinterpret_cast<LPCWSTR>(h), &pinned);
 
+    // Armed once, before the first raw write into the runtime. Everything below this line is a
+    // hardcoded offset into someone else's binary, and the failure mode of getting one wrong is a
+    // jump into nothing -- see NullJumpProbe.
+    static bool probeUp = false;
+    if (!probeUp)
+    {
+        AddVectoredExceptionHandler(1, NullJumpProbe);
+        probeUp = true;
+    }
     At<ID3D12Device *>(h, 0x8cee8) = g.device.Get();
     g.device->AddRef();
     At<ID3D12CommandQueue *>(h, 0x8cef0) = g.queue.Get();
@@ -4290,7 +4345,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     const UINT nw = g.netWidth, nh = g.netHeight;
     ID3D12CommandList *submitted[] { cmd };
     if (g.activePasses != 0)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + 0x4640)(
+        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + 0x9170)(
             g.queue.Get(), 1, submitted);
     queue->flush_immediate_command_list();
     DrainReadbacks(nw, nh);
