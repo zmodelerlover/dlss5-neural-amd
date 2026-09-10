@@ -17,7 +17,7 @@ Run so far, on an RX 9070 XT:
 |---|---|
 | **Euro Truck Simulator 2** | The best result so far — comparable to the same network running on NVIDIA. |
 | **PCSX2** (PS2 emulator) | Same, and the clips below are from it. |
-| **Need for Speed 2015** | Runs, 10,920 frames with no resize failures. Worked example below. |
+| **Need for Speed 2015** | Runs, 10,920 frames with no resize failures. It is the worked example in Case 1. |
 
 **Anything else is untested, not unsupported.** There is no whitelist and nothing to compile:
 point ReShade at any D3D11 or D3D12 game, drop the same three files beside it, and it runs. The
@@ -28,7 +28,9 @@ Discord: https://discord.gg/wYhvS3JSHM — for DLSS 5 in general, not a support 
 
 [![Support this project on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T213OVFE)
 
-**Just want it running?** → [Quick start](#quick-start), six steps, no compiler needed.
+**Installing it?** → [the three files](#the-three-files), then your case:
+**[DirectX 11 game](#case-1--directx-11-games)** or
+**[PS2 emulator](#case-2--ps2-emulator-pcsx2)**. No compiler needed.
 **Broken?** → [Troubleshooting](#troubleshooting), keyed by what you see on screen.
 **Changing the code?** → [Building it yourself](#building-it-yourself-optional).
 
@@ -59,82 +61,91 @@ PCSX2, no audio. Click a thumbnail, or use the plain links if the thumbnails do 
 
 # Quick start
 
-Three files go next to the game's `.exe` — one from the release, two from the discord. Everything
-else writes itself.
+## The three files
 
-### 1. Get the add-on
+The same three, whichever case you are in. They go next to the game's or the emulator's `.exe`.
 
-`dlss5-neural.addon64` from
-**[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest)**. You do not
-need to build anything; that file is compiled from this repository.
+**1. `dlss5-neural.addon64`** — from
+[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest). Nothing to build;
+that file is compiled from this repository.
 
-### 2. Get the runtime and the weights
-
-`dlssnr_amd_pass1.dll` (7 MB) and `dlssnr_on_amd_weights.bin` (141 MB) are **not in this repo and
-never will be** — the weights are NVIDIA-derived and the runtime comes from a third-party project
+**2. `dlssnr_amd_pass1.dll` (7 MB) and `dlssnr_on_amd_weights.bin` (141 MB)** — from the `files`
+channel on the **[discord](https://discord.gg/wYhvS3JSHM)**. They are **not in this repo and
+never will be**: the weights are NVIDIA-derived and the runtime comes from a third-party project
 that declares no license.
 
-> **Both are in the `files` channel on the discord → https://discord.gg/wYhvS3JSHM**
-
-That `.dll` is already rebuilt without the spin cap, so no patching. Check it:
+That `.dll` is already rebuilt without the spin cap, so no patching. Check it against
+`tools/SHA256SUMS.txt`:
 
 ```powershell
 Get-FileHash dlssnr_amd_pass1.dll, dlssnr_on_amd_weights.bin -Algorithm SHA256
 ```
 
-against `tools/SHA256SUMS.txt`. It has to be exactly that build — the add-on hashes it at load
-and refuses anything else, because the whole thing is hardcoded offsets into one specific binary
-and pointing them at a different one hangs the game.
+It has to be exactly that build. The add-on hashes it at load and refuses anything else, because
+the whole thing is hardcoded offsets into one specific binary and pointing them at a different one
+hangs the game.
 
-### 3. Install ReShade
+You also need the **add-on** build of ReShade (labelled "with full add-on support") from
+<https://reshade.me/>. The plain one will not load add-ons.
 
-The **add-on** build (labelled "with full add-on support") from <https://reshade.me/>. Point it
-at the game's `.exe`, choose **Direct3D 10/11/12**, and skip the shader download — this uses
-none.
+Now pick your case.
 
-### 4. Copy the files in
+---
 
-Next to the game's `.exe`:
+## Case 1 — DirectX 11 games
 
-```
-dlss5-neural.addon64
-dlssnr_amd_pass1.dll
-dlssnr_on_amd_weights.bin
-```
+Tested on **Euro Truck Simulator 2** and **Need for Speed 2015**, but nothing checks which game
+it is — any D3D11 game works the same way.
 
-Two more appear on their own. `dlssnr_on_amd.ini` is the runtime's, don't delete it — see
-[the engine ini](#the-engine-ini). And on a D3D11 game a `dlss5-runtime\` folder shows up holding
-a private copy of `D3D12.dll`; the add-on puts it there itself and needs it, because pulling the
-system `d3d12.dll` into a D3D11 process breaks the game's next window resize.
+**1. Install ReShade** against the game's `.exe`, choose **Direct3D 10/11/12**, skip the shader
+download. It lands as `d3d11.dll` beside the game.
 
-`dlss5-neural.ini` only appears if you press **Save Settings** in the overlay. That one is yours.
+**2. Drop the three files in the same folder.** That is the whole install — the game is already
+on D3D11, so there is no renderer to change.
 
-### 5. Put the game on Direct3D 11
-
-D3D12 works too, but D3D11 is the one you want: it is the only path where the game's own depth
-and motion vectors reach the network.
-
-Most games have it in their graphics options. Two worked examples:
-
-**Need for Speed 2015** — already D3D11, nothing to set. Install ReShade against
-`NeedForSpeed.exe` as `d3d11.dll`, drop the three files beside it, done. The folder ends up:
+Using NFS 2015 as the example, the folder ends up:
 
 ```
-Need for Speed  d3d11.dll                  <- ReShade, add-on build
+Need for Speed\
   NeedForSpeed.exe
+  d3d11.dll                  <- ReShade, add-on build
   dlss5-neural.addon64
   dlssnr_amd_pass1.dll
   dlssnr_on_amd_weights.bin
-  dlssnr_on_amd.ini          <- written by the runtime
-  dlss5-runtime\             <- written by the add-on
+  dlssnr_on_amd.ini          <- appears on its own, written by the runtime
+  dlss5-runtime\             <- appears on its own, written by the add-on
 ```
 
-**PCSX2** — Settings → Graphics → Renderer → **Direct3D 11**. Watch for per-game overrides: a
-renderer pinned on one game silently beats the global setting. Right-click the game in the list →
-Properties → Graphics. In `gamesettings\<SERIAL>.ini` it reads `Renderer = 3` for D3D11 and `15`
-for D3D12; deleting the line falls back to the global setting.
+Those last two write themselves; you do not create them. `dlss5-runtime\` holds a private copy of
+`D3D12.dll` that the add-on needs — the network runtime is D3D12, and pulling the *system*
+`d3d12.dll` into a D3D11 process breaks the game's next window resize.
 
-### 6. Start a game
+---
+
+## Case 2 — PS2 emulator (PCSX2)
+
+**1. Install ReShade** against `pcsx2-qt.exe`, choose **Direct3D 10/11/12**, skip the shader
+download.
+
+**2. Drop the three files next to `pcsx2-qt.exe`.** Portable install or not, the add-on only ever
+looks in the folder the running `.exe` is in.
+
+**3. Set the renderer to Direct3D 11.** Settings → Graphics → Renderer → **Direct3D 11**.
+
+D3D12 also works, but on it the network only ever sees colour. D3D11 is the only path where the
+emulator's depth reaches the network.
+
+**Watch for per-game overrides** — a renderer pinned on one game silently beats the global
+setting, and that is the single most common way this looks broken when it isn't. Right-click the
+game in the list → Properties → Graphics. In `gamesettings\<SERIAL>.ini` the same thing reads
+`Renderer = 3` for D3D11 and `15` for D3D12; deleting the line falls back to the global setting.
+
+A PS2 never computed per-pixel motion, so motion is estimated from the image here rather than
+read, and the depth it does have is faint. That is a property of the console, not of the add-on.
+
+---
+
+## Turn it on
 
 **Home** → **Add-ons** tab → **DLSS Neural Rendering (AMD)**.
 
@@ -145,8 +156,6 @@ take the display driver down, so nothing happens until you have seen what it is 
 The defaults are fine to start with. The status line says whether it is really running, and
 `dlss5-neural.log` next to the exe has the details. Everything else is in
 [The settings](#the-settings).
-
----
 
 ## Troubleshooting
 
