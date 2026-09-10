@@ -979,6 +979,11 @@ struct State
     // default. Off, because the residual measurement says the chain compounds (one pass is a mean
     // of 0.021, two is 0.072) but nothing here has measured that halving structure is the right
     // answer to that, and matching the reference is worth more than an unmeasured idea.
+    //
+    // Confirmed in execution, not just in their source. Their per-pass parameter readback prints
+    // Intensity 1, LocalStructure 1, SkinStructure -1 on pass 1 and the identical three on pass
+    // 2, with only LocalTone going 1 -> 0. Their ini says it in one line: "Omitted controls
+    // inherit pass 1, except later-pass local tone defaults to 0." Nothing tapers over there.
     std::atomic<bool> passTaper { false };
     // How the network's answer is put back onto the frame. Above zero this is the highlight
     // guard -- the most compose may move a pixel's luminance, in either direction -- and it
@@ -996,7 +1001,15 @@ struct State
     // ratio it bounds. Left fixed, the third pass spends most of its contribution against the
     // clamp -- the fork's own tooltip says to raise it by hand with the count. Doing it here
     // instead means one extra pass buys one extra multiple of headroom.
-    std::atomic<bool> guardTracksPasses { true };
+    //
+    // Off by default, and that is now a reading rather than a preference. Nine OptiScaler logs
+    // from RTX machines carry 254 'composition:' lines across seven games, at one and at two
+    // passes, and every one of them says guard 2.0x -- the single 1.5x in the set is a user who
+    // dragged the slider down. The reference ini says the same in its own words: MaxRatio,
+    // "Default (auto) is 2.0", with no mention of the pass count. So the shipped behaviour over
+    // there is a fixed bound at every count, and matching it is worth more than our idea about
+    // headroom. The idea stays available as a switch; it is just not what runs unasked.
+    std::atomic<bool> guardTracksPasses { false };
     // Whether the network's colour arrives with its light. Both ends of the blend carry the same
     // luminance, so this cannot shift hue on its own: at 0 every pixel keeps the game's exact
     // colour and only its brightness carries the network's verdict.
@@ -1055,6 +1068,12 @@ struct State
     // one reading ever taken of it -- Passes=3 -- came back with a residual of exactly zero.
     // Ten was copied from the ShortFuse route on the strength of its README, which is not a
     // reason to leave a machine-crashing control open that wide. Default stays 1.
+    //
+    // Three is also the reference fork's own ceiling: "Values are clamped to 1..3", with a
+    // separate UnlockPasses flag for an extended range, and its description of 2 and 3 is
+    // "deliberately over-processed". Nine RTX logs across seven games back that up -- not one of
+    // them runs above two passes. So the cap here is not us being conservative, it is the same
+    // number.
     static constexpr UINT kMaxPasses = 3;
     bool loggedDeviceLost = false;
     bool loggedNoBackBuffer = false;
@@ -4550,25 +4569,33 @@ void OnOverlay(effect_runtime *)
             Log("menu: guard follows pass count %d", track ? 1 : 0);
         }
         Help("Adds one multiple of headroom per extra pass, so 2.0x becomes 3.0x at two passes "
-             "and 4.0x at three.\n\n"
+             "and 4.0x at three. Off by default.\n\n"
              "The guard is applied once, to the finished composition, while the passes compound "
              "the ratio inside it. Left fixed, the third pass spends most of its contribution "
              "against the clamp -- it costs a whole extra network run and most of it is thrown "
-             "away. The reference fork tells you to raise the guard by hand with the count; this "
-             "does it.\n\n"
-             "Turn it off to hold one bound across every count, which is the honest way to see "
-             "what an extra pass is actually contributing.",
+             "away. The reference fork's tooltip suggests raising the guard by hand with the "
+             "count; this does it for you.\n\n"
+             "It is off because the reference does not actually do it. Nine OptiScaler logs off "
+             "RTX machines carry 254 composition lines across seven games, at one pass and at "
+             "two, and every one of them reads guard 2.0x -- the single 1.5x in the set is "
+             "someone dragging the slider down. Their ini says MaxRatio defaults to 2.0 and "
+             "never mentions the count. A fixed bound is also the honest way to see what an "
+             "extra pass is contributing.",
 
              "Acrescenta um múltiplo de folga por passe extra, então 2.0x vira 3.0x em dois "
-             "passes e 4.0x em três.\n\n"
+             "passes e 4.0x em três. Desligado por padrão.\n\n"
              "A trava é aplicada uma vez, na composição pronta, enquanto os passes acumulam a "
              "razão dentro dela. Fixa, o terceiro passe gasta quase toda a contribuição dele "
              "contra o limite -- custa uma rodada inteira da rede e joga a maior parte fora. O "
-             "fork de referência manda subir a trava na mão junto com a contagem; isto faz "
-             "isso.\n\n"
-             "Desligue para manter um limite só em todas as contagens, que é o jeito honesto de "
-             "ver o que um passe extra está de fato somando.");
-        Tag(kTraced);
+             "tooltip do fork de referência sugere subir a trava na mão junto com a contagem; "
+             "isto faz por você.\n\n"
+             "Está desligado porque o fork de referência não faz isso de verdade. Nove logs de "
+             "OptiScaler de máquinas RTX trazem 254 linhas de composição em sete jogos, em um "
+             "passe e em dois, e todas dizem guard 2.0x -- o único 1.5x do conjunto é alguém "
+             "baixando o slider. A ini deles diz que MaxRatio tem padrão 2.0 e nunca cita a "
+             "contagem. Um limite fixo também é o jeito honesto de ver o que um passe extra "
+             "está somando.");
+        Tag(kMeasured);
         ImGui::EndDisabled();
 
         v = g.residualLimit.load();
@@ -4781,6 +4808,10 @@ void OnOverlay(effect_runtime *)
              "With Same-frame timing the game waits for every pass in turn, so 2 passes is "
              "double the stall. That is a framerate cost, not a crash -- except at Resolution "
              "Scale above 1.00, where a single pass is already hundreds of milliseconds.\n\n"
+             "On an RTX the cost is exactly the count. Cyberpunk at 3840x1600 in the reference "
+             "fork's own logs is 5.29 ms of model time at one pass and 10.50 ms at two -- "
+             "1.985x -- and their ini says the same thing in words: 2 and 3 'cost almost exactly "
+             "2x and 3x the model time'. Nothing amortises between passes.\n\n"
              "The only reading ever taken of it was Passes=3 giving a residual of exactly zero. "
              "Raise it to measure, not to play: run a scene at 1 and at 2 and compare the "
              "'measure, residual' line in the log.",
@@ -4803,6 +4834,10 @@ void OnOverlay(effect_runtime *)
              "No modo Mesmo quadro o jogo espera cada passe por vez, então 2 passes é o dobro do "
              "travamento. Isso é custo de fps, não crash -- exceto com Escala de Resolução acima "
              "de 1.00, onde um passe sozinho já leva centenas de milissegundos.\n\n"
+             "Numa RTX o custo é exatamente a contagem. Cyberpunk em 3840x1600 nos logs do "
+             "próprio fork de referência dá 5.29 ms de rede em um passe e 10.50 ms em dois -- "
+             "1.985x -- e a ini deles diz o mesmo por escrito: 2 e 3 'custam quase exatamente 2x "
+             "e 3x o tempo do modelo'. Nada é amortizado entre passes.\n\n"
              "A única leitura já tirada disto foi Passes=3 dando resíduo exatamente zero. "
              "Aumente para medir, não para jogar: rode uma cena em 1 e em 2 e compare a linha "
              "'measure, residual' no log.");
