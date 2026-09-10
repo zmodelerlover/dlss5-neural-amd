@@ -156,6 +156,8 @@ between runs either; every launch starts from those defaults.
 | `hash mismatch; refused` | Wrong `dlssnr_amd_pass1.dll`. Compare against `tools/SHA256SUMS.txt`. The refusal is deliberate — the alternative is a hang. |
 | Game dies with `887A0005` / device removed | `DXGI_ERROR_DEVICE_REMOVED`, from a Windows TDR. See [the engine ini](#the-engine-ini). |
 | It runs but "only shifts the colours a bit" | Encoding is wrong. On an 8-bit SDR back buffer it has to be **sRGB**. scRGB-nl linearises something that is already sRGB and then scales it by 203/white, so the network gets a nearly black image and does nothing. Ask me how I know. |
+| Colour and tone change, but **textures look identical** | Resolution Scale. At the default 0.50 the network is handed a half-resolution image, so the finest thing it can see is two screen pixels wide — it cannot put detail into a texture it was never shown, and the only correction it can make is colour, tone and large-scale shading. Textures change at **1.00** and not before. That is four times the cost, so turn **Apply On Same Frame** off first; the correction then lags a few frames instead of stalling the game. |
+| Turning Pass Count up switched the add-on off | Pass 2 and 3 load `dlssnr_amd_pass2.dll` and `dlssnr_amd_pass3.dll`, separate files so each pass gets its own copy of the runtime's globals. Only pass1 is distributed. Copy `dlssnr_amd_pass1.dll` and rename it — same hash, so it passes the check. Without them Pass Count now snaps back to what loaded instead of stopping the add-on. |
 | `imgui.h` or `reshade.hpp` not found when building | You deleted `external/`. It's in the repo now; `git checkout external` puts it back. |
 
 ### If you're reporting a problem
