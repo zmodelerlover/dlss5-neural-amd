@@ -2,36 +2,37 @@
 
 ReShade add-on that runs the DLSS-NR network on AMD cards.
 
-Every tool I found for DLSS 5 (renodx-dlss, DLSS5-Feeder, DLSS5-Swapper) calls NVIDIA's
-`nvngx_dlssnr.dll`, so none of them do anything on a Radeon. This one drives the AMD port of
-the network instead, from a ReShade add-on, same idea as RenoDX: one core file plus a small
-table where you add a game.
+Every tool for DLSS 5 (renodx-dlss, DLSS5-Feeder, DLSS5-Swapper) calls NVIDIA's
+`nvngx_dlssnr.dll`, so none of them do anything on a Radeon. This one drives the AMD port of the
+network instead, from a ReShade add-on.
 
-**PCSX2 is the only thing I've ever run this on.** Not a native D3D12 game, not RPCS3, not
-another card, not RDNA3. I genuinely don't know how it behaves anywhere else, and the other
-rows in the target table are guesses I typed, not results.
+**The focus is Direct3D 11 games and emulators.** That is not a limitation, it is where this
+works best: D3D11 is the only path where the game's own depth and motion vectors reach the
+network. On D3D12 an add-on is shown nothing but the swapchain, so the network gets colour and
+guesses at the rest.
 
-That said the plumbing isn't pcsx2-specific. It's a ReShade add-on talking to a D3D12 device,
-so anything ReShade attaches to and that renders in D3D12 is at least in scope. Adding a target
-is one row in a table. If you want to point it at something else, most of the work is already
-sitting here, and figuring out what a new target actually exposes is what the probe in
-`src/probe` is for.
+Run so far, on an RX 9070 XT:
 
-Discord: https://discord.gg/wYhvS3JSHM
-That server is for DLSS 5 in general, AMD, ports, whatever people are building. It isn't a
-support channel for this add-on.
+| | |
+|---|---|
+| **Euro Truck Simulator 2** | The best result so far — comparable to the same network running on NVIDIA. |
+| **PCSX2** (PS2 emulator) | Same, and the clips below are from it. |
+| **Need for Speed 2015** | Runs, 10,920 frames with no resize failures. Worked example below. |
+
+Anything else is untested. Adding a game is one row in a table, and the probe in `src/probe` is
+what tells you what a new target actually exposes.
+
+Discord: https://discord.gg/wYhvS3JSHM — for DLSS 5 in general, not a support channel for this.
 
 [![Support this project on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T213OVFE)
 
-**Just want it running?** → [Before you start](#before-you-start) → [Quick start](#1-get-the-add-on).
-Six steps, no compiler needed.
-**Something's broken?** → [Troubleshooting](#troubleshooting), which is keyed by what you see on
-screen.
-**Want to change the code?** → [Building it yourself](#building-it-yourself-optional).
+**Just want it running?** → [Quick start](#quick-start), six steps, no compiler needed.
+**Broken?** → [Troubleshooting](#troubleshooting), keyed by what you see on screen.
+**Changing the code?** → [Building it yourself](#building-it-yourself-optional).
 
 ## Videos
 
-PCSX2, no audio. Click a thumbnail to play, or use the plain links if the thumbnails do not load.
+PCSX2, no audio. Click a thumbnail, or use the plain links if the thumbnails do not load.
 
 [![PCSX2 running the network, clip 1](media/pcsx2-0307.jpg)](https://github.com/zmodelerlover/dlss5-neural-amd/raw/master/media/pcsx2-0307.mp4)
 
@@ -47,62 +48,51 @@ PCSX2, no audio. Click a thumbnail to play, or use the plain links if the thumbn
 
 | | |
 |---|---|
-| **GPU** | AMD **RDNA3 or RDNA4** with the **HIP 7** runtime, i.e. `amdhip64_7.dll` on the search path. HIP 6 will not do. A current Adrenalin driver ships it. This does nothing on NVIDIA or Intel. |
-| **Renderer** | **Direct3D 12**, or **Direct3D 11** through the bridge (see [What the network can actually be fed](#what-the-network-can-actually-be-fed)). On Vulkan or OpenGL the add-on loads and then sits there. D3D11 is the better path now: it is the only one where the game's own depth and motion vectors are reachable. |
+| **GPU** | AMD **RDNA3 or RDNA4** with the **HIP 7** runtime, i.e. `amdhip64_7.dll` on the search path. HIP 6 will not do. A current Adrenalin driver ships it. Does nothing on NVIDIA or Intel. |
+| **Renderer** | **Direct3D 11** (recommended) or **Direct3D 12**. On Vulkan or OpenGL the add-on loads and then sits there. |
 | **ReShade** | The **add-on** build, 6.x. The plain one will not load add-ons. Tested on 6.8.0. |
 | **Disk** | About 150 MB for the network weights. |
-
-Tested on: RX 9070 XT, ReShade 6.8.0, **PCSX2 2.3.14 and 2.8.2**, God of War 1. Nothing else has
-been tried by me.
-
-**Where do the files go? Always next to `pcsx2-qt.exe`.** True whether your PCSX2 is a portable
-copy on an external drive or a normal install — the add-on only ever looks in the folder the
-running `.exe` is in.
 
 ---
 
 # Quick start
 
-Three files end up next to `pcsx2-qt.exe`: one from the release, two from the discord. A fourth
-writes itself. That's the whole install.
+Three files go next to the game's `.exe` — one from the release, two from the discord. Everything
+else writes itself.
 
 ### 1. Get the add-on
 
-Download `dlss5-neural.addon64` from
-**[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest)**.
-
-That's it. **You do not need to build anything** — the file in the release is compiled from this
-exact repository. Building is only if you want to change something, and it has
-[its own section](#building-it-yourself-optional) at the bottom.
+`dlss5-neural.addon64` from
+**[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest)**. You do not
+need to build anything; that file is compiled from this repository.
 
 ### 2. Get the runtime and the weights
 
-`dlssnr_amd_pass1.dll` (7 MB) and `dlssnr_on_amd_weights.bin` (141 MB) are **not in this repo
-and never will be.** The weights are NVIDIA-derived and the runtime comes from a third-party
-project that declares no license, so I'm not the one redistributing them.
+`dlssnr_amd_pass1.dll` (7 MB) and `dlssnr_on_amd_weights.bin` (141 MB) are **not in this repo and
+never will be** — the weights are NVIDIA-derived and the runtime comes from a third-party project
+that declares no license.
 
 > **Both are in the `files` channel on the discord → https://discord.gg/wYhvS3JSHM**
 
-The `.dll` there is already rebuilt without the spin cap, so it goes straight in the folder with
-no patching. Check what you downloaded against `tools/SHA256SUMS.txt`:
+That `.dll` is already rebuilt without the spin cap, so no patching. Check it:
 
 ```powershell
 Get-FileHash dlssnr_amd_pass1.dll, dlssnr_on_amd_weights.bin -Algorithm SHA256
 ```
 
-It has to be exactly that build. The add-on hashes it at load and refuses anything else, because
-the whole thing is hardcoded offsets into one specific binary and pointing them at a different
-one hangs the game.
+against `tools/SHA256SUMS.txt`. It has to be exactly that build — the add-on hashes it at load
+and refuses anything else, because the whole thing is hardcoded offsets into one specific binary
+and pointing them at a different one hangs the game.
 
-### 3. Install ReShade into PCSX2
+### 3. Install ReShade
 
-Get the **add-on** build of ReShade (the one labelled "with full add-on support") from
-<https://reshade.me/>, run it, pick `pcsx2-qt.exe`, choose **Direct3D 10/11/12**. Skip the
-shader download, this doesn't use any.
+The **add-on** build (labelled "with full add-on support") from <https://reshade.me/>. Point it
+at the game's `.exe`, choose **Direct3D 10/11/12**, and skip the shader download — this uses
+none.
 
 ### 4. Copy the files in
 
-Next to `pcsx2-qt.exe`:
+Next to the game's `.exe`:
 
 ```
 dlss5-neural.addon64
@@ -110,24 +100,37 @@ dlssnr_amd_pass1.dll
 dlssnr_on_amd_weights.bin
 ```
 
-`dlssnr_on_amd.ini` appears on its own the first time it runs. Don't delete it — see
-[the engine ini](#the-engine-ini). A second file, `dlss5-neural.ini`, appears only if you press
-**Save Settings** in the overlay; that one is yours and holds whatever you dialled in.
+Two more appear on their own. `dlssnr_on_amd.ini` is the runtime's, don't delete it — see
+[the engine ini](#the-engine-ini). And on a D3D11 game a `dlss5-runtime\` folder shows up holding
+a private copy of `D3D12.dll`; the add-on puts it there itself and needs it, because pulling the
+system `d3d12.dll` into a D3D11 process breaks the game's next window resize.
 
-### 5. Set PCSX2 to Direct3D 11
+`dlss5-neural.ini` only appears if you press **Save Settings** in the overlay. That one is yours.
 
-Settings → Graphics → Renderer → **Direct3D 11**.
+### 5. Put the game on Direct3D 11
 
-Both D3D11 and D3D12 work, but **D3D11 is the one you want**: it is the only path where the
-game's own depth and motion vectors reach the network. On D3D12 the network only ever sees
-colour, because ReShade shows an add-on nothing but the swapchain there. That is measured, not a
-guess — see [What the network can actually be fed](#what-the-network-can-actually-be-fed).
+D3D12 works too, but D3D11 is the one you want: it is the only path where the game's own depth
+and motion vectors reach the network.
 
-**Watch out for per-game overrides.** A renderer pinned on one game silently beats your global
-setting, and that cost me an evening. **Right-click the game in the list → Properties →
-Graphics** and make sure Renderer is *Direct3D 11* or left on the global setting. In
-`gamesettings\<SERIAL>.ini` the same thing reads `Renderer = 3` for D3D11 and `15` for D3D12;
-deleting the line falls back to your global setting.
+Most games have it in their graphics options. Two worked examples:
+
+**Need for Speed 2015** — already D3D11, nothing to set. Install ReShade against
+`NeedForSpeed.exe` as `d3d11.dll`, drop the three files beside it, done. The folder ends up:
+
+```
+Need for Speed  d3d11.dll                  <- ReShade, add-on build
+  NeedForSpeed.exe
+  dlss5-neural.addon64
+  dlssnr_amd_pass1.dll
+  dlssnr_on_amd_weights.bin
+  dlssnr_on_amd.ini          <- written by the runtime
+  dlss5-runtime\             <- written by the add-on
+```
+
+**PCSX2** — Settings → Graphics → Renderer → **Direct3D 11**. Watch for per-game overrides: a
+renderer pinned on one game silently beats the global setting. Right-click the game in the list →
+Properties → Graphics. In `gamesettings\<SERIAL>.ini` it reads `Renderer = 3` for D3D11 and `15`
+for D3D12; deleting the line falls back to the global setting.
 
 ### 6. Start a game
 
@@ -137,15 +140,9 @@ deleting the line falls back to your global setting.
 deliberate: the add-on rewrites every frame the game presents, and a couple of the settings can
 take the display driver down, so nothing happens until you have seen what it is set to.
 
-The defaults are fine to start with and there is nothing you have to change. When you do change
-something, **Save Settings** keeps it for next time — otherwise every launch starts fresh.
-
-Every control has a `(?)` next to it. Hover it. A control shown in **red** is holding a value
-that can reset your display driver; **amber** means past what has actually been measured. The
-legend is at the bottom of the panel.
-
-The status line says whether it is really running, and `dlss5-neural.log` next to the exe has
-the details.
+The defaults are fine to start with. The status line says whether it is really running, and
+`dlss5-neural.log` next to the exe has the details. Everything else is in
+[The settings](#the-settings).
 
 ---
 
@@ -170,10 +167,9 @@ of them, so it always looks fine. Two things settle almost anything:
 
 1. **The status line.** ReShade overlay → Add-ons → DLSS Neural Rendering (AMD). It reads
    `Running: X processed, Y skipped (Z%)` plus the back buffer and network size. Quote that line.
-2. **The logs**, both next to `pcsx2-qt.exe` — the same folder you put the add-on in, portable
-   install or not:
+2. **The logs**, both next to the game's `.exe`, the same folder you put the add-on in:
    * `dlss5-neural.log` — the add-on: what it detected, back buffer size and format, and the
-     residual measurement it takes on frame 240.
+     residual measurement, which it retries from frame 240 until the input has something in it.
    * `dlssnr_on_amd.log` — the runtime: staging formats, per-job timings, timeouts, faults.
 
 The residual measurement in the first one is the useful bit. `mean 0.000000` means the network
@@ -215,8 +211,8 @@ Brazilian Portuguese.
 
 The runtime reads `dlssnr_on_amd.ini` from the game folder when it loads. **Its own built-in
 default for the host watchdog is 600 ms**, and one stalled job that long trips Windows TDR,
-which removes the D3D12 device and takes the emulator with it. The symptom is a pile of
-`887A0005` in `emulog.txt` and a dead PCSX2, with nothing pointing back at this add-on.
+which removes the D3D12 device and takes the game with it. The symptom is a pile of
+`887A0005` in whatever log the game keeps, with nothing pointing back at this add-on.
 
 So the add-on writes the file itself if it isn't there, with `InlineWaitMs=100`. At 0.50 scale
 the network takes about 16 ms, so 100 is a wide margin, and past it you get a frame without the
@@ -292,7 +288,7 @@ from. `build.ps1` finds the compiler and the SDK by itself; if it picks the wron
 
 ```
 OK: ...\build\dlss5-neural.addon64
-dlss5-neural.addon64  73728  ...
+dlss5-neural.addon64  181248  ...
 ```
 
 **If it fails:**
@@ -311,72 +307,45 @@ so if the badge is green the repository builds as-is.
 
 ## What the network can actually be fed
 
-**It depends entirely on the renderer, and that is the single most important thing on this
-page.** On D3D11 the network gets colour, depth and motion. On D3D12 it gets colour and nothing
-else — not because depth is missing, but because it is out of reach there. Measured with the
-probe in `src/probe`, same game, same frame, only the renderer changed:
+The network takes four inputs: colour, depth, motion and exposure. **Which of them it gets is
+decided by the renderer, and that is the single most important thing on this page.**
 
-| | PCSX2 on **D3D12** | PCSX2 on **D3D11** |
+Measured with the probe in `src/probe`, same game, same frame, only the renderer changed:
+
+| | on **D3D12** | on **D3D11** |
 |---|---|---|
 | render targets ReShade shows the add-on | **2** | **8** |
-| depth | none | **1536x1254 `R32G8X24_TYPELESS`**, 41 draws |
-| colour | 1918x1008, the presented back buffer | **1536x1254 at render resolution**, 52 draws |
+| depth | none | the game's own depth target |
+| colour | the presented back buffer | available at render resolution |
 
-On D3D12 an add-on sees the swapchain and nothing else. `bind_render_targets_and_depth_stencil`
-fires **zero** times in 600 frames, with or without also subscribing to the draw events -- both
-tried, both measured. So the depth code sitting behind the Depth switch has nothing to bind to,
-and that is a property of the D3D12 path, not of the game.
+On D3D12 an add-on sees the swapchain and nothing else — `bind_render_targets_and_depth_stencil`
+fires **zero** times in 600 frames, with or without also subscribing to the draw events, both
+tried and both measured. That is a property of the API path, not of any game. So on D3D12 the
+network runs on colour alone.
 
-On D3D11 both guides are right there, and the two are the same size, so they need no realignment.
-The render-resolution colour is also a better input than what is used today: it is the image
-before it gets scaled down to the window.
+**On D3D11 it gets depth and motion too.** The AMD network runtime is D3D12, so the add-on builds
+its own D3D12 device on the game's adapter and carries textures across through shared resources
+and fences. Per frame it takes the depth-stencil and the two-channel float render target the game
+binds most often, converts depth to `R32_FLOAT` on the way (typeless depth formats cannot be
+shared between devices at all — `E_INVALIDARG` on creation, not a permission problem), and hands
+both to the network.
 
-The catch is that the AMD network runtime is D3D12. Getting at those sources means running PCSX2
-on D3D11 and carrying the textures to a separate D3D12 device -- own device on the game's
-adapter, shared texture, shared fence. `src/session/session.cpp` does exactly that and measures
-what it costs. Build it with `-Target session`, run it with PCSX2 on **Direct3D 11**, and read
-`dlss5-session.log`. It runs no network and changes no pixels.
+The transport costs about a quarter of a millisecond a frame for both guides, against a 16.7 ms
+frame, and the return trip adds 0.066 ms mean. `src/session/session.cpp` is the harness that
+measured it; build it with `-Target session` and it runs no network and changes no pixels.
 
-Measured on an RX 9070 XT, God of War, colour and depth both 1536x1254:
+**Exposure is never filled**, on any path, and it has never been shown that the engine reads it.
 
-```
-submit  0.21 - 0.27 ms mean per frame   (the copy and the fence signal, on the CPU timeline)
-land    ~0.85 ms                        (sampled; a deliberate CPU wait, not paid in normal use)
-```
+Two things worth knowing per target:
 
-About a quarter of a millisecond a frame to carry both guides across, against a 16.7 ms frame.
-The way back -- D3D12 writes a shared texture, signals a fence, the game's D3D11 context waits on
-it and composes -- adds **0.066 ms mean**. The whole loop is affordable.
-
-**But the depth buffer is empty, and that is the wall.** Not a transport problem: the round trip
-carries whatever is in it faithfully. PCSX2's depth target simply reads as all zeros. Four
-independent ways agree, and the fourth is the one that settles it -- the probe dumps colour and
-depth from the same frame through ReShade's own readback, and in that one file colour is 94.8%
-non-zero while depth is 0.0%, min 0, max 0. So it is not the measurement. Also tried, same
-result: reading it through a compute shader at present, and reading a private copy snapshotted
-at the moment PCSX2 binds a different depth target, which is early enough that the content
-should still be there.
-
-Where that leaves it: the transport is built and priced, the render-resolution colour is real and
-usable, and depth needs someone to work out where PCSX2 actually keeps usable depth on D3D11 --
-the target the bind events point at is not it.
-
-Two things that cost a day to find, so they are written down here:
-
-* **The depth buffer cannot be shared directly.** PCSX2's depth is `R32G8X24_TYPELESS`, and D3D11
-  refuses to *create* a shared texture in that format at all -- `E_INVALIDARG`, not a permission
-  problem. Same for `R32_FLOAT_X8X24_TYPELESS` and `R32G32_FLOAT`. What does share: `R32_TYPELESS`,
-  `R32_FLOAT`, `R16_FLOAT`, `R16G16_FLOAT`, `R16G16B16A16_FLOAT`, `R8G8B8A8_UNORM` -- and they
-  still share with `BIND_UNORDERED_ACCESS` added. So depth goes through a compute shader that
-  reads it and writes `R32_FLOAT`, which is the format the network wants anyway. That pass does
-  not measurably change the numbers above.
-* **Pick the colour target by matching the depth target's size, not by area.** On PCSX2 the
-  swapchain is 1918x1008 and the render target is 1536x1254 -- the swapchain has *more* pixels,
-  so "the biggest colour target" picks the wrong one. The pair that renders together is the pair
-  that is the same size.
-
-Motion is a separate matter and not a plumbing problem: the PS2 never computed per-pixel motion,
-so there is nothing to capture on either API.
+* **A guide can arrive and still be worthless.** A buffer can be bound, copied and fed and still
+  be a cleared constant, which looks identical from outside. The overlay reports what the guides
+  actually *contain* — depth range, and what share of motion blocks are still. Read it while
+  playing: on a menu, flat depth and zero motion are correct.
+* **Emulators are the hard case.** A PS2 never computed per-pixel motion, so there is nothing to
+  capture and the add-on estimates it from the image instead. Its depth exists only between a bind
+  and the emulator's clear, and peaks around 0.002, so a viewer that maps 0..1 shows solid black —
+  scale it before judging it. A modern engine hands over both properly.
 
 ## Rebuilding the runtime yourself
 
@@ -406,8 +375,11 @@ and rebuild.
 back buffer -> colour prep -> network raster -> network -> residual -> compose -> back buffer
 ```
 
-Only the network's correction gets resampled, the full-res image goes back untouched. It hooks
+Only the network's correction gets resampled; the full-res image goes back untouched. It hooks
 `present`, because `reshade_finish_effects` never fires if you have no shaders loaded.
+
+On D3D11 the same chain runs on the add-on's own D3D12 device, with a shared-texture hop at each
+end and the game's depth and motion joining at the network step.
 
 ## Numbers
 
@@ -421,7 +393,8 @@ per job                        15-16 ms
 frames with a fresh correction 3932 of 3960
 ```
 
-The add-on measures that itself on one frame and dumps it in the log. Worth keeping, because
+Those predate the v0.3.0 colour fixes, so treat them as a floor rather than as current. The
+add-on takes the measurement itself and dumps it in the log. Worth keeping, because
 "the network isn't doing anything" and "the network works and my compose is eating it" look
 identical from the couch and need completely different fixes.
 
@@ -430,19 +403,20 @@ identical from the couch and need completely different fixes.
 | | |
 |---|---|
 | `src/neural/neural.cpp` | the add-on. One file. |
-| `src/probe/probe.cpp` | render target probe — dumps what a game actually exposes. Build with `-Target probe`. |
-| `src/session/session.cpp` | small session logger. |
-| `external/reshade/` | ReShade + ImGui headers, vendored. See `NOTICE.md`. |
+| `src/probe/probe.cpp` | render target probe — dumps what a game actually exposes. `-Target probe`. |
+| `src/session/session.cpp` | the D3D11-to-D3D12 bridge on its own, with timings. Runs no network. `-Target session`. |
+| `external/reshade/` | ReShade + ImGui headers, vendored so a clean clone builds. See `NOTICE.md`. |
 | `tools/patch_runtime.py` | rebuilds the runtime from `version.dll`. |
 | `tools/runtime-patches.json` | the five patches, with offsets and bytes. |
-| `tools/SHA256SUMS.txt` | hashes of the four files the repo does not ship. |
+| `tools/SHA256SUMS.txt` | hashes for the runtime and weights, which the repo does not ship. |
+| `tools/check_shaders.ps1` | extracts the HLSL out of `neural.cpp` and runs `fxc` on it. A shader typo otherwise only shows up as a log line inside the game. |
 | `build.ps1` | builds an add-on with `cl.exe`, no VS project. |
 | `CHANGELOG.md` | what changed between releases. |
-| `tools/check_shaders.ps1` | extracts the HLSL out of `neural.cpp` and runs `fxc` on it. A shader typo otherwise only shows up as a log line inside the game. |
+| `docs/` | session notes: what was measured, what was tried and rejected, and why. |
 
 ## Stuff I didn't get to
 
-None of this is settled, it's just where I stopped. One card, one program, one night.
+None of this is settled, it is just where things stand. One card, three programs.
 
 * Upscaling. I couldn't find an upscaling path in the AMD runtime I used, input and output
   share the same texture. Maybe another build has one.
@@ -459,9 +433,9 @@ None of this is settled, it's just where I stopped. One card, one program, one n
 * The network itself. DLSS-NR is a denoiser for modern ray traced stuff. Something built for
   restoration or upscaling old content would probably fit emulators better, and swapping it
   doesn't mean rewriting everything.
-* Literally anything that isn't PCSX2. A D3D12 game with a real upscaler would hand the network
-  colour, depth and motion, which is what it was built for. That's where it should look like
-  the videos everyone's seen. Nobody's tried it with this.
+* More targets. ETS2, PCSX2 and NFS 2015 are the three that have been run. Every other row in
+  the target table is a guess someone typed, not a result.
+* One card. Everything here is an RX 9070 XT. RDNA3 is untested.
 
 ## Model A/B/C: will not be implemented
 
