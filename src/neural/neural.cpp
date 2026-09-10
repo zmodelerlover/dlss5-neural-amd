@@ -341,6 +341,13 @@ using HipSetFn = int (*)(int);
 
 bool RuntimeHashMatches(const std::filesystem::path &file)
 {
+    // The runtime is one fixed-size binary, so a file that is not exactly that size is the wrong
+    // file. Check that on the directory entry first: reading it in to find out pulls the whole of
+    // whatever was pointed at into memory, and a 7 MB allocation is a strange way to reject a
+    // wrong DLL.
+    std::error_code ec;
+    if (std::filesystem::file_size(file, ec) != kRuntimeSize || ec)
+        return false;
     std::ifstream in(file, std::ios::binary);
     std::vector<unsigned char> data((std::istreambuf_iterator<char>(in)), {});
     if (data.size() != kRuntimeSize)
@@ -398,7 +405,10 @@ struct State
     ComPtr<ID3D12Resource> lumaA, lumaB, flowSmall, flowCoarse;
     ComPtr<ID3D12Resource> history;
     std::atomic<bool> useHistory { true };
-    bool historyValid = false;
+    // The overlay's History checkbox clears this, and it does so from the overlay thread while
+    // present is reading and setting it. They do not share a lock at that point, so it is atomic
+    // like the switches above rather than a plain bool.
+    std::atomic<bool> historyValid { false };
     bool loggedHistory = false;
     UINT flowWidth = 0, flowHeight = 0;
     std::atomic<bool> useMotion { true };
@@ -413,7 +423,10 @@ struct State
     UINT depthWidth = 0, depthHeight = 0;
     DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
     UINT depthBinds = 0, depthBestBinds = 0;
-    ID3D12Resource *depthBest = nullptr;
+    // Held with a reference of our own. This is a resource the game owns: a level load or a swap
+    // recreates it, and a bare pointer here then points into freed memory while the depth read
+    // keeps using it. Owning a reference keeps the target alive for as long as we remember it.
+    ComPtr<ID3D12Resource> depthBest;
     std::atomic<bool> useDepth { false };
     std::atomic<bool> depthInverted { false };
     bool loggedDepth = false;
@@ -431,7 +444,9 @@ struct State
     bool loggedProfile = false;
     bool loggedPin = false;
     UINT measureTries = 0;
-    UINT64 depthEvents = 0;
+    // Raised on the bind event, which can arrive from any thread that is recording, and read from
+    // present and the overlay. Atomic for the same reason as historyValid.
+    std::atomic<UINT64> depthEvents { 0 };
 };
 
 State g;
@@ -780,7 +795,7 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t, const resource_view *,
         return;
     auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
     std::lock_guard guard(g.lock);
-    if (native == g.depthBest)
+    if (native == g.depthBest.Get())
     {
         ++g.depthBinds;
         return;
@@ -802,7 +817,11 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t, const resource_view *,
         return;
     if (g.depthBest == nullptr || d.Width * d.Height > static_cast<UINT64>(g.depthWidth) * g.depthHeight)
     {
-        g.depthBest = native;
+        // Hold a reference of our own: the game is free to release this target on the next level
+        // load, and the depth path reads it again on a later frame.
+        g.depthBest.Reset();
+        native->AddRef();
+        g.depthBest.Attach(native);
         g.depthWidth = static_cast<UINT>(d.Width);
         g.depthHeight = d.Height;
         g.depthFormat = d.Format;
@@ -1135,7 +1154,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     bool haveDepth = false;
     if (g.useDepth.load() && g.depthBest != nullptr)
     {
-        g.depthCandidate = g.depthBest;
+        g.depthCandidate = g.depthBest.Get();
         ID3D12Resource *depthSource = g.depthCandidate;
         const auto dd = depthSource->GetDesc();
         bool ok = true;
@@ -1216,7 +1235,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         //
         // Off by default because these are hardcoded offsets into one specific build: a wrong
         // pointer here does not fail, it hangs the game.
-        const bool wantHistory = g.useHistory.load() && g.historyValid && g.history != nullptr;
+        const bool wantHistory = g.useHistory.load() && g.historyValid.load() && g.history != nullptr;
         At<uint8_t>(r, 0x765f8) = wantHistory ? 1 : 0;
         At<void *>(r, 0x765f0) = wantHistory ? static_cast<void *>(g.history.Get()) : nullptr;
         if (wantHistory && !g.loggedHistory)
@@ -1543,7 +1562,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     if (g.frame == 600)
         Log("guides after 600 frames: %llu depth-stencil bind events, best candidate %s. Motion: "
             "the PS2 never computed per-pixel motion, so there is none to take.",
-            static_cast<unsigned long long>(g.depthEvents),
+            static_cast<unsigned long long>(g.depthEvents.load()),
             g.depthBest != nullptr ? "found" : "none");
 }
 
@@ -1738,14 +1757,14 @@ void OnOverlay(effect_runtime *)
                     static_cast<int>(g.depthFormat),
                     static_cast<unsigned long long>(g.depthBinds),
                     g.useDepth.load() ? ", feeding it" : " (Depth switch is off)");
-    else if (g.depthEvents == 0)
+    else if (g.depthEvents.load() == 0)
         ImGui::TextDisabled("Depth: ReShade has not delivered a single depth-stencil bind on this "
                             "API, so there is nothing to find. Not the same as the game having no "
                             "depth buffer.");
     else
         ImGui::TextDisabled("Depth: %llu binds seen, none usable (wrong format, multisampled, or "
                             "shader reads denied). See the log.",
-                            static_cast<unsigned long long>(g.depthEvents));
+                            static_cast<unsigned long long>(g.depthEvents.load()));
     ImGui::TextDisabled("Log: dlss5-neural.log");
 }
 

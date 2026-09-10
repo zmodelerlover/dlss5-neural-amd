@@ -142,6 +142,7 @@ struct Bridge
         if (FAILED(on11->QueryInterface(IID_PPV_ARGS(&res))))
         {
             Log("bridge %s: no IDXGIResource1", name);
+            Destroy();
             return false;
         }
         hr = res->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
@@ -150,11 +151,13 @@ struct Bridge
         if (FAILED(hr))
         {
             Log("bridge %s: CreateSharedHandle failed 0x%08lX", name, hr);
+            Destroy();
             return false;
         }
         if (FAILED(own->OpenSharedHandle(handle, IID_PPV_ARGS(&on12))))
         {
             Log("bridge %s: OpenSharedHandle on our own device failed", name);
+            Destroy();
             return false;
         }
         width = w;
