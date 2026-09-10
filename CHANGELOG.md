@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 — unreleased
+## v0.3.0 — 2026-09-10
 
 Everything below is new since what is currently published. The short version: **D3D11 works, and
 it is now the better path**, because it is the only one where the game's own depth and motion
