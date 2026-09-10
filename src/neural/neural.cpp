@@ -771,13 +771,15 @@ struct State
     bool loggedWrongApi = false;
     std::atomic<bool> enabled { true };
     std::atomic<float> structure { 1.0f };
-    std::atomic<float> tone { 0.0f };
+    std::atomic<float> tone { 1.0f };
     std::atomic<float> skin { 1.0f };
     std::atomic<int> passes { 1 };
     std::atomic<float> scale { 0.5f };
     std::atomic<bool> inlineMode { true };
     std::atomic<int> encoding { 0 };
-    std::atomic<float> diffuseWhite { 500.0f };
+    // 100 nits is the automatic ShortFuse documents for linear BT.709; the old 500 here
+    // matched none of the documented conventions (100 / 203 / 250).
+    std::atomic<float> diffuseWhite { 100.0f };
     std::atomic<float> intensity { 1.0f };
     std::atomic<bool> bicubic { true };
     std::atomic<int> debugView { 0 };
@@ -823,9 +825,25 @@ struct State
     ComPtr<ID3D12Fence> ringFence;
     UINT64 ringValue[kRing] {}, ringSerial = 0;
     HANDLE ringEvent = nullptr;
+    // A separate handle on purpose. These are auto-reset events, and two fences with a
+    // SetEventOnCompletion registration on the same handle steal each other's signal: the
+    // waiter that loses then sits out its full timeout, every frame. That is a stall a few
+    // frames in, once the ring starts interleaving with the completion wait.
+    HANDLE completionEvent = nullptr;
     bool loggedRound = false;
 
     static constexpr UINT kMaxPasses = 10;
+    static constexpr UINT kInlineMaxPasses = 3;
+    bool loggedInlineCap = false;
+    bool loggedDeviceLost = false;
+    bool loggedNoBackBuffer = false;
+    // A bridge failure is usually transitory -- a rebuild caught mid-flight -- so it costs a
+    // rebuild, not the rest of the run.
+    static constexpr UINT kMaxBridgeRetries = 10;
+    UINT bridgeRetries = 0;
+    // Safety net: presents seen since the bridge last finished a frame.
+    uint64_t presentsSinceFrame = 0;
+    uint64_t lastSeenFrame = 0;
     HMODULE runtimes[kMaxPasses] {};
     UINT lastJobs[kMaxPasses] {};
     UINT activePasses = 0;
@@ -909,13 +927,17 @@ struct State
     // not free -- ReShade only turns on the tracking an event needs when something asks for it --
     // so this exists to tell which subscription costs what. Default is everything.
     int events = 31;
-    // Raised the moment ReShade says the swapchain is going away, lowered when a new one is
-    // announced. ResizeBuffers runs on its own thread -- measured, thread 35300 while the render
-    // thread was elsewhere -- so without this the render thread can enter present and take hold
-    // of the back buffer again in the window between the teardown and the actual resize, and DXGI
-    // then refuses the resize. The lock alone does not close that: it serialises the two calls
-    // but does nothing about the present that starts straight after the teardown returns.
-    std::atomic<bool> swapchainGone { false };
+    // Which swapchain is mid-teardown, if any. ResizeBuffers runs on its own thread -- measured,
+    // thread 35300 while the render thread was elsewhere -- so without a gate the render thread
+    // can enter present and take hold of the back buffer again between the teardown and the
+    // actual resize, and DXGI then refuses the resize.
+    //
+    // It holds the swapchain rather than a flag because a game can have more than one alive:
+    // PCSX2 destroys and creates them (destroy_swapchain arrives with resize=false), and the
+    // init of the new one can land before the destroy of the old. A single flag then latched on
+    // for good and the add-on stopped presenting entirely -- stuck at "5 processed", with the
+    // game still rendering. Keyed on identity, a stale teardown can only ever gate its own.
+    std::atomic<void *> goneSwapchain { nullptr };
     // Frostbite stores velocity as a UV-space delta; the engine reads motion in raster pixels,
     // so the field is multiplied by the target size. Sign and magnitude are engine convention,
     // not something that can be read off the resource, so leave the knob: -1 flips the direction,
@@ -1059,6 +1081,7 @@ bool CreateWorkDevice(IDXGIAdapter *adapter, LUID luid)
         return false;
     }
     g.ringEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g.completionEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
     char name[128] {};
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
@@ -1644,6 +1667,28 @@ bool EnsureStage(UINT w, UINT h, DXGI_FORMAT fmt)
     return true;
 }
 
+// A removed device fails every call silently from here on: the copies stop landing, the shared
+// output keeps whatever it was created with -- black -- and that black is what gets copied into
+// the back buffer, every frame, for ever. Worth naming the moment it happens.
+bool DeviceLost()
+{
+    if (g.device == nullptr)
+        return false;
+    const HRESULT reason = g.device->GetDeviceRemovedReason();
+    if (SUCCEEDED(reason))
+        return false;
+    if (!g.loggedDeviceLost)
+    {
+        g.loggedDeviceLost = true;
+        Log("the D3D12 device was removed (0x%08lX). Nothing this add-on draws will reach the "
+            "screen any more, so it is stepping out of the way and leaving the game's own image "
+            "alone.", reason);
+    }
+    g.unavailable = true;
+    g.reason = "the D3D12 device was removed; see dlss5-neural.log";
+    return true;
+}
+
 bool FlushAndWait11()
 {
     if (g.game11 == nullptr || g.game11ctx == nullptr)
@@ -1676,17 +1721,26 @@ void WaitForWorkQueue(UINT64 value)
 {
     if (g.fence == nullptr || g.fence->GetCompletedValue() >= value)
         return;
-    if (g.ringEvent == nullptr)
+    if (g.completionEvent == nullptr)
         return;
-    if (SUCCEEDED(g.fence->SetEventOnCompletion(value, g.ringEvent)))
-        WaitForSingleObject(g.ringEvent, 2000);
+    if (SUCCEEDED(g.fence->SetEventOnCompletion(value, g.completionEvent)))
+        WaitForSingleObject(g.completionEvent, 2000);
 }
 
 void BridgePresent(device *dev, swapchain *sc)
 {
+    if (DeviceLost())
+        return;
     const resource back = sc->get_current_back_buffer();
     if (back.handle == 0)
+    {
+        if (!g.loggedNoBackBuffer)
+        {
+            g.loggedNoBackBuffer = true;
+            Log("present with no back buffer to read; skipping those frames.");
+        }
         return;
+    }
     const resource_desc bd = dev->get_resource_desc(back);
     const auto fmt = static_cast<DXGI_FORMAT>(bd.texture.format);
     const UINT w = bd.texture.width, h = bd.texture.height;
@@ -1830,8 +1884,13 @@ void BridgePresent(device *dev, swapchain *sc)
         Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
-    if (FAILED(cmd->Close()))
+    if (const HRESULT hr = cmd->Close(); FAILED(hr))
     {
+        // The one path that used to set bridgeFailed without saying anything. It fires on the
+        // frame after a swapchain rebuild, and with bridgeFailed latching for the whole run the
+        // add-on then returned from every present in silence and left the last image it wrote on
+        // screen. Both halves of that were wrong.
+        Log("bridge: closing the command list failed (0x%08lX); rebuilding.", hr);
         g.bridgeFailed = true;
         return;
     }
@@ -1983,16 +2042,80 @@ std::filesystem::path RuntimeCopyUsingPrivateD3D12(const std::filesystem::path &
     if (bytes.empty())
         return original;
 
-    constexpr size_t n = sizeof(kSystemD3D12Ansi) - 1;
-    size_t rewritten = 0;
-    for (size_t i = 0; i + n <= bytes.size(); ++i)
-        if (_strnicmp(&bytes[i], kSystemD3D12Ansi, n) == 0)
+    // Rewrite ONLY the name in the import table. Overwriting every occurrence of the string in
+    // the file was wrong: the same bytes can appear inside code or unrelated data, and patching
+    // those corrupts the DLL. The runtime then faulted repeatedly (0xC0000005 at heap addresses)
+    // and the frame came back black. Walk the PE properly instead.
+    auto rvaToOffset = [&](uint32_t rva) -> size_t {
+        if (bytes.size() < 0x40)
+            return 0;
+        const auto u16 = [&](size_t o) {
+            return static_cast<uint16_t>((unsigned char)bytes[o] | ((unsigned char)bytes[o + 1] << 8));
+        };
+        const auto u32 = [&](size_t o) {
+            return static_cast<uint32_t>((unsigned char)bytes[o] | ((unsigned char)bytes[o + 1] << 8) |
+                                         ((unsigned char)bytes[o + 2] << 16) |
+                                         ((unsigned char)bytes[o + 3] << 24));
+        };
+        const size_t pe = u32(0x3C);
+        if (pe + 24 > bytes.size() || u32(pe) != 0x00004550)
+            return 0;
+        const uint16_t sections = u16(pe + 6);
+        const uint16_t optSize = u16(pe + 20);
+        size_t sec = pe + 24 + optSize;
+        for (uint16_t i = 0; i < sections; ++i, sec += 40)
         {
-            std::memcpy(&bytes[i], kPrivateD3D12Ansi, n);
-            ++rewritten;
+            if (sec + 40 > bytes.size())
+                return 0;
+            const uint32_t va = u32(sec + 12), rawSize = u32(sec + 16), rawPtr = u32(sec + 20);
+            if (rva >= va && rva < va + rawSize)
+                return rawPtr + (rva - va);
         }
+        return 0;
+    };
+    const auto u16at = [&](size_t o) {
+        return static_cast<uint16_t>((unsigned char)bytes[o] | ((unsigned char)bytes[o + 1] << 8));
+    };
+    const auto u32at = [&](size_t o) {
+        return static_cast<uint32_t>((unsigned char)bytes[o] | ((unsigned char)bytes[o + 1] << 8) |
+                                     ((unsigned char)bytes[o + 2] << 16) |
+                                     ((unsigned char)bytes[o + 3] << 24));
+    };
+    size_t rewritten = 0;
+    if (bytes.size() > 0x40)
+    {
+        const size_t pe = u32at(0x3C);
+        if (pe + 24 < bytes.size() && u32at(pe) == 0x00004550)
+        {
+            const size_t opt = pe + 24;
+            const uint16_t magic = u16at(opt);
+            // The import directory is entry 1 of the data directories, which sit after the
+            // fixed part of the optional header: 96 bytes for PE32, 112 for PE32+.
+            const size_t dirs = opt + (magic == 0x20B ? 112 : 96);
+            const uint32_t importRva = u32at(dirs + 1 * 8);
+            size_t desc = rvaToOffset(importRva);
+            for (; desc != 0 && desc + 20 <= bytes.size(); desc += 20)
+            {
+                const uint32_t nameRva = u32at(desc + 12);
+                if (nameRva == 0)
+                    break;  // the null descriptor ends the array
+                const size_t nameOff = rvaToOffset(nameRva);
+                constexpr size_t n = sizeof(kSystemD3D12Ansi) - 1;
+                if (nameOff != 0 && nameOff + n < bytes.size() &&
+                    _strnicmp(&bytes[nameOff], kSystemD3D12Ansi, n) == 0 &&
+                    bytes[nameOff + n] == 0)
+                {
+                    std::memcpy(&bytes[nameOff], kPrivateD3D12Ansi, n);
+                    ++rewritten;
+                }
+            }
+        }
+    }
     if (rewritten == 0)
+    {
+        Log("no d3d12.dll import found in the runtime; loading it unpatched.");
         return original;
+    }
 
     std::ofstream out(patched, std::ios::binary | std::ios::trunc);
     if (!out)
@@ -2523,59 +2646,10 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
 // every frame -- as a reference. The game reports the refusal as a DirectX error and quits.
 // Flushing per frame is not enough on its own: the documented sequence is ClearState and then
 // Flush, and ClearState is only safe here.
-void OnDestroySwapchain(swapchain *, bool resize)
+// Everything sized to the swapchain, dropped together. Ensure rebuilds each one on demand.
+void ReleaseSwapchainSized()
 {
-    // Before the lock, so a present that is only just starting sees it and backs out.
-    g.swapchainGone.store(true);
-    std::lock_guard guard(g.lock);
-    // Our own queue has to be idle before the shared textures go: a command list still executing
-    // holds them, and on the D3D11 side they are what the game's context was copying into.
     WaitForWorkQueue(g.completion);
-    Log("swapchain going away (resize %d) after %llu frames; draining and dropping everything "
-        "sized to it.", resize ? 1 : 0, static_cast<unsigned long long>(g.frame));
-    if (g.game11ctx != nullptr)
-    {
-        // Retiring the reference needs the work to have *finished*, not just to have been
-        // submitted. The copy back into the back buffer is queued behind a GPU-side Wait on our
-        // D3D12 fence, so at the moment Present returns it is still pending -- and a pending
-        // command that used a back buffer is exactly the outstanding reference DXGI refuses to
-        // resize over. ClearState and Flush do not drain it; an event query does, because it
-        // does not report until everything submitted before it has completed.
-        D3D11_QUERY_DESC qd {};
-        qd.Query = D3D11_QUERY_EVENT;
-        ComPtr<ID3D11Query> done;
-        if (SUCCEEDED(g.game11->CreateQuery(&qd, &done)))
-        {
-            g.game11ctx->End(done.Get());
-            g.game11ctx->Flush();
-            // Bounded: a hang here would be a black screen instead of an error message, which is
-            // not an improvement. The network takes about 16 ms, so this normally returns at once.
-            const ULONGLONG deadline = GetTickCount64() + 2000;
-            while (g.game11ctx->GetData(done.Get(), nullptr, 0, 0) == S_FALSE)
-            {
-                if (GetTickCount64() > deadline)
-                {
-                    Log("resize: gave up waiting for the bridge to drain after 2 s.");
-                    break;
-                }
-                Sleep(0);
-            }
-        }
-        g.game11ctx->ClearState();
-        g.game11ctx->Flush();
-    }
-    // These are all sized to the swapchain that is going away. Ensure rebuilds them on the next
-    // present at whatever the new size is; leaving them would only hold memory at the old one.
-    // A recorded command list holds a reference to every resource it touched until it is reset,
-    // so the shared textures below are not actually freed while these still point at them.
-    for (UINT i = 0; i < State::kRing; ++i)
-        if (g.alloc[i] != nullptr && g.list[i] != nullptr)
-        {
-            g.alloc[i]->Reset();
-            if (SUCCEEDED(g.list[i]->Reset(g.alloc[i].Get(), nullptr)))
-                g.list[i]->Close();
-            g.ringValue[i] = 0;
-        }
     g.bridgeIn.Destroy();
     g.bridgeOut.Destroy();
     g.crossLocal.Reset();
@@ -2599,13 +2673,59 @@ void OnDestroySwapchain(swapchain *, bool resize)
     g_depthTally.clear();
     g_motionTally.clear();
     g.gameDepthActive = g.gameMotionActive = false;
+    g.outWidth = g.outHeight = 0;
+}
+
+void OnDestroySwapchain(swapchain *sc, bool resize)
+{
+    // Before the lock, so a present that is only just starting sees it and backs out.
+    g.goneSwapchain.store(sc);
+    std::lock_guard guard(g.lock);
+    Log("swapchain going away (resize %d) after %llu frames; draining and dropping everything "
+        "sized to it.", resize ? 1 : 0, static_cast<unsigned long long>(g.frame));
+
+    if (g.game11ctx != nullptr)
+    {
+        // Retiring the back-buffer reference needs the work to have *finished*, not just to have
+        // been submitted. DXGI refuses ResizeBuffers while a pending command references a back
+        // buffer, and the game reports that refusal as a DirectX error and quits over it.
+        // ClearState and Flush do not drain it; an event query does, because it does not report
+        // until everything submitted before it has completed.
+        D3D11_QUERY_DESC qd {};
+        qd.Query = D3D11_QUERY_EVENT;
+        ComPtr<ID3D11Query> done;
+        if (SUCCEEDED(g.game11->CreateQuery(&qd, &done)))
+        {
+            g.game11ctx->End(done.Get());
+            g.game11ctx->Flush();
+            // Bounded: hanging here would be a black screen instead of an error, which is not an
+            // improvement. The network takes about 16 ms, so this normally returns at once.
+            const ULONGLONG deadline = GetTickCount64() + 2000;
+            while (g.game11ctx->GetData(done.Get(), nullptr, 0, 0) == S_FALSE)
+            {
+                if (GetTickCount64() > deadline)
+                {
+                    Log("resize: gave up waiting for the bridge to drain after 2 s.");
+                    break;
+                }
+                Sleep(0);
+            }
+        }
+        g.game11ctx->ClearState();
+        g.game11ctx->Flush();
+    }
+    ReleaseSwapchainSized();
 }
 
 // The new swapchain is up; everything below is sized to it and will be rebuilt on demand.
-void OnInitSwapchain(swapchain *, bool resize)
+void OnInitSwapchain(swapchain *sc, bool resize)
 {
     std::lock_guard guard(g.lock);
-    g.swapchainGone.store(false);
+    // Only lift the gate for the swapchain that was actually torn down. A different one being
+    // announced says nothing about this one.
+    void *gone = g.goneSwapchain.load();
+    if (gone == sc || gone == nullptr)
+        g.goneSwapchain.store(nullptr);
     g.outWidth = g.outHeight = 0;
     Log("swapchain back (resize %d); the bridge rebuilds at the new size on the next frame.",
         resize ? 1 : 0);
@@ -3245,6 +3365,53 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
     return true;
 }
 
+// How many passes to run this frame. Inline means the game waits on the GPU for each one and
+// they add into a single stall, so the count is held down while it is on.
+UINT WantedPasses()
+{
+    UINT wanted = static_cast<UINT>(
+        std::clamp(g.passes.load(), 1, static_cast<int>(State::kMaxPasses)));
+    if (g.inlineMode.load() && wanted > State::kInlineMaxPasses)
+    {
+        if (!g.loggedInlineCap)
+        {
+            g.loggedInlineCap = true;
+            Log("Pass Count held at %u: with Apply On Same Frame the game waits for every pass and "
+                "they add into a single stall, which past the driver timeout takes the device down. "
+                "Turn Apply On Same Frame off to use more.", State::kInlineMaxPasses);
+        }
+        wanted = State::kInlineMaxPasses;
+    }
+    return wanted;
+}
+
+// Brings up one runtime per pass, falling back to however many actually loaded. Pass N needs its
+// own dlssnr_amd_passN.dll next to the exe -- a copy of pass1 works, same hash -- because each
+// pass needs its own copy of the runtime's globals.
+bool BringUpEngines(UINT &wanted)
+{
+    if (!InitPipeline())
+        return false;
+    for (UINT i = 0; i < wanted; ++i)
+    {
+        if (InitEngine(i))
+            continue;
+        if (i == 0)
+            return false;
+        wanted = i;
+        g.passes.store(static_cast<int>(i));
+        if (!g.loggedPassLimit)
+        {
+            g.loggedPassLimit = true;
+            Log("pass %u could not be brought up, so Pass Count is held at %u. Each pass needs its "
+                "own dlssnr_amd_pass%u.dll next to the exe -- a copy of pass1 works, it has the "
+                "same hash. Carrying on with %u pass(es).", i + 1, i, i + 1, i);
+        }
+        break;
+    }
+    return true;
+}
+
 void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, uint32_t,
                const rect *)
 {
@@ -3273,26 +3440,62 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     {
         // Between a teardown and the new swapchain being announced there is nothing safe to
         // touch, and touching it is exactly what makes the resize fail.
-        if (g.noBridge.load() || g.swapchainGone.load())
+        if (g.noBridge.load() || g.goneSwapchain.load() == sc)
             return;
+        // Whatever goes wrong below, the game keeps its picture. If presents keep arriving and the
+        // bridge has not completed a frame in a long while, something is stuck, and the honest move
+        // is to stand down rather than hold a half-built or stale image on screen. Ten seconds of
+        // presents at 60 Hz; a real frame resets it. This is here because two separate bugs -- an
+        // event handle shared by two fences, and a teardown flag that latched on -- both showed up
+        // as a frozen counter and a black window rather than as anything readable.
+        if (g.frame != g.lastSeenFrame)
+        {
+            g.lastSeenFrame = g.frame;
+            g.presentsSinceFrame = 0;
+            g.bridgeRetries = 0;  // a frame got through, so the retries were spent well
+        }
+        else if (++g.presentsSinceFrame > 600)
+        {
+            g.unavailable = true;
+            g.reason = "the bridge stopped completing frames; see dlss5-neural.log";
+            Log("600 presents without the bridge finishing a frame. Something is stuck, so the "
+                "add-on is standing down and leaving the game's own image alone. The last lines "
+                "above this one say how far it got.");
+            return;
+        }
         BridgeStep1(dev);
-        if (g.bridgeFailed || g.workDevice == nullptr)
-            return;
+        if (g.workDevice == nullptr)
+            return;  // BridgeStep1 said why
+        if (g.bridgeFailed)
+        {
+            if (++g.bridgeRetries > State::kMaxBridgeRetries)
+            {
+                g.unavailable = true;
+                g.reason = "the bridge kept failing to rebuild; see dlss5-neural.log";
+                Log("bridge: %u rebuilds in a row did not take. Standing down and leaving the "
+                    "game's own image alone.", g.bridgeRetries - 1);
+                return;
+            }
+            Log("bridge: rebuilding after a failure (attempt %u of %u).", g.bridgeRetries,
+                State::kMaxBridgeRetries);
+            ReleaseSwapchainSized();
+            g.bridgeFailed = false;
+            return;  // next present builds it again
+        }
         if (g.stage.load() < 3)
             return;  // diagnostic: stop before the engine, with the device already up
-        if (g.stage.load() < 3)
-            return;  // diagnostic: stop before the engine, with the device already up
-        bool ready = InitPipeline();
-        for (UINT i = 0; ready && i < 1; ++i)
-            ready = InitEngine(i);
-        if (!ready)
+        // This used to be a hardcoded single pass, so Pass Count did nothing at all on the
+        // bridge -- which is every D3D11 target, PCSX2 and NFS included. The multi-pass loop
+        // existed only on the D3D12 path.
+        UINT wanted = WantedPasses();
+        if (!BringUpEngines(wanted))
         {
             g.unavailable = true;
             g.reason = "could not bring the engine up on the bridge device";
             Log("off: %s", g.reason);
             return;
         }
-        g.loadedPasses = 1;
+        g.loadedPasses = wanted;
         BridgePresent(dev, sc);
         return;
     }
@@ -3322,6 +3525,22 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         return;
     UINT wanted = static_cast<UINT>(
         std::clamp(g.passes.load(), 1, static_cast<int>(State::kMaxPasses)));
+    // Inline means the game waits on the GPU for every pass, so the passes add up into one stall.
+    // Four of them locked a machine hard: past the driver's timeout Windows removes the D3D12
+    // device, and the engine's own ini warns about exactly this. Three is the most that was ever
+    // run without trouble, so that is the ceiling while the game is waiting. Async has no stall
+    // and keeps the full range.
+    if (g.inlineMode.load() && wanted > State::kInlineMaxPasses)
+    {
+        if (!g.loggedInlineCap)
+        {
+            g.loggedInlineCap = true;
+            Log("Pass Count held at %u: with Apply On Same Frame the game waits for every pass and "
+                "they add into a single stall, which past the driver timeout takes the device down. "
+                "Turn Apply On Same Frame off to use more.", State::kInlineMaxPasses);
+        }
+        wanted = State::kInlineMaxPasses;
+    }
     bool enginesReady = InitPipeline();
     // Pass N loads dlssnr_amd_passN.dll -- a separate file, so each pass gets its own copy of
     // the runtime's globals. Only pass1 is distributed, so raising Pass Count used to fail

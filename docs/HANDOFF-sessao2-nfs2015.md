@@ -227,17 +227,80 @@ nenhum.
 
 ---
 
-## 7. O que travou a máquina
+## 7. Regressões desta sessão, e o que causou cada uma
 
-Eu subi o teto de `Passes` de 3 para 10 (como o ShortFuse) e deixei `Passes=4` no ini com
-`Inline=1`. Inline é **parada síncrona da GPU**: 4 passes × 15 ms passa do watchdog, e o próprio
-`dlssnr_on_amd.ini` avisa que uma parada assim dispara o TDR do Windows e remove o device D3D12.
+Todas minhas, todas no conjunto da sessão 2, e todas só apareceram quando esse conjunto foi
+instalado no PCSX2 de uma vez — ele estava rodando o add-on da sessão 1 até então.
 
-**Configuração segura atual: `Passes=1`.**
+### 7.1 Travamento da máquina
 
-**Não há trava no código.** O ini ainda aceita `Passes=10` com `Inline=1`. Multipass só deve ser
-testado com `Inline=0`, subindo de 1 para 2. **Pôr essa trava é a primeira tarefa do próximo que
-mexer nisso.**
+Subi o teto de `Passes` de 3 para 10 (como o ShortFuse) e deixei `Passes=4` com `Inline=1`.
+Inline é **parada síncrona da GPU**: os passes somam num travamento só, o TDR do Windows dispara e
+remove o device D3D12.
+
+**Consertado:** `kInlineMaxPasses = 3`. Com `Apply On Same Frame` ligado o número é segurado em 3 e
+o log avisa. Acima disso só com inline desligado.
+
+### 7.2 Congelamento no frame 5
+
+`WaitForWorkQueue`, que eu adicionei, reusava o `g.ringEvent` — o mesmo handle que a espera do ring
+buffer já usava. São eventos **auto-reset**: com duas fences registradas no mesmo handle, uma
+consome o sinal da outra e a que perde espera o timeout inteiro de 2 s. Todo frame. O ring tem 3
+posições, então só começa a intercalar depois de alguns frames — daí travar no quinto.
+
+**Consertado:** `completionEvent` separado.
+
+### 7.3 Tela preta permanente
+
+Dois defeitos somados:
+
+- O portão de present (`swapchainGone`) era um **booleano global**. O PCSX2 não só redimensiona, ele
+  **destrói e cria** swapchain — os pares `resize 0` no log. Com duas vivas, o `init` da nova podia
+  chegar antes do `destroy` da antiga e o booleano latchava ligado para sempre.
+- `cmd->Close()` falhando ligava `g.bridgeFailed` **sem registrar nada**, e `bridgeFailed` era latch
+  permanente. Uma falha e o `OnPresent` retornava calado pelo resto da execução, deixando na tela a
+  última imagem que escrevemos.
+
+**Consertado:** o portão guarda **qual** swapchain está em desmontagem; o `Close()` registra o
+HRESULT; e `bridgeFailed` passou a custar uma reconstrução, não a execução — 10 tentativas seguidas
+antes de desistir, e um frame que passa zera o contador.
+
+### 7.4 Rede de segurança
+
+Se chegarem 600 presents (≈10 s a 60 Hz) sem a ponte terminar um frame, o add-on **se desliga
+sozinho** e devolve a imagem do jogo, com log. Mais uma checagem de `GetDeviceRemovedReason` no
+início do present. Essa nunca disparou — foi útil justamente por descartar device removido.
+
+Resultado: o pior caso passou a ser *o efeito não aparecer*. Não mais tela preta nem congelamento.
+
+### 7.5 Pass Count não fazia nada
+
+Estrutural, e a resposta da pergunta original. No caminho da ponte D3D11:
+
+```cpp
+for (UINT i = 0; ready && i < 1; ++i)   // fixo
+    ready = InitEngine(i);
+g.loadedPasses = 1;                     // fixo
+```
+
+O laço que honra o valor **só existia no caminho D3D12**. Ou seja: em todo alvo D3D11 — PCSX2 e
+NFS incluídos — o Pass Count nunca chegou a ser lido. Não era o resíduo zero, não era a barreira:
+o segundo passe nunca foi carregado.
+
+**Consertado:** `WantedPasses()` e `BringUpEngines()` compartilhados pelos dois caminhos, com
+fallback para quantos passes realmente carregaram. **Confirmado pelo usuário** que agora responde.
+
+### 7.6 Correção de import feita direito
+
+O reapontamento da import do runtime sobrescrevia **toda** ocorrência dos bytes `d3d12.dll` no
+arquivo — inclusive dentro de código ou dado sem relação, o que corrompe a DLL. Agora percorre o PE
+de verdade (DOS → NT → diretório de imports → `IMAGE_IMPORT_DESCRIPTOR`, RVA→offset pelas seções) e
+troca só o nome terminado em NUL. Se não achar a import, carrega o original e registra.
+
+**Nota:** isso **não** era a causa da tela preta. O PCSX2 já carrega `d3d12.dll` mesmo em
+`Renderer = 3`, então `GetModuleHandleW` a encontra, o caminho da cópia privada nem executa e
+nenhum `dlss5-pass*.dll` é gerado ali. Os `FAULT: 0xc0000005` no log do runtime são anteriores e
+independentes do add-on.
 
 ---
 
@@ -279,24 +342,38 @@ dlssnr_on_amd.ini          UseDepth=1, Temporal=0, InlineWaitMs=100
 _addons-off\               probe e session, fora do caminho
 ```
 
-### ini seguro atual
+### `D:\pcsx2-v2.8.2-test`
+Mesmo add-on, `Renderer = 3` (D3D11), `dlssnr_amd_pass1..3.dll`. **Não** gera `dlss5-pass*.dll`
+nem `dlss5-runtime\` — o PCSX2 já traz `d3d12.dll` no processo, então a cópia privada não é usada.
+
+### ini — NFS 2015
 ```ini
-[dlss5]
-Inline=1
+Encoding=1
+DiffuseWhite=100
 Structure=3
 Skin=1
 Tone=0
-Depth=1
-Motion=1
-History=1
-Bicubic=1
-GameGuides=1
-MotionScale=1.0
 Passes=1
 Scale=0.50
-Encoding=1
-DiffuseWhite=100
+Inline=1
+Depth=1  Motion=1  History=1  Bicubic=1  GameGuides=1  MotionScale=1.0
 ```
+
+### ini — PCSX2 (valores pedidos pelo usuário, e os mesmos viraram default no código)
+```ini
+Encoding=0        (sRGB)
+DiffuseWhite=100
+Intensity=1.0
+Structure=1
+Skin=1
+Tone=1
+Passes=1
+Scale=0.50
+Inline=1
+```
+
+Defaults no código agora: `tone 1.0`, `diffuseWhite 100` (era 500, que não correspondia a nenhuma
+convenção documentada). `Tone` foi medido como inerte na sessão 1 — mantido em 1 a pedido.
 
 ### Chaves de diagnóstico (default = desligado quando ausentes)
 `NoBridge=1` não levanta a ponte · `NoBackBuffer=1` roda tudo sem tocar na swapchain ·
@@ -314,15 +391,18 @@ veredito em ~15 s em vez de 150.
 
 ## 10. Roadmap, em ordem de valor
 
-1. **Verificar `Encoding=1` + `DiffuseWhite=100` na tela.** Config já aplicada, falta olhar. É a
-   hipótese principal do "parece só cor" e custa alternar um combo no overlay.
-2. **Trava de segurança**: recusar `Passes>3` quando `Inline=1`. Foi o que travou a máquina.
-3. **Medir os guides em gameplay.** A sonda e o overlay já reportam sozinhos; precisa alguém dirigindo.
-   Se depth continuar chapado e motion zerado numa corrida, os guides pegaram o buffer errado, e o
-   próximo passo é capturar o depth **antes do clear** em vez de no present (o caminho D3D12 já tem
-   esse código; falta a versão D3D11).
-4. **Verificar o multipass** com `Inline=0`, `Passes=2`. A barreira UAV entre passes está no código
-   e nunca foi exercitada. É a diferença declarada da rota que dá o resultado que o usuário quer.
+1. **Medir o que o multipass faz agora.** O Pass Count passou a funcionar (§7.5) — falta a
+   medição objetiva: mesma cena com `Passes=1` e `Passes=2`, comparando a linha
+   `measure, residual`. É a diferença declarada da rota do ShortFuse, então é o item de maior
+   valor. Acima de 3 exige `Inline=0`.
+2. **Verificar `Encoding` na tela.** No PCSX2 ficou em `0` (sRGB) a pedido; na NFS ficou em `1`
+   (Linear) com `DiffuseWhite=100`. A hipótese do "parece só cor" (§6) diz que Linear é o certo,
+   e alternar o combo no overlay responde ao vivo. Nota: com `Encoding=0` o `DiffuseWhite` é
+   **inerte** no código atual — o `kWhite` é forçado a 1.0.
+3. **Medir os guides em gameplay.** A sonda e o overlay já reportam sozinhos; precisa alguém
+   jogando. Se depth continuar chapado e motion zerado numa cena de verdade, os guides pegaram o
+   buffer errado, e o próximo passo é capturar o depth **antes do clear** em vez de no present
+   (o caminho D3D12 já tem esse código; falta a versão D3D11).
 5. **Cor HDR linear pré-tonemap como entrada** (`R11G11B10_FLOAT`, 1990 draws). Hoje lemos o back
    buffer 8-bit já tonemapeado e com HUD. Exige interceptar no meio do quadro, não no present —
    é trabalho de arquitetura, não de ajuste.
