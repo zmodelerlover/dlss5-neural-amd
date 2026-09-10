@@ -913,10 +913,12 @@ struct State
     // never meets it.
     std::atomic<float> residualLimit { 0.25f };
     std::atomic<float> residualFade { 0.0f };
-    // Halve what each later pass is told to do. Pass 2 is editing pass 1's work, and the residual
-    // measurement says the chain compounds rather than averages: one pass is a mean of 0.021, two
-    // is 0.072. Overridden by any per-pass profile that is switched on.
-    std::atomic<bool> passTaper { true };
+    // Halve Structure for each later pass. Ours, not the reference's -- upstream leaves structure
+    // at full on every pass and only zeroes Local Tone after the first, which this now does by
+    // default. Off, because the residual measurement says the chain compounds (one pass is a mean
+    // of 0.021, two is 0.072) but nothing here has measured that halving structure is the right
+    // answer to that, and matching the reference is worth more than an unmeasured idea.
+    std::atomic<bool> passTaper { false };
     // How the network's answer is put back onto the frame. Above zero this is the highlight
     // guard -- the most compose may move a pixel's luminance, in either direction -- and it
     // doubles as the switch: zero selects the old additive composition, which is kept only so
@@ -3105,15 +3107,23 @@ PassTune TuningFor(UINT pass)
 {
     if (pass < State::kMaxPasses && g.passOverride[pass].load())
         return { g.passStructure[pass].load(), g.passTone[pass].load(), g.passSkin[pass].load() };
-    PassTune t { g.structure.load(), g.tone.load(), g.skin.load() };
-    // Skin is left alone on purpose: -1 is the engine's own default and it means "follow local
-    // structure", not "no skin structure", so scaling it is scaling a mode rather than a strength.
+    // Local Tone on the first pass only, and full Structure on every pass. That is not a guess and
+    // it is not symmetry for its own sake -- it is what the reference fork does, in one line of
+    // PassProfiles.h:
+    //
+    //     pass == 0 ? cfg.DlssNrLocalTone.value_or_default() : 0.0f
+    //
+    // This add-on had it right and then lost it. The old code was `i == 0 ? tone : 0.0f`, which
+    // last session read as an asymmetry nobody chose and was "fixed" into giving every pass the
+    // same value. It was chosen, upstream, deliberately: local tone is a tone decision about the
+    // frame, and a second pass re-deciding the tone of a frame whose tone the first pass already
+    // moved is how a chain runs away from the picture it started with.
+    PassTune t { g.structure.load(), pass == 0 ? g.tone.load() : 0.0f, g.skin.load() };
+    // Ours, on top, and off by default: the reference does not taper structure and nothing here
+    // has measured that it should. Skin is never tapered -- -1 is the engine's own default and it
+    // means "follow local structure", so it is a mode and not a strength.
     if (pass > 0 && g.passTaper.load())
-    {
-        const float k = std::pow(0.5f, static_cast<float>(pass));
-        t.structure *= k;
-        t.tone *= k;
-    }
+        t.structure *= std::pow(0.5f, static_cast<float>(pass));
     return t;
 }
 
@@ -3617,12 +3627,10 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         // it is written, not exposed.
         At<UINT>(r, 0x76e10) = 1u;
         At<uint8_t>(r, 0x76e14) = 1;
-        // Was `i == 0 ? tone : 0.0f`, which zeroed Local Tone on every pass after the first
-        // while structure and skin were written at full value on all of them. Nobody chose that
-        // asymmetry and nothing measured it. All three now come from the same place, and that
-        // place is per-pass: pass 2 is looking at a picture pass 1 already edited, so telling it
-        // to do the same amount again is telling it to sharpen its own sharpening. Off by
-        // default, in which case every pass gets the globals exactly as before.
+        // All three come from one place now, and that place is per-pass. Local Tone is written on
+        // the first pass only -- which is what the original `i == 0 ? tone : 0.0f` here did, and
+        // last session removed it as an asymmetry nobody had chosen. Somebody had: the reference
+        // fork's PassProfiles.h makes exactly that choice, in one line, deliberately.
         const PassTune tune = TuningFor(i);
         At<float>(r, 0x76e30) = tune.tone;
         At<float>(r, 0x76e34) = tune.structure;
@@ -4613,26 +4621,31 @@ void OnOverlay(effect_runtime *)
                 g.passTaper.store(taper);
                 Log("menu: pass taper %s", taper ? "on" : "off");
             }
-            Help("Halves Structure and Local Tone for each pass after the first: full on pass 1, "
-                 "half on pass 2, a quarter on pass 3.\n\n"
-                 "Measured, not a preference. One pass returns a mean correction of 0.021; two "
-                 "passes returns 0.072, which is not twice, it is three and a half times. The "
-                 "chain compounds because each pass is editing the last one's work -- and where "
-                 "the first pass extrapolated, the second extrapolates on top of that. Half as "
-                 "much per pass keeps the chain's total near one pass's and lets the extra runs "
-                 "spend themselves on what the first one missed.\n\n"
-                 "Skin is not tapered: -1 is the engine's own default and it means \"follow local "
-                 "structure\", so it is a mode, not a strength.\n\n"
+            Help("Halves Structure for each pass after the first: full on pass 1, half on pass 2, "
+                 "a quarter on pass 3. Off by default.\n\n"
+                 "Local Tone is already first-pass-only whatever this is set to, because that is "
+                 "what the reference fork does and it is the one per-pass asymmetry that is "
+                 "upstream's own decision rather than ours.\n\n"
+                 "This is the unmeasured part. One pass returns a mean correction of 0.021; two "
+                 "passes returns 0.072, which is not twice, it is three and a half times -- the "
+                 "chain compounds because each pass edits the last one's work. Halving structure "
+                 "is a plausible answer to that and nothing here has shown it is the right one, "
+                 "so it is offered and not taken.\n\n"
+                 "Skin is never tapered: -1 is the engine's own default and it means \"follow "
+                 "local structure\", so it is a mode, not a strength.\n\n"
                  "Any pass with its own settings below ignores this.",
 
-                 "Corta pela metade a Estrutura e o Tom Local a cada passe depois do primeiro: "
-                 "cheio no passe 1, metade no 2, um quarto no 3.\n\n"
-                 "Medido, não é gosto. Um passe devolve correção média 0.021; dois passes devolvem "
-                 "0.072, que não é o dobro, é três vezes e meia. A cadeia acumula porque cada "
-                 "passe está editando o trabalho do anterior -- e onde o primeiro extrapolou, o "
-                 "segundo extrapola em cima. Metade por passe mantém o total da cadeia perto do "
-                 "de um passe e deixa as rodadas extras gastarem no que a primeira não pegou.\n\n"
-                 "Pele não é diminuída: -1 é o padrão do próprio motor e significa \"seguir a "
+                 "Corta pela metade a Estrutura a cada passe depois do primeiro: cheio no passe 1, "
+                 "metade no 2, um quarto no 3. Desligado por padrão.\n\n"
+                 "O Tom Local já é só do primeiro passe, esteja isto como estiver, porque é o que "
+                 "o fork de referência faz e é a única assimetria por passe que é decisão deles e "
+                 "não nossa.\n\n"
+                 "Esta é a parte não medida. Um passe devolve correção média 0.021; dois passes "
+                 "devolvem 0.072, que não é o dobro, é três vezes e meia -- a cadeia acumula "
+                 "porque cada passe edita o trabalho do anterior. Cortar a estrutura pela metade é "
+                 "uma resposta plausível para isso e nada aqui mostrou que é a certa, então fica "
+                 "oferecida e não tomada.\n\n"
+                 "Pele nunca é diminuída: -1 é o padrão do próprio motor e significa \"seguir a "
                  "estrutura local\", então é um modo, não uma força.\n\n"
                  "Qualquer passe com ajustes próprios abaixo ignora isto.");
             Tag(kTraced);
