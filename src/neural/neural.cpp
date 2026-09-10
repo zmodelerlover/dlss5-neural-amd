@@ -50,18 +50,25 @@ struct Profile
     const char *note;
 };
 
+// Cosmetic only: nothing here gates behaviour. tier and scale go to the log, note goes to the
+// status line, and a game that is not listed runs exactly the same as one that is. It exists so
+// the log says which target a report came from, not to enable anything -- do not let it read as
+// a whitelist.
 constexpr Profile kTargets[] = {
+    { L"eurotrucks2.exe", Tier::C, 1.0f,
+      "Euro Truck Simulator 2" },
+
     { L"pcsx2-qt.exe", Tier::C, 1.0f,
-      "PCSX2, Direct3D 12" },
+      "PCSX2" },
 
     { L"rpcs3.exe", Tier::C, 1.0f,
-      "RPCS3, Direct3D 12" },
+      "RPCS3" },
 
     { L"NFS16.exe", Tier::C, 1.0f,
       "NFS 2015" },
 
     { nullptr, Tier::C, 1.0f,
-      "uncatalogued target" },
+      "uncatalogued target (runs the same as a listed one)" },
 };
 
 const Profile &ProfileForThisProcess()

@@ -19,8 +19,10 @@ Run so far, on an RX 9070 XT:
 | **PCSX2** (PS2 emulator) | Same, and the clips below are from it. |
 | **Need for Speed 2015** | Runs, 10,920 frames with no resize failures. Worked example below. |
 
-Anything else is untested. Adding a game is one row in a table, and the probe in `src/probe` is
-what tells you what a new target actually exposes.
+**Anything else is untested, not unsupported.** There is no whitelist and nothing to compile:
+point ReShade at any D3D11 or D3D12 game, drop the same three files beside it, and it runs. The
+status line will just say *uncatalogued target*, which changes nothing. If a game does something
+odd, the probe in `src/probe` dumps what it actually exposes.
 
 Discord: https://discord.gg/wYhvS3JSHM — for DLSS 5 in general, not a support channel for this.
 
@@ -433,8 +435,8 @@ None of this is settled, it is just where things stand. One card, three programs
 * The network itself. DLSS-NR is a denoiser for modern ray traced stuff. Something built for
   restoration or upscaling old content would probably fit emulators better, and swapping it
   doesn't mean rewriting everything.
-* More targets. ETS2, PCSX2 and NFS 2015 are the three that have been run. Every other row in
-  the target table is a guess someone typed, not a result.
+* More targets. ETS2, PCSX2 and NFS 2015 are the three that have been run. Everything else is
+  simply untried — the add-on does not check what game it is in.
 * One card. Everything here is an RX 9070 XT. RDNA3 is untested.
 
 ## Model A/B/C: will not be implemented
