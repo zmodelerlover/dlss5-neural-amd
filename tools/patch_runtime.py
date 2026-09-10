@@ -1,16 +1,26 @@
-"""Rebuild the dlssnr_amd runtime so an add-on can drive it, without the spin cap.
+"""Rebuild the dlssnr_amd runtime so an add-on can drive it from outside.
 
-The OptiScaler installer applies five patches to the original `version.dll`. Four are needed
-to drive the DLL from outside; the fifth caps the GPU wait shader at 262144 iterations, and
-that one is what makes inline mode useless: the GPU waits ~6 ms, the network takes 16-187 ms,
-it times out on every frame, and the apply pass preserves its input. The residual comes out at
-exactly zero -- measured, not assumed.
+The installer that ships with DLSS-NR-on-AMD does not patch anything: the `version.dll` it drops
+is byte for byte the payload appended to `dlssnr_on_amd_setup.exe`, which
+`tools/extract_runtime.py` lifts out without running it. Every change here is ours, and there are
+three, all in place and all the same length, so no RVA moves and the offsets the add-on writes
+into stay valid:
 
-This script applies the four and skips the fifth. All of them write in place at the same
-length, so no RVA moves and the offsets the add-on uses stay valid.
+  * two calls neutralised, because the DLL was built to install its own hooks and to announce a
+    submission it did not make. Driving it from an add-on means doing both ourselves.
+  * one log string, so a timed-out frame does not report a fallback that no longer happens.
+
+Two things this used to do and no longer does:
+
+  * The shader edit that made a timed-out frame keep its own input rather than paste last frame's
+    residual. v0.2.17 exposes that choice as ToneChannels bit 4 with bit 2 clear, and the add-on
+    sets it, so there is nothing left to patch.
+  * The GPU wait spin cap was never applied and still is not. It bounds the wait shader at 262144
+    iterations, which is about 6 ms, against a network that takes 16 to 187 ms -- so inline mode
+    times out every frame and the residual comes out at exactly zero. Measured, not assumed.
 
 Usage:
-    python patch_runtime.py <original version.dll> <runtime-patches.json> <output.dll>
+    python patch_runtime.py <version.dll> <runtime-patches.json> <output.dll>
 
 No binaries ship with this project: both inputs are yours.
 """
@@ -18,9 +28,6 @@ No binaries ship with this project: both inputs are yours.
 import hashlib
 import json
 import sys
-
-CAP = "bound GPU wait shader"
-
 
 def main(argv):
     if len(argv) != 4:
@@ -46,9 +53,6 @@ def main(argv):
         if data[offset:offset + len(before)] != before:
             print(f"bytes at offset {change['offset']} do not match: {change['reason']}")
             return 1
-        if CAP in change["reason"]:
-            print(f"SKIPPED {change['reason']}")
-            continue
         data[offset:offset + len(after)] = after
         print(f"applied {change['reason']}")
 

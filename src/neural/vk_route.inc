@@ -800,7 +800,7 @@ void Present(command_queue *queue, swapchain *sc)
     const bool jobPending =
         g.fence->GetCompletedValue() < g.completion ||
         static_cast<UINT>(InterlockedCompareExchange(
-            reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, 0x76c14)), 0, 0)) < g.lastJob;
+            reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, 0x8d6f4)), 0, 0)) < g.lastJob;
     if (jobPending && GetTickCount64() - g.lastJobAt < 500)
     {
         runNetwork = false;
