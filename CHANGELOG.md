@@ -249,6 +249,45 @@ type is not a free choice.
 **This does not mean Vulkan works yet.** No Vulkan route is shipped in this release; what these
 two prove is that the transport it would need is possible on AMD, which was not known before.
 
+### The runtime moved to v0.2.17
+
+The add-on was built against **DLSS-NR-on-AMD v0.2.14** and is now built against **v0.2.17**,
+three releases on. Between them: a double-capture fix on FSR3 games that removes some flicker, a
+Resident Evil Requiem startup crash, Nixxes ports, further RE Engine fixes on RDNA3, HDR exposure
+handling for games that supply an exposure texture, multi-GPU black screens, and the stutter on
+games with dynamic resolution scale — which is every emulator this add-on cares about. The two
+performance releases, +6% and +2%, were already in v0.2.14.
+
+`.hip_fat` is byte-identical in size across the two, so the network itself did not change. What
+moved was everything around it: `.text` grew 28 KB, `.data` 7 KB, and **every offset this add-on
+writes into moved with them.** All twenty-two were re-derived against the new build, none carried
+over on faith, and the deltas are not uniform — the block splits into regions that shifted by
+0x16A20, 0x16AE0, 0x16BA0 and 0x16BB0 respectively, so a single constant would have been wrong
+for most of them.
+
+Two entry points were relocated by matching prologues and call sites: the record function
+0xa0b0 → 0xf600 and the init function 0x12380 → 0x19240, the latter 379 of its first 400 bytes
+identical to the old one and reached from the same single call site.
+
+**One binary patch is gone, replaced by a flag.** Against v0.2.14 this project edited the apply
+shader so a timed-out frame kept its own input instead of pasting last frame's residual.
+v0.2.17 writes that line as
+
+```hlsl
+if (tone & 4) { if (flags.Load(12) != 0) d = (tone & 2) ? prev[id.xy].rgb : float3(0, 0, 0); }
+```
+
+Bit 4 turns the guard on, bit 2 chooses the stale residual over nothing, and both are clear by
+default — so out of the box a timed-out frame keeps a half-written buffer, which is worse than
+either choice. The add-on now sets bit 4 and clears bit 2 when it writes ToneChannels, which is
+the same outcome the patch forced and does not require touching the binary.
+
+Also corrected: the patcher claimed the upstream installer applies five patches and that this
+applies four of them. It applies none. `version.dll` on disk is byte for byte the payload
+appended to `dlssnr_on_amd_setup.exe`; every change was always ours. `tools/extract_runtime.py`
+now lifts that payload out without executing the installer, verified against v0.2.14 through
+v0.2.17.
+
 ### Known, and not fixed
 
 - The Pass Count machine hang has **not been reproduced or confirmed absent** since the rework.

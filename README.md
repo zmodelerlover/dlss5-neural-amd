@@ -74,8 +74,12 @@ channel on the **[discord](https://discord.gg/wYhvS3JSHM)**. They are **not in t
 never will be**: the weights are NVIDIA-derived and the runtime comes from a third-party project
 that declares no license.
 
-That `.dll` is already rebuilt without the spin cap, so no patching. Check it against
-`tools/SHA256SUMS.txt`:
+The runtime is **DLSS-NR-on-AMD v0.2.17**, rebuilt without the spin cap, so no patching. If you
+would rather build it yourself than trust a file from a chat channel, see
+[Rebuilding the runtime yourself](#rebuilding-the-runtime-yourself): one command, and it needs
+nothing but that project's own installer, which is never executed.
+
+Check it against `tools/SHA256SUMS.txt`:
 
 ```powershell
 Get-FileHash dlssnr_amd_pass1.dll, dlssnr_on_amd_weights.bin -Algorithm SHA256
@@ -375,21 +379,27 @@ Two things worth knowing per target:
 
 ## Rebuilding the runtime yourself
 
-You don't need this — the DLL on the discord is already the rebuilt one. It's here for anyone
-who wants to see what was changed rather than take my word for it.
+You don't need this — the DLL on the discord is already the rebuilt one. It is here for anyone
+who would rather see what changed than take my word for it, and for whoever has to redo this the
+next time that project ships a build.
 
-`tools/runtime-patches.json` is the spec: five patches, with offsets, the bytes before, the
-bytes after, and why. Grab the untouched `version.dll` from the discord and:
+You don't need the discord either. DLSS-NR-on-AMD ships a single `dlssnr_on_amd_setup.exe` with
+the runtime appended to it raw, so the DLL can be lifted out without running anything:
 
 ```powershell
+python tools\extract_runtime.py dlssnr_on_amd_setup.exe version.dll
 python tools\patch_runtime.py version.dll tools\runtime-patches.json dlssnr_amd_pass1.dll
 ```
 
-That applies four of the five and **skips the fifth on purpose.** The fifth is the one the
-OptiScaler installer uses to cap the GPU wait shader at 262144 iterations, about 6 ms. The
-network takes 16 ms at half scale and 125-187 ms at full, so inline mode timed out on every
-single frame, and the apply pass just kept its input. Residual came out at exactly zero, which
-is a fun way to spend a few hours.
+Both print hashes. Compare them against `tools/SHA256SUMS.txt`.
+
+`tools/runtime-patches.json` is the spec: three patches, with offsets, the bytes before, the
+bytes after, and why, plus a `dropped` list of two things this deliberately does **not** do.
+
+The interesting one of those two is the GPU wait spin cap, which bounds the wait shader at 262144
+iterations, about 6 ms. The network takes 16 ms at half scale and 125-187 ms at full, so with the
+cap in place inline mode timed out on every single frame and the apply pass just kept its input.
+Residual came out at exactly zero, which is a fun way to spend a few hours.
 
 Everything is written in place at the same length, so no RVA moves and the add-on's offsets stay
 valid. The script prints a new SHA256; paste it into `kRuntimeSha256` in `src/neural/neural.cpp`
