@@ -1065,6 +1065,10 @@ struct State
     // Safety net: presents seen since the bridge last finished a frame.
     uint64_t presentsSinceFrame = 0;
     uint64_t lastSeenFrame = 0;
+    // Whether the last present was to a window nobody can see. Alt-tab is the only way this
+    // becomes true in practice, and it is the state in which every wait in this file misbehaves.
+    bool windowHidden = false;
+    bool loggedHidden = false;
     // One module, recorded once per pass. It used to be one loaded copy of the runtime per
     // pass -- dlssnr_amd_pass1..10.dll -- on the assumption that a pass needs its own copy of
     // the runtime's globals, because Windows hands back the same HMODULE for the same path.
@@ -2094,15 +2098,49 @@ bool FlushAndWait11()
     return true;
 }
 
+// Wait for a fence to reach a value, and do not give up on it.
+//
+// This used to be a bare WaitForSingleObject with a 2 s cap whose result was thrown away, in both
+// of the places that wait on our own queue. Two seconds is generous while the game is in front
+// and nowhere near enough the moment it is not: Windows deprioritises a background process's GPU
+// work heavily, so on the way into and out of an alt-tab our queue routinely takes longer than
+// that. Every caller then carried on as if the GPU were finished -- resetting a command allocator
+// whose list is still executing, releasing shared textures the queue still references, reading a
+// result that is still being written. All three are undefined behaviour, and all three happen in
+// the same few frames users report as "crashes when I alt-tab".
+//
+// Waiting longer is slow. Carrying on is an access violation. The only real end to the wait is
+// the device dying, which is what the loop checks for.
+bool WaitFence(ID3D12Fence *fence, UINT64 value, HANDLE ev, const char *what)
+{
+    if (fence == nullptr || fence->GetCompletedValue() >= value)
+        return true;
+    if (ev == nullptr || FAILED(fence->SetEventOnCompletion(value, ev)))
+        return false;
+    for (UINT waited = 0;; waited += 2)
+    {
+        if (WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0)
+        {
+            if (waited != 0)
+                Log("bridge: %s took %u s -- the process was most likely in the background.",
+                    what, waited);
+            return true;
+        }
+        if (DeviceLost())
+        {
+            Log("bridge: %s will never complete; the device is gone.", what);
+            return false;
+        }
+        if (waited == 0)
+            Log("bridge: still waiting on %s after 2 s. Holding on rather than reusing what the "
+                "GPU still owns.", what);
+    }
+}
+
 // The other half: wait for our own queue to finish what was just submitted.
 void WaitForWorkQueue(UINT64 value)
 {
-    if (g.fence == nullptr || g.fence->GetCompletedValue() >= value)
-        return;
-    if (g.completionEvent == nullptr)
-        return;
-    if (SUCCEEDED(g.fence->SetEventOnCompletion(value, g.completionEvent)))
-        WaitForSingleObject(g.completionEvent, 2000);
+    WaitFence(g.fence.Get(), value, g.completionEvent, "the network to finish");
 }
 
 void BridgePresent(device *dev, swapchain *sc)
@@ -2211,11 +2249,11 @@ void BridgePresent(device *dev, swapchain *sc)
 
     // 2. our device does the work
     const UINT i = static_cast<UINT>(g.backValue % State::kRing);
-    if (g.ringValue[i] != 0 && g.ringFence->GetCompletedValue() < g.ringValue[i])
-    {
-        g.ringFence->SetEventOnCompletion(g.ringValue[i], g.ringEvent);
-        WaitForSingleObject(g.ringEvent, 2000);
-    }
+    // Resetting an allocator whose command list is still executing is undefined behaviour, so
+    // this wait is not optional and cannot be allowed to expire.
+    if (g.ringValue[i] != 0 &&
+        !WaitFence(g.ringFence.Get(), g.ringValue[i], g.ringEvent, "the ring slot to come free"))
+        return;
     if (FAILED(g.alloc[i]->Reset()) || FAILED(g.list[i]->Reset(g.alloc[i].Get(), nullptr)))
     {
         Log("bridge: command list reset failed.");
@@ -3914,6 +3952,21 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         g.historyValid.store(true);
     }
+    else
+    {
+        // The chain did not run this frame -- skipped because the previous evaluation was still
+        // pending, or refused by the engine -- so the history texture still holds the frame
+        // before last, and it was never marked stale. Next frame the denoiser is handed a
+        // two-frame-old image together with one frame of motion, and every further skip widens
+        // the gap without ever clearing it: the history stayed valid from the first frame that
+        // set it until the resolution changed.
+        //
+        // That mismatch is the ghosting. It is worst precisely where frames get dropped -- loads,
+        // cutscenes, alt-tab, anything that stalls the queue -- which is where it gets reported.
+        // Invalidating costs the denoiser one frame of accumulation; not invalidating costs a
+        // smear that has no way to decay.
+        g.historyValid.store(false);
+    }
 
     return true;
 }
@@ -3962,6 +4015,44 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     device *dev = sc != nullptr ? sc->get_device() : nullptr;
     if (dev == nullptr || queue == nullptr)
         return;
+
+    // Alt-tab, and the whole class of bugs behind it.
+    //
+    // Nothing this add-on produces is visible while the game's window is minimised, and every
+    // expensive thing it does behaves badly there. Windows deprioritises a background process's
+    // GPU work, so our cross-device copies, our fence waits and -- worst of all -- the engine's
+    // own *inline* CPU spin all run long. That spin is on the game's render thread, with a fixed
+    // iteration cap sized for a foreground frame, and it is what "Styx freezes randomly when I
+    // alt-tab to desktop" looks like from inside the process.
+    //
+    // Standing down here costs a frame nobody is looking at, and it covers all three routes.
+    //
+    // ponytail: minimised only. Alt-tab out of exclusive fullscreen minimises, which is where the
+    // reports come from; alt-tab out of a borderless window does not, and that case is still
+    // exposed. The upgrade is GetForegroundWindow() != hwnd, which also switches the add-on off
+    // for anyone watching the game on a second monitor -- so it waits for a report that needs it.
+    if (auto *hwnd = static_cast<HWND>(sc->get_hwnd()); hwnd != nullptr && IsIconic(hwnd))
+    {
+        if (!g.loggedHidden)
+        {
+            g.loggedHidden = true;
+            Log("the window is minimised, so the add-on is sitting the frame out. It picks back "
+                "up on restore. This is not an error, and it is only logged once.");
+        }
+        g.windowHidden = true;
+        return;
+    }
+    if (g.windowHidden)
+    {
+        g.windowHidden = false;
+        // Coming back from minimised, the last network output is however many seconds old, while
+        // the motion vectors handed with it describe a single frame of movement. Feeding that to
+        // a temporal denoiser is asking it to smear a stale frame across the new one, which is
+        // the ghosting people see for a second or two after alt-tabbing back. Start clean.
+        g.historyValid.store(false);
+        Log("window restored; dropping the temporal history so nothing from before the alt-tab "
+            "is carried into the new frame.");
+    }
 
     // Vulkan. The host -- RPCS3 is the one this was built for -- never makes a D3D12 call, so
     // the network cannot run on its device. Same answer as D3D11: a second D3D12 device of our
