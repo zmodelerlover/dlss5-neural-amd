@@ -21,6 +21,8 @@ Discord: https://discord.gg/wYhvS3JSHM
 That server is for DLSS 5 in general, AMD, ports, whatever people are building. It isn't a
 support channel for this add-on.
 
+[![Support this project on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T213OVFE)
+
 **Just want it running?** → [Before you start](#before-you-start) → [Quick start](#quick-start).
 Six steps, no compiler needed.
 **Something's broken?** → [Troubleshooting](#troubleshooting), which is keyed by what you see on
@@ -530,6 +532,35 @@ that does not have one.
 Please don't file this as a missing feature. **Model A is the only model that exists on this
 side**, and the work above is written down precisely so nobody spends another week rediscovering
 that.
+
+## Keeping this going
+
+<div align="center">
+
+### This is one person, one card, and evenings.
+
+[![Support this project on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T213OVFE)
+
+**[ko-fi.com/T6T213OVFE](https://ko-fi.com/T6T213OVFE)**
+
+</div>
+
+There is no company behind this and nothing here is sponsored. Every result in this README came
+out of one RX 9070 XT, and the honest limits of the project are written down all over it —
+"tested on one card", "measured on menus, not in gameplay", "not reproduced since the rework".
+Those gaps are not laziness. They are what one machine and one pair of hands can cover.
+
+What support actually buys, in the order it would get spent:
+
+| | |
+|---|---|
+| **Tooling, which is metered** | The work that actually moves this forward -- decompiling a closed runtime, bisecting a driver reset, chasing one field through a binary until it gives up what it does -- runs on paid tooling billed by use. That meter is the single biggest thing deciding whether the next question gets answered or shelved. |
+| **Other hardware** | Everything is verified on a single RDNA4 card. RDNA3 is untested. A second card is the difference between "should work" and "measured". |
+| **Time** | The useful work here is slow, and most of it produces one number rather than a feature. Running the same scene twice to find out a slider was inert is a whole evening, and evenings are the scarce thing. |
+| **The targets nobody has tried** | Adding a game is one row in a table, but *verifying* one means owning it and playing it. |
+
+If this saved you a weekend, or if you just want to see where it goes, a coffee genuinely helps.
+If it didn't, don't — the code is MIT either way and nothing is gated behind a donation.
 
 ## License
 
