@@ -3710,6 +3710,31 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         }
     }
     g.activePasses = accepted;
+    // The same table the instrumented NVIDIA fork prints, in the same columns, so the two logs can
+    // be put side by side and read off. Once per arrangement: it reprints when the count or any
+    // resolved value changes and stays quiet otherwise.
+    if (runNetwork)
+    {
+        char table[512];
+        int n = std::snprintf(table, sizeof(table),
+                              "resolved tuning per pass (%u asked, %u accepted)\n"
+                              "  pass   structure  tone       skin", wanted, accepted);
+        for (UINT i = 0; i < wanted && n > 0 && n < static_cast<int>(sizeof(table)); ++i)
+        {
+            const PassTune t = TuningFor(i);
+            n += std::snprintf(table + n, sizeof(table) - n,
+                               "\n  %-6u %-10.4f %-10.4f %-10.4f%s", i + 1,
+                               static_cast<double>(t.structure), static_cast<double>(t.tone),
+                               static_cast<double>(t.skin),
+                               g.passOverride[i].load() ? "  (own profile)" : "");
+        }
+        static char lastTable[512] = {};
+        if (std::strcmp(table, lastTable) != 0)
+        {
+            std::strncpy(lastTable, table, sizeof(lastTable) - 1);
+            Log("%s", table);
+        }
+    }
     if (wanted > 1 && !g.loggedPassDetail)
     {
         g.loggedPassDetail = true;
