@@ -1,4 +1,4 @@
-# Builds the add-ons with the MSVC cl.exe directly, no Visual Studio project.
+﻿# Builds the add-ons with the MSVC cl.exe directly, no Visual Studio project.
 # Produces a .addon64, which ReShade loads by extension.
 #
 # The toolchain is discovered: Visual Studio through vswhere, the Windows SDK through the
@@ -98,7 +98,7 @@ $dll = Join-Path $out "dlss5-$Target.addon64"
 Push-Location $out
 try {
     # NOMINMAX: without it the max/min macros in windows.h swallow std::max/std::min.
-    & $cl /nologo /std:c++20 /EHsc /O2 /MD /W3 /DNDEBUG /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS `
+    & $cl /nologo /utf-8 /std:c++20 /EHsc /O2 /MD /W3 /DNDEBUG /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS `
           /DNOMINMAX /DWIN32_LEAN_AND_MEAN `
           /Fo"$out\" /LD $src /link /DLL /OUT:"$dll" `
           user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib
