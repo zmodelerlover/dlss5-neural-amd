@@ -467,7 +467,7 @@ None of this is settled, it's just where I stopped. One card, one program, one n
 * Upscaling. I couldn't find an upscaling path in the AMD runtime I used, input and output
   share the same texture. Maybe another build has one.
 * ~~Model/style, UI correction, character mask.~~ Settled, see
-  [Model A/B/C](#model-abc-and-why-it-cannot-work-here). Character mask was there all along
+  [Model A/B/C](#model-abc-will-not-be-implemented). Character mask was there all along
   (`UseAutoMask`) and is now exposed. Model/style genuinely is not, and that one is closed.
 * Depth. PCSX2 writes a real 512x512 R32G8X24_TYPELESS buffer, the probe in this repo finds it.
   ReShade's `bind_render_targets_and_depth_stencil` never reached my add-on on D3D12 though, so
@@ -482,7 +482,7 @@ None of this is settled, it's just where I stopped. One card, one program, one n
   colour, depth and motion, which is what it was built for. That's where it should look like
   the videos everyone's seen. Nobody's tried it with this.
 
-## Model A/B/C, and why it cannot work here
+## Model A/B/C: will not be implemented
 
 The NVIDIA add-on has a **Model** combo with A, B and C, and switching it does change the
 picture. Its own tooltip says it goes through "the prerelease `DLSSNR.Style` field". People ask
@@ -519,8 +519,17 @@ each one takes by value, and the style vector alone is 56 bytes, while `k_final_
 There is no room, and the kernels are precompiled GCN code objects inside the DLL.
 
 Whoever did the AMD port compiled the network with the neutral style folded in and dropped the
-inputs. Model A is the only one that exists on this side. Not a missing offset, not a hidden
-field: the input is not in the compiled binary.
+inputs. Not a missing offset, not a hidden field: the input is not in the compiled binary.
+
+**So this will not be implemented, and it is not a matter of effort or of finding the right
+offset.** The AMD port is closed source. Its kernels ship as precompiled GCN code objects inside
+`dlssnr_amd_pass1.dll`, and adding a network input means recompiling them, which needs sources
+that were never published. Nothing an add-on does from outside can put a parameter into a kernel
+that does not have one.
+
+Please don't file this as a missing feature. **Model A is the only model that exists on this
+side**, and the work above is written down precisely so nobody spends another week rediscovering
+that.
 
 ## License
 

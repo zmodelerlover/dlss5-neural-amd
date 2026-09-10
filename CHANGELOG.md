@@ -100,11 +100,16 @@ That turned up fields nothing had ever written:
 
 - **The runtime's option struct**, field by field, in the README — so an offset that is written
   but never read can be told apart from one that matters.
-- **Model A/B/C.** The NVIDIA add-on's Model combo is `DLSSNR.Style`, and it is now traced end to
-  end: a table lookup, a bitmask, and three floats lerped into a 14-float block. It is not three
-  networks — that DLL carries one weight set. It cannot be ported: the AMD kernels' argument
-  metadata shows no room for the 56-byte style vector, and they are precompiled code objects.
-  Model A is the only one that exists on this side. Written down so the question stays closed.
+- **Model A/B/C — closed, will not be implemented.** The NVIDIA add-on's Model combo is
+  `DLSSNR.Style`, and it is now traced end to end: a table lookup, a bitmask, and three floats
+  lerped into a 14-float block. It is not three networks — that DLL carries one weight set, so on
+  paper it needs no data we don't already have.
+
+  It still cannot be done, and the reason is not effort. **The AMD port is closed source.** Its
+  kernels ship as precompiled GCN code objects, their argument metadata shows no room for the
+  56-byte style vector, and adding a network input means recompiling kernels whose sources were
+  never published. **Model A is the only model that exists on this side.** Written up in the
+  README so the question stays closed rather than being rediscovered every few months.
 
 ### Known, and not fixed
 
