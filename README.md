@@ -441,7 +441,6 @@ identical from the couch and need completely different fixes.
 | `tools/check_shaders.ps1` | extracts the HLSL out of `neural.cpp` and runs `fxc` on it. A shader typo otherwise only shows up as a log line inside the game. |
 | `build.ps1` | builds an add-on with `cl.exe`, no VS project. |
 | `CHANGELOG.md` | what changed between releases. |
-| `docs/` | session notes: what was measured, what was tried and rejected, and why. |
 
 ## Stuff I didn't get to
 
@@ -478,9 +477,8 @@ compiled binary. Adding one means recompiling those kernels, which needs sources
 never published. Nothing an add-on does from outside can put a parameter into a kernel that
 does not have one.
 
-This was traced end to end on the NVIDIA side before being closed, and the working is in
-`docs/`. **Model A is the only model that exists on this side** -- please do not file it as a
-missing feature.
+This was traced end to end on the NVIDIA side before being closed. **Model A is the only
+model that exists on this side** -- please do not file it as a missing feature.
 
 ## Keeping this going
 
