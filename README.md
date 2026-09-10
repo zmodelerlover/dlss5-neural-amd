@@ -554,7 +554,7 @@ What support actually buys, in the order it would get spent:
 
 | | |
 |---|---|
-| **Tooling, which is metered** | The work that actually moves this forward -- decompiling a closed runtime, bisecting a driver reset, chasing one field through a binary until it gives up what it does -- runs on paid tooling billed by use. That meter is the single biggest thing deciding whether the next question gets answered or shelved. |
+| **Tokens, and they are metered** | The research that actually moves this forward -- decompiling a closed runtime, bisecting a driver reset, chasing one field through a binary until it gives up what it does -- burns tokens, billed by use. That meter is the single biggest thing deciding whether the next question gets answered or shelved instead. |
 | **Other hardware** | Everything is verified on a single RDNA4 card. RDNA3 is untested. A second card is the difference between "should work" and "measured". |
 | **Time** | The useful work here is slow, and most of it produces one number rather than a feature. Running the same scene twice to find out a slider was inert is a whole evening, and evenings are the scarce thing. |
 | **The targets nobody has tried** | Adding a game is one row in a table, but *verifying* one means owning it and playing it. |
