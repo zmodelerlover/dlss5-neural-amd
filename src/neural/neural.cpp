@@ -582,6 +582,12 @@ using HipSetFn = int (*)(int);
 
 bool RuntimeHashMatches(const std::filesystem::path &file)
 {
+    // The runtime is one fixed-size binary, so anything of a different size is the wrong file --
+    // and that is knowable from the directory entry. Reading it in to find out pulls the whole of
+    // whatever was pointed at into memory first, which is a strange way to reject a wrong DLL.
+    std::error_code sizeError;
+    if (std::filesystem::file_size(file, sizeError) != kRuntimeSize || sizeError)
+        return false;
     std::ifstream in(file, std::ios::binary);
     std::vector<unsigned char> data((std::istreambuf_iterator<char>(in)), {});
     if (data.size() != kRuntimeSize)
@@ -649,6 +655,10 @@ struct Bridge
             FAILED(own->OpenSharedHandle(handle, IID_PPV_ARGS(&on12))))
         {
             Log("bridge %s: sharing failed.", name);
+            // The texture is alive by here, and the handle may be too. Ensure calls Destroy() on
+            // the way in, so a retry would reclaim them -- but the depth path latches instead of
+            // retrying, and a failure path should not depend on someone else trying again.
+            Destroy();
             return false;
         }
         width = w;
@@ -922,7 +932,10 @@ struct State
     ComPtr<ID3D12Resource> lumaA, lumaB, flowSmall, flowCoarse;
     ComPtr<ID3D12Resource> history;
     std::atomic<bool> useHistory { true };
-    bool historyValid = false;
+    // Cleared by the overlay's History checkbox and read and set by present. The overlay only
+    // takes g.lock for its Status section at the bottom, and the checkbox is above that, so the
+    // two threads share no lock here. Atomic, like the switches beside it.
+    std::atomic<bool> historyValid { false };
     bool loggedHistory = false;
     UINT flowWidth = 0, flowHeight = 0;
     std::atomic<bool> useMotion { true };
@@ -1005,7 +1018,10 @@ struct State
     UINT depthWidth = 0, depthHeight = 0;
     DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
     UINT depthBinds = 0, depthBestBinds = 0;
-    ID3D12Resource *depthBest = nullptr;
+    // Holds a reference of its own. This is a resource the GAME owns: a level load, a resize or
+    // a device reset frees it, and a bare pointer then points into freed memory while the depth
+    // path is still calling GetDesc, two barriers and a CopyResource against it on a later frame.
+    ComPtr<ID3D12Resource> depthBest;
     std::atomic<bool> useDepth { true };
     bool loggedDepth = false;
     ComPtr<ID3D12Resource> composed;
@@ -1023,7 +1039,10 @@ struct State
     bool loggedPin = false;
     float pinnedScale = -1.0f;
     UINT measureTries = 0;
-    UINT64 depthEvents = 0;
+    // Raised on the bind event, which arrives on whatever thread is recording, and read from
+    // present and the overlay. The increment sits outside g.lock on purpose -- observation must
+    // not be gated on the Depth switch -- so the counter itself has to carry the guarantee.
+    std::atomic<UINT64> depthEvents { 0 };
 };
 
 State g;
@@ -2532,7 +2551,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
          !CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.history, "history")))
         return false;
     if (netChanged)
-        g.historyValid = false;
+        g.historyValid.store(false);
     if (netChanged)
     {
         g.flowWidth = fw;
@@ -2663,7 +2682,7 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
         return;
     auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
     std::lock_guard guard(g.lock);
-    if (native == g.depthBest)
+    if (native == g.depthBest.Get())
     {
         ++g.depthBinds;
         return;
@@ -2685,7 +2704,7 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
         return;
     if (g.depthBest == nullptr || d.Width * d.Height > static_cast<UINT64>(g.depthWidth) * g.depthHeight)
     {
-        g.depthBest = native;
+        g.depthBest = native;  // ComPtr: takes a reference
         g.depthWidth = static_cast<UINT>(d.Width);
         g.depthHeight = d.Height;
         g.depthFormat = d.Format;
@@ -2718,7 +2737,7 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
     auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
 
     std::lock_guard guard(g.lock);
-    if (!g.useDepth.load() || native != g.depthBest || g.device == nullptr)
+    if (!g.useDepth.load() || native != g.depthBest.Get() || g.device == nullptr)
         return false;
     ++g.depthClears;
 
@@ -2803,6 +2822,15 @@ void ReleaseSwapchainSized()
     }
     g_depthTally.clear();
     g_motionTally.clear();
+    // depthBest now holds a reference of its own, so it has to be let go here as well as
+    // remembered. Holding a reference on a resource the game owns across its own teardown is
+    // the same shape as the bug that broke this add-on's swapchain resize once already: the
+    // game cannot finish releasing what we are still pointing at. The next bind re-finds it.
+    g.depthBest.Reset();
+    g.depthCandidate = nullptr;
+    g.depthWidth = g.depthHeight = 0;
+    g.depthFormat = DXGI_FORMAT_UNKNOWN;
+    g.depthBinds = g.depthBestBinds = 0;
     g.gameDepthActive = g.gameMotionActive = false;
     g.outWidth = g.outHeight = 0;
 }
@@ -3206,7 +3234,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
     const bool fromGame = g.gameDepthActive && g.guideDepth.local != nullptr;
     if (g.useDepth.load() && (fromGame || g.depthSnapshot != nullptr || g.depthBest != nullptr))
     {
-        g.depthCandidate = g.depthBest;
+        g.depthCandidate = g.depthBest.Get();
         const bool fromSnapshot = !fromGame && g.depthSnapshot != nullptr;
         ID3D12Resource *depthSource = fromGame      ? g.guideDepth.local.Get()
                                       : fromSnapshot ? g.depthSnapshot.Get()
@@ -3339,7 +3367,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         //
         // Off by default because these are hardcoded offsets into one specific build: a wrong
         // pointer here does not fail, it hangs the game.
-        const bool wantHistory = g.useHistory.load() && g.historyValid && g.history != nullptr;
+        const bool wantHistory = g.useHistory.load() && g.historyValid.load() && g.history != nullptr;
         At<uint8_t>(r, 0x765f8) = wantHistory ? 1 : 0;
         At<void *>(r, 0x765f0) = wantHistory ? static_cast<void *>(g.history.Get()) : nullptr;
         if (wantHistory && !g.loggedHistory)
@@ -3558,7 +3586,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g.historyValid = true;
+        g.historyValid.store(true);
     }
 
     return true;
@@ -3797,7 +3825,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     if (g.frame == 600)
         Log("guides after 600 frames: %llu depth-stencil bind events, best candidate %s. Motion: "
             "the PS2 never computed per-pixel motion, so there is none to take.",
-            static_cast<unsigned long long>(g.depthEvents),
+            static_cast<unsigned long long>(g.depthEvents.load()),
             g.depthBest != nullptr ? "found" : "none");
 }
 
@@ -4335,7 +4363,7 @@ void OnOverlay(effect_runtime *)
         if (Risk r(kWarn, hist); ImGui::Checkbox(T("History", "Histórico"), &hist))
         {
             g.useHistory.store(hist);
-            g.historyValid = false;
+            g.historyValid.store(false);
             Log("menu: history %s", hist ? "on" : "off");
         }
         Help("Hands the engine last frame's output to carry forward.\n\n"
@@ -4792,13 +4820,13 @@ void OnOverlay(effect_runtime *)
                         g.useDepth.load() ? T(", feeding it", ", alimentando")
                                           : T(" (Depth switch is off)",
                                               " (chave de Profundidade desligada)"));
-        else if (g.depthEvents == 0)
+        else if (g.depthEvents.load() == 0)
             ImGui::TextDisabled(T("Depth: no depth-stencil bind delivered on this API.",
                                   "Profundidade: nenhum bind de depth-stencil entregue nesta API."));
         else
             ImGui::TextDisabled(T("Depth: %llu binds seen, none usable.",
                                   "Profundidade: %llu binds vistos, nenhum usável."),
-                                static_cast<unsigned long long>(g.depthEvents));
+                                static_cast<unsigned long long>(g.depthEvents.load()));
         ImGui::TextDisabled(T("Log: dlss5-neural.log", "Log: dlss5-neural.log"));
     }
 
