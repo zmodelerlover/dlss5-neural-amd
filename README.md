@@ -46,7 +46,7 @@ PCSX2, no audio. Click a thumbnail to play, or use the plain links if the thumbn
 | | |
 |---|---|
 | **GPU** | AMD **RDNA3 or RDNA4** with the **HIP 7** runtime, i.e. `amdhip64_7.dll` on the search path. HIP 6 will not do. A current Adrenalin driver ships it. This does nothing on NVIDIA or Intel. |
-| **Renderer** | The game has to be on **Direct3D 12**. On D3D11, Vulkan or OpenGL the add-on loads and then sits there. |
+| **Renderer** | **Direct3D 12**, or **Direct3D 11** through the bridge (see [What the network can actually be fed](#what-the-network-can-actually-be-fed)). On Vulkan or OpenGL the add-on loads and then sits there. D3D11 is the better path now: it is the only one where the game's own depth and motion vectors are reachable. |
 | **ReShade** | The **add-on** build, 6.x. The plain one will not load add-ons. Tested on 6.8.0. |
 | **Disk** | About 150 MB for the network weights. |
 
@@ -177,6 +177,61 @@ The residual measurement in the first one is the useful bit. `mean 0.000000` mea
 returned its input untouched, which is a completely different problem from a nonzero residual
 that looks wrong on screen. They are indistinguishable from the couch.
 
+### The overlay
+
+Everything is on the ReShade overlay, under **DLSS Neural Rendering (AMD)**. `Ctrl+End` toggles
+the effect without opening it.
+
+**It starts switched off, every run.** The add-on rewrites every presented frame, and the
+settings that do that are the ones that have taken a machine down, so nothing happens until you
+turn it on and have looked at what it is set to. That is deliberate and not persisted.
+
+Each control has a `(?)` next to it. Hover it: the tooltip says what the control does, what was
+measured about it, and — where it applies — why it is not what you would guess. Most of that
+text is a measured result rather than a description, so it is worth reading once.
+
+**Colour means risk, and it tracks the value, not the control.**
+
+| | |
+|---|---|
+| **Red** | The value it is holding right now can take the display driver down. The game dies on `DXGI_ERROR_DEVICE_REMOVED` and the desktop goes with it, with nothing in any log pointing back here. |
+| **Amber** | Past what has actually been measured on this machine. Not known to break, not known to work. Change one thing at a time and watch the skip rate under Status. |
+
+Turning the value back down clears the colour.
+
+**Save Settings** writes everything to `dlss5-neural.ini` next to the exe, so it survives a
+restart. Without it the overlay is a scratchpad and every A/B test means re-dialling half a
+dozen controls on the next run. **Reload Settings** throws away anything changed since the last
+save.
+
+**Language** switches the whole panel, tooltips included, between English and Brazilian
+Portuguese. English is the default.
+
+### Timing, and why Pass Count is not a quality setting
+
+**Timing** is the one to understand first. *Same frame* blocks the game on the GPU until the
+network is done, so what you see is this frame's own correction — honest, and the mode that
+turns any slowdown into a stall. *Async* runs the network on its own timeline and shows a
+correction a frame or two old; nothing blocks, and an evaluation that overruns costs a skipped
+frame instead of a hang. Anything expensive wants Async.
+
+**Pass Count** runs the network over its own output N times. It is the one declared difference
+of the ShortFuse route and it has never been shown to help here — the only reading ever taken of
+it was `Passes=3` giving a residual of exactly zero.
+
+It used to load a separate copy of the runtime per pass, because the runtime keeps all its state
+in module globals at fixed RVAs and Windows hands back the same `HMODULE` for the same path. So
+two passes meant two full engine bring-ups: 147 MB of weights plus activation buffers each, in
+VRAM, next to the game's own working set. That is what took machines down, and a cap on the
+count — which is what was tried first — was never going to fix it, because two evaluations at
+0.50 scale are about 32 ms against a 2 s driver timeout.
+
+It now records **one** engine N times, so the cost is time rather than memory, and the ceiling
+is 3. `dlssnr_amd_pass2.dll` and up are no longer used and can be deleted.
+
+Raise it to measure, not to play: run a scene at 1 and at 2 and compare the `measure, residual`
+line in the log.
+
 ### The engine ini
 
 The runtime reads `dlssnr_on_amd.ini` from the game folder when it loads. **Its own built-in
@@ -188,6 +243,39 @@ So the add-on writes the file itself if it isn't there, with `InlineWaitMs=100`.
 the network takes about 16 ms, so 100 is a wide margin, and past it you get a frame without the
 effect instead of a freeze. Delete the file and it gets written again; edit it and your version
 is kept. Don't raise `InlineWaitMs` far without knowing why.
+
+### What the runtime actually reads
+
+Mapped by decompiling the runtime's own ini reader and its static initialiser, not guessed. Worth
+having written down, because an offset that is written but never read looks identical from
+outside, and this table is what separates the two.
+
+```
+0x76E10 int   DepthInverted   default 1
+0x76E1C bool  Enabled           0x76E1D bool Temporal
+0x76E1E bool  UseFsrInputs      0x76E1F bool UseDepth
+0x76E20 int   Tonemap         default -1
+0x76E30 float LocalTone       default 0.0     -> Local Tone Strength
+0x76E34 float LocalStructure  default 1.0     -> Structure Intensity
+0x76E38 float SkinStructure   default -1.0    -> Skin Structure Strength
+0x76E3C float Scale           default 0.03125 -> Engine Scale
+0x76E40 int   UseAutoMask     default 1       -> Character Mask
+0x76E44 int   ToneChannels    default 0       -> Tone Channels
+```
+
+Its full ini surface is `Enabled` `Temporal` `UseFsrInputs` `UseDepth` `Tonemap` `Interop`
+`Inline` `InlineWaitMs` `LocalTone` `LocalStructure` `SkinStructure` `Scale` `UseAutoMask`
+`HipDevice` `ToneChannels`, plus six environment variables: `DLSSNR_NOBLEND`
+`DLSSNR_NOPOSTHIST` `DLSSNR_NO_REPACK` `DLSSNR_SLOW_PREPOST` `DLSSNR_STAGES` `DLSSNR_WBLOG`.
+
+`VIT512_OLD` is also an environment variable, read as a bitmask — each bit swaps one kernel
+launch for a legacy one. And `vit512a`, `vit512b`, `vit512_attn`, `vit512_conv1`, `vit512_conv2`
+and `vit512_ffwd` are profiling labels for pipeline stages, not model variants. Both are easy to
+mistake for a model selector; neither is one.
+
+Two of these were being written wrong. `Tonemap` was forced to 0 at init when the engine's own
+default is -1, and `DepthInverted` defaulted to off when both runtimes default it on — so the
+add-on inverted the engine's own default on every run. `UseAutoMask` was never written at all.
 
 ## Building it yourself (optional)
 
@@ -369,6 +457,8 @@ identical from the couch and need completely different fixes.
 | `tools/runtime-patches.json` | the five patches, with offsets and bytes. |
 | `tools/SHA256SUMS.txt` | hashes of the four files the repo does not ship. |
 | `build.ps1` | builds an add-on with `cl.exe`, no VS project. |
+| `CHANGELOG.md` | what changed between releases. |
+| `tools/check_shaders.ps1` | extracts the HLSL out of `neural.cpp` and runs `fxc` on it. A shader typo otherwise only shows up as a log line inside the game. |
 
 ## Stuff I didn't get to
 
@@ -376,8 +466,9 @@ None of this is settled, it's just where I stopped. One card, one program, one n
 
 * Upscaling. I couldn't find an upscaling path in the AMD runtime I used, input and output
   share the same texture. Maybe another build has one.
-* Model/style, UI correction, character mask. The NVIDIA add-on exposes these. I didn't find
-  the fields on the AMD side, which might mean they're not there or might mean I missed them.
+* ~~Model/style, UI correction, character mask.~~ Settled, see
+  [Model A/B/C](#model-abc-and-why-it-cannot-work-here). Character mask was there all along
+  (`UseAutoMask`) and is now exposed. Model/style genuinely is not, and that one is closed.
 * Depth. PCSX2 writes a real 512x512 R32G8X24_TYPELESS buffer, the probe in this repo finds it.
   ReShade's `bind_render_targets_and_depth_stencil` never reached my add-on on D3D12 though, so
   it's not hooked up. Code's written, sitting behind the Depth switch. If you get it working
@@ -390,6 +481,46 @@ None of this is settled, it's just where I stopped. One card, one program, one n
 * Literally anything that isn't PCSX2. A D3D12 game with a real upscaler would hand the network
   colour, depth and motion, which is what it was built for. That's where it should look like
   the videos everyone's seen. Nobody's tried it with this.
+
+## Model A/B/C, and why it cannot work here
+
+The NVIDIA add-on has a **Model** combo with A, B and C, and switching it does change the
+picture. Its own tooltip says it goes through "the prerelease `DLSSNR.Style` field". People ask
+for it here, so: this is what it is, and why it is not coming.
+
+`DLSSNR.Style` is an int in the options struct. It gets clamped against a count that comes from
+the network description — the number of models is data, not code — and then used to look up an
+entry in a table of 8 slots of 68 bytes. The entry holds a bitmask plus a short vector of
+floats. Each set bit lerps one slot of a 14-float block from a neutral value toward the entry's
+value, scaled by `LocalToneStrength` clamped to 0..1. Those 14 floats are then copied
+contiguously into the parameter block the kernels receive.
+
+Two of the eight slots are populated, so three models:
+
+| | Model A | Model B | Model C |
+|---|---|---|---|
+| mask | `0x00` | `0x34` | `0x20` |
+| slot 75 | — | **-0.10** | — |
+| slot 77 | — | **-0.25** | — |
+| slot 78 | — | **-0.10** | **-0.15** |
+
+Model A is style 0, which matches no entry and falls back to a neutral descriptor. It is the
+literal baseline, which is why there are only two entries for three models.
+
+**They are not three networks.** `nvngx_dlssnr.dll` carries 156 distinct `block*` tensor names,
+each appearing exactly once — one weight set, three configurations over it. That is the good
+news, because it means porting this would need no data that isn't already here.
+
+The bad news is the AMD side. Its option block is mapped field by field above and none of the
+slots is Style. The three constants do not appear anywhere in the binary. Nothing writes a
+14-float span. And the kernels settle it: their argument metadata gives the size of the struct
+each one takes by value, and the style vector alone is 56 bytes, while `k_final_head` and
+`k_post_block_1h_32_fp8` — exactly where appearance knobs would land — are **32 bytes total**.
+There is no room, and the kernels are precompiled GCN code objects inside the DLL.
+
+Whoever did the AMD port compiled the network with the neutral style folded in and dropped the
+inputs. Model A is the only one that exists on this side. Not a missing offset, not a hidden
+field: the input is not in the compiled binary.
 
 ## License
 
