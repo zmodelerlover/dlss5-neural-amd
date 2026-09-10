@@ -469,51 +469,18 @@ None of this is settled, it is just where things stand. One card, three programs
 ## Model A/B/C: will not be implemented
 
 The NVIDIA add-on has a **Model** combo with A, B and C, and switching it does change the
-picture. Its own tooltip says it goes through "the prerelease `DLSSNR.Style` field". People ask
-for it here, so: this is what it is, and why it is not coming.
+picture. It goes through the prerelease `DLSSNR.Style` field. People ask for it here, so, plainly:
 
-`DLSSNR.Style` is an int in the options struct. It gets clamped against a count that comes from
-the network description — the number of models is data, not code — and then used to look up an
-entry in a table of 8 slots of 68 bytes. The entry holds a bitmask plus a short vector of
-floats. Each set bit lerps one slot of a 14-float block from a neutral value toward the entry's
-value, scaled by `LocalToneStrength` clamped to 0..1. Those 14 floats are then copied
-contiguously into the parameter block the kernels receive.
+**It is not coming, and it is not a matter of effort.** The AMD port of the runtime is closed
+source. Its kernels ship as precompiled GCN code objects inside `dlssnr_amd_pass1.dll`, they
+were compiled with the neutral style folded in, and the style inputs are simply not in the
+compiled binary. Adding one means recompiling those kernels, which needs sources that were
+never published. Nothing an add-on does from outside can put a parameter into a kernel that
+does not have one.
 
-Two of the eight slots are populated, so three models:
-
-| | Model A | Model B | Model C |
-|---|---|---|---|
-| mask | `0x00` | `0x34` | `0x20` |
-| slot 75 | — | **-0.10** | — |
-| slot 77 | — | **-0.25** | — |
-| slot 78 | — | **-0.10** | **-0.15** |
-
-Model A is style 0, which matches no entry and falls back to a neutral descriptor. It is the
-literal baseline, which is why there are only two entries for three models.
-
-**They are not three networks.** `nvngx_dlssnr.dll` carries 156 distinct `block*` tensor names,
-each appearing exactly once — one weight set, three configurations over it. That is the good
-news, because it means porting this would need no data that isn't already here.
-
-The bad news is the AMD side. Its option block is mapped field by field above and none of the
-slots is Style. The three constants do not appear anywhere in the binary. Nothing writes a
-14-float span. And the kernels settle it: their argument metadata gives the size of the struct
-each one takes by value, and the style vector alone is 56 bytes, while `k_final_head` and
-`k_post_block_1h_32_fp8` — exactly where appearance knobs would land — are **32 bytes total**.
-There is no room, and the kernels are precompiled GCN code objects inside the DLL.
-
-Whoever did the AMD port compiled the network with the neutral style folded in and dropped the
-inputs. Not a missing offset, not a hidden field: the input is not in the compiled binary.
-
-**So this will not be implemented, and it is not a matter of effort or of finding the right
-offset.** The AMD port is closed source. Its kernels ship as precompiled GCN code objects inside
-`dlssnr_amd_pass1.dll`, and adding a network input means recompiling them, which needs sources
-that were never published. Nothing an add-on does from outside can put a parameter into a kernel
-that does not have one.
-
-Please don't file this as a missing feature. **Model A is the only model that exists on this
-side**, and the work above is written down precisely so nobody spends another week rediscovering
-that.
+This was traced end to end on the NVIDIA side before being closed, and the working is in
+`docs/`. **Model A is the only model that exists on this side** -- please do not file it as a
+missing feature.
 
 ## Keeping this going
 
