@@ -418,6 +418,16 @@ bool Ensure(Route &r, device *dev, command_queue *queue, UINT w, UINT h, DXGI_FO
         }
         g.device = g.workDevice;
         g.queue = g.workQueue;
+        // The completion fence, the one this route waits on before copying the result back.
+        // CreateWorkDevice makes the ring fence and the two shared ones; this one is created by
+        // the D3D11 route inside its own frame function, so the Vulkan route never had it -- and
+        // Signal on a null fence is not a wait, it is nothing, so the copy back would have raced
+        // the network with no error anywhere to say so.
+        if (FAILED(g.workDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
+        {
+            r.Stop("could not create the completion fence.");
+            return false;
+        }
         if (!ImportFence(r, g.crossHandle, r.semToVk, "D3D12 -> Vulkan") ||
             !ImportFence(r, g.backHandle, r.semToD3D, "Vulkan -> D3D12"))
         {
@@ -496,6 +506,20 @@ void Present(command_queue *queue, swapchain *sc)
                 static_cast<DXGI_FORMAT>(bd.texture.format)))
         return;
 
+    // The working textures. Both of the other routes call this and this one did not, so
+    // netColour, netBase, netResidual, netMotion, netDepth and composed were all null while
+    // RecordNetwork wrote descriptors through them -- an access violation, not a failure. This
+    // is the other half of the first Vulkan crash; bringing the engine up alone was never going
+    // to be enough.
+    if (!EnsureResources(r.width, r.height, r.format, g.scale.load()))
+    {
+        g.unavailable = true;
+        if (*g.reason == 0)
+            g.reason = "could not create the working textures; see dlss5-neural.log";
+        Log("vulkan: %s", g.reason);
+        return;
+    }
+
     // Same order the other two routes use, and the reason the first Vulkan run crashed: without
     // it g.runtime is null and RecordNetwork dereferences it at a fixed offset, which is an
     // access violation rather than a failure. The work device exists by here, which is what
@@ -509,6 +533,23 @@ void Present(command_queue *queue, swapchain *sc)
         return;
     }
     g.loadedPasses = wanted;
+
+    // The same guard the D3D11 route carries. Our own queue is drained every frame further down,
+    // but the engine keeps its own timeline in async mode, and starting a second evaluation on
+    // top of one still running is how this hangs rather than skips.
+    bool runNetwork = true;
+    const bool jobPending =
+        g.fence->GetCompletedValue() < g.completion ||
+        static_cast<UINT>(InterlockedCompareExchange(
+            reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, 0x76c14)), 0, 0)) < g.lastJob;
+    if (jobPending && GetTickCount64() - g.lastJobAt < 500)
+    {
+        runNetwork = false;
+        if (++g.skipped % 120 == 1)
+            Log("vulkan: network skipped, previous evaluation still pending (%llu skipped, %llu "
+                "done)", static_cast<unsigned long long>(g.skipped),
+                static_cast<unsigned long long>(g.frame));
+    }
 
     auto *backImage = reinterpret_cast<VkImage>(back.handle);
     VkImageCopy region {};
@@ -548,7 +589,7 @@ void Present(command_queue *queue, swapchain *sc)
     cmd12->CopyResource(g.crossLocal.Get(), r.in.on12.Get());
     Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    const bool ok = RecordNetwork(cmd12, g.crossLocal.Get(), r.format, nullptr, true,
+    const bool ok = RecordNetwork(cmd12, g.crossLocal.Get(), r.format, nullptr, runNetwork,
                                   g.loadedPasses);
     Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
