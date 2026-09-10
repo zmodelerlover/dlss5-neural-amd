@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Pass Count, and why it was worthless
+
+Raising Pass Count did not add detail, it added saturation, and at 3 it wrecked the picture. The
+count was never the problem — **the composition was**.
+
+The network's answer came back as a *difference*, added to the frame channel by channel and then
+clipped per channel. Two passes is twice that difference, three is three times it, and a clipped
+channel is a hue rotation, not a brighter pixel. So every extra pass bought more colour error and
+less picture. The chain itself was already right: each pass reads what the last one wrote, and the
+correction is measured against the picture the network was first shown, so compose receives the
+whole chain's work rather than the last pass's difference from the one before it.
+
+Replaced with the ratio composition the OptiScaler DLSS-NR fork uses, and RenoDX's DLSS 5 addon
+before it. The answer is made into a complete picture of its own, its luminance is compared against
+the frame's as a bounded ratio, and two finished pictures are blended. A bounded ratio cannot move
+hue.
+
+- **Composition** (Image) — *Ratio (bounded)* or *Additive (old)*. Ratio is the default; the old
+  path is kept so both can be seen in one session.
+- **Colour Strength** (Image) — whether the network's colour arrives with its light. At **0** every
+  pixel keeps the game's exact hue and only its brightness carries the network's verdict. This is
+  the control for "it changed the colours": at 0 it cannot, by construction.
+- **Highlight Guard** (Image) — the most a pixel's luminance may move, in either direction. One
+  scalar over the whole triple, so it bounds brightness without touching hue. 2.0x by default.
+- **Guard follows Pass Count** — one extra multiple of headroom per extra pass. The guard bounds
+  the finished composition while the passes compound the ratio inside it, so a fixed guard means
+  the third pass spends most of its contribution against the clamp and costs frametime for nothing.
+- **Per pass** (Image, under Pass Count) — Structure, Local Tone and Skin per run of the network.
+  Pass 2 is editing pass 1's work, so the same numbers again ask it to sharpen its own sharpening.
+  Off by default, in which case every pass gets the globals exactly as before.
+- A correction that leaves the displayable range is now scaled as a whole triple instead of clipped
+  per channel, and a near-black pixel takes a damped edit instead of an unbounded ratio — which is
+  the crawling, boiling colour in dark scenes.
+- `tools/compose_check.py` asserts the four properties the composition is built to have.
+
 ## v0.3.0 — 2026-09-10
 
 Everything below is new since what is currently published. The short version: **D3D11 works, and
