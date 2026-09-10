@@ -23,7 +23,7 @@ support channel for this add-on.
 
 [![Support this project on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T213OVFE)
 
-**Just want it running?** → [Before you start](#before-you-start) → [Quick start](#quick-start).
+**Just want it running?** → [Before you start](#before-you-start) → [Quick start](#1-get-the-add-on).
 Six steps, no compiler needed.
 **Something's broken?** → [Troubleshooting](#troubleshooting), which is keyed by what you see on
 screen.
@@ -55,10 +55,9 @@ PCSX2, no audio. Click a thumbnail to play, or use the plain links if the thumbn
 Tested on: RX 9070 XT, ReShade 6.8.0, **PCSX2 2.3.14 and 2.8.2**, God of War 1. Nothing else has
 been tried by me.
 
-**Where do the files go? Always next to `pcsx2-qt.exe`.** That is true whether your PCSX2 is a
-portable copy on an external drive or a normal install — the add-on only ever looks in the
-folder the running `.exe` is in. The portable-vs-installer difference only matters for PCSX2's
-own *settings*, which comes up once in [step 5](#5-set-pcsx2-to-direct3d-12).
+**Where do the files go? Always next to `pcsx2-qt.exe`.** True whether your PCSX2 is a portable
+copy on an external drive or a normal install — the add-on only ever looks in the folder the
+running `.exe` is in.
 
 ---
 
@@ -111,40 +110,42 @@ dlssnr_amd_pass1.dll
 dlssnr_on_amd_weights.bin
 ```
 
-`dlssnr_on_amd.ini` shows up on its own the first time it runs. Don't delete it — see
-[the engine ini](#the-engine-ini) below.
+`dlssnr_on_amd.ini` appears on its own the first time it runs. Don't delete it — see
+[the engine ini](#the-engine-ini). A second file, `dlss5-neural.ini`, appears only if you press
+**Save Settings** in the overlay; that one is yours and holds whatever you dialled in.
 
-### 5. Set PCSX2 to Direct3D 12
+### 5. Set PCSX2 to Direct3D 11
 
-Settings → Graphics → Renderer → **Direct3D 12**. On anything else the add-on loads and then
-sits there doing nothing.
+Settings → Graphics → Renderer → **Direct3D 11**.
 
-**Watch out for per-game overrides.** A renderer pinned on one game beats your global setting
-silently, and that wasted an entire evening for me. Easiest way to check, no matter where PCSX2
-lives: **right-click the game in the list → Properties → Graphics**, and make sure Renderer is
-either *Direct3D 12* or left on the global setting.
+Both D3D11 and D3D12 work, but **D3D11 is the one you want**: it is the only path where the
+game's own depth and motion vectors reach the network. On D3D12 the network only ever sees
+colour, because ReShade shows an add-on nothing but the swapchain there. That is measured, not a
+guess — see [What the network can actually be fed](#what-the-network-can-actually-be-fed).
 
-If you'd rather look at the file, it's `gamesettings\<SERIAL>.ini` — but *which folder* that is
-depends on how PCSX2 was installed:
-
-* **Portable** — you extracted the `.7z`/`.zip`, or there's a `portable.ini` next to the exe.
-  Common if PCSX2 lives on an external drive. Everything sits next to `pcsx2-qt.exe`:
-  `gamesettings\`, `inis\`, `memcards\`, `cache\`. There is no `Documents\PCSX2` at all.
-* **Installer** — `Documents\PCSX2\gamesettings\`.
-
-**You want `Renderer = 15`.** 15 is Direct3D 12, which is the only thing this add-on works on.
-`Renderer = 3` is Direct3D 11 — if you find that line, it is the problem, not the fix. Deleting
-the line entirely is also fine: it just falls back to your global setting.
+**Watch out for per-game overrides.** A renderer pinned on one game silently beats your global
+setting, and that cost me an evening. **Right-click the game in the list → Properties →
+Graphics** and make sure Renderer is *Direct3D 11* or left on the global setting. In
+`gamesettings\<SERIAL>.ini` the same thing reads `Renderer = 3` for D3D11 and `15` for D3D12;
+deleting the line falls back to your global setting.
 
 ### 6. Start a game
 
-Hit **Home** for the ReShade overlay → **Add-ons** tab → **DLSS Neural Rendering (AMD)**.
-The status line says whether it's actually running. There's also `dlss5-neural.log` next to
-the exe.
+**Home** → **Add-ons** tab → **DLSS Neural Rendering (AMD)**.
 
-The defaults are the settings I got the numbers below with — Encoding sRGB, Resolution Scale
-0.50, Pass Count 1, inline on — so there is nothing you have to change. Nothing is saved
-between runs either; every launch starts from those defaults.
+**It starts switched off, every launch.** Tick **Enabled**, or press `Ctrl+End`. That is
+deliberate: the add-on rewrites every frame the game presents, and a couple of the settings can
+take the display driver down, so nothing happens until you have seen what it is set to.
+
+The defaults are fine to start with and there is nothing you have to change. When you do change
+something, **Save Settings** keeps it for next time — otherwise every launch starts fresh.
+
+Every control has a `(?)` next to it. Hover it. A control shown in **red** is holding a value
+that can reset your display driver; **amber** means past what has actually been measured. The
+legend is at the bottom of the panel.
+
+The status line says whether it is really running, and `dlss5-neural.log` next to the exe has
+the details.
 
 ---
 
@@ -153,13 +154,13 @@ between runs either; every launch starts from those defaults.
 | What you see | What it is |
 |---|---|
 | Add-on isn't in the Add-ons tab at all | `ReShade.ini` has `DisabledAddons=dlss5 neural@dlss5-neural.addon64` under `[ADDON]`. ReShade writes that line if you ever untick the add-on, and then it never loads again, with no error anywhere. Clear it. |
-| Status says the API is wrong | PCSX2 isn't on D3D12. Check the per-game override too, not just the global setting: right-click the game in the list, Properties, Graphics. |
+| Status says the API is wrong | The game is on Vulkan or OpenGL. It needs D3D11 or D3D12. Check the per-game override too, not just the global setting: right-click the game in the list, Properties, Graphics. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 isn't installed. HIP 6 doesn't count. |
 | `hash mismatch; refused` | Wrong `dlssnr_amd_pass1.dll`. Compare against `tools/SHA256SUMS.txt`. The refusal is deliberate — the alternative is a hang. |
 | Game dies with `887A0005` / device removed | `DXGI_ERROR_DEVICE_REMOVED`, from a Windows TDR. See [the engine ini](#the-engine-ini). |
-| It runs but "only shifts the colours a bit" | Encoding is wrong. On an 8-bit SDR back buffer it has to be **sRGB**. scRGB-nl linearises something that is already sRGB and then scales it by 203/white, so the network gets a nearly black image and does nothing. Ask me how I know. |
-| Colour and tone change, but **textures look identical** | Resolution Scale. At the default 0.50 the network is handed a half-resolution image, so the finest thing it can see is two screen pixels wide — it cannot put detail into a texture it was never shown, and the only correction it can make is colour, tone and large-scale shading. Textures change at **1.00** and not before. That is four times the cost, so turn **Apply On Same Frame** off first; the correction then lags a few frames instead of stalling the game. |
-| Turning Pass Count up switched the add-on off | Pass 2 and 3 load `dlssnr_amd_pass2.dll` and `dlssnr_amd_pass3.dll`, separate files so each pass gets its own copy of the runtime's globals. Only pass1 is distributed. Copy `dlssnr_amd_pass1.dll` and rename it — same hash, so it passes the check. Without them Pass Count now snaps back to what loaded instead of stopping the add-on. |
+| It runs but "only shifts the colours a bit" | Usually Resolution Scale, see the next row. If that isn't it, try **Encoding**: the network was trained on linear light, so handing it sRGB values and calling them linear is the wrong domain, and the symptom is exactly this. Linear with Diffuse White at 100 matches what the NVIDIA route feeds it. |
+| Colour and tone change, but **textures look identical** | Resolution Scale. At the default 0.50 the network is handed a half-resolution image, so the finest thing it can see is two screen pixels wide — it cannot put detail into a texture it was never shown, and the only correction it can make is colour, tone and large-scale shading. Textures change at **1.00** and not before. That is four times the cost, so set **Timing** to *Async* first; the correction then lags a few frames instead of stalling the game. |
+| Pass Count above 1 changes nothing, or costs a lot | Expected. It has never measured better, and the only reading ever taken of it was `Passes=3` giving a residual of exactly zero. It is an instrument, not a quality setting. It no longer needs extra `pass2..10.dll` files — delete any you have. |
 | `imgui.h` or `reshade.hpp` not found when building | You deleted `external/`. It's in the repo now; `git checkout external` puts it back. |
 
 ### If you're reporting a problem
@@ -179,60 +180,36 @@ The residual measurement in the first one is the useful bit. `mean 0.000000` mea
 returned its input untouched, which is a completely different problem from a nonzero residual
 that looks wrong on screen. They are indistinguishable from the couch.
 
-### The overlay
+## The settings
 
-Everything is on the ReShade overlay, under **DLSS Neural Rendering (AMD)**. `Ctrl+End` toggles
-the effect without opening it.
+Every control has a `(?)` beside it, and the tooltip is where the real documentation lives — it
+says what the control does and what was actually measured about it. What follows is only the
+part you would want before opening the panel.
 
-**It starts switched off, every run.** The add-on rewrites every presented frame, and the
-settings that do that are the ones that have taken a machine down, so nothing happens until you
-turn it on and have looked at what it is set to. That is deliberate and not persisted.
-
-Each control has a `(?)` next to it. Hover it: the tooltip says what the control does, what was
-measured about it, and — where it applies — why it is not what you would guess. Most of that
-text is a measured result rather than a description, so it is worth reading once.
-
-**Colour means risk, and it tracks the value, not the control.**
+**Red and amber.** The colour tracks the value a control is holding, not the control itself, so
+turning it back down clears it.
 
 | | |
 |---|---|
-| **Red** | The value it is holding right now can take the display driver down. The game dies on `DXGI_ERROR_DEVICE_REMOVED` and the desktop goes with it, with nothing in any log pointing back here. |
-| **Amber** | Past what has actually been measured on this machine. Not known to break, not known to work. Change one thing at a time and watch the skip rate under Status. |
-
-Turning the value back down clears the colour.
-
-**Save Settings** writes everything to `dlss5-neural.ini` next to the exe, so it survives a
-restart. Without it the overlay is a scratchpad and every A/B test means re-dialling half a
-dozen controls on the next run. **Reload Settings** throws away anything changed since the last
-save.
-
-**Language** switches the whole panel, tooltips included, between English and Brazilian
-Portuguese. English is the default.
-
-### Timing, and why Pass Count is not a quality setting
+| **Red** | This value can take the display driver down. The game dies on `DXGI_ERROR_DEVICE_REMOVED` and the desktop goes with it, with nothing in any log pointing back here. |
+| **Amber** | Past what has been measured on this machine. Not known to break, not known to work either. Change one thing at a time and watch the skip rate under Status. |
 
 **Timing** is the one to understand first. *Same frame* blocks the game on the GPU until the
-network is done, so what you see is this frame's own correction — honest, and the mode that
-turns any slowdown into a stall. *Async* runs the network on its own timeline and shows a
-correction a frame or two old; nothing blocks, and an evaluation that overruns costs a skipped
-frame instead of a hang. Anything expensive wants Async.
+network finishes, so you see this frame's own correction — honest, and the mode that turns any
+slowdown into a stall. *Async* shows a correction a frame or two old, but nothing blocks and an
+overrun costs a skipped frame instead of a hang. Anything expensive wants Async.
 
-**Pass Count** runs the network over its own output N times. It is the one declared difference
-of the ShortFuse route and it has never been shown to help here — the only reading ever taken of
-it was `Passes=3` giving a residual of exactly zero.
+**Resolution Scale** decides whether textures can change at all. Below 1.00 the network never
+sees a full-resolution pixel, so the most it can do is colour, tone and large-scale shading —
+which is why the effect reads as a colour filter. 1.00 costs four times what 0.50 does.
 
-It used to load a separate copy of the runtime per pass, because the runtime keeps all its state
-in module globals at fixed RVAs and Windows hands back the same `HMODULE` for the same path. So
-two passes meant two full engine bring-ups: 147 MB of weights plus activation buffers each, in
-VRAM, next to the game's own working set. That is what took machines down, and a cap on the
-count — which is what was tried first — was never going to fix it, because two evaluations at
-0.50 scale are about 32 ms against a 2 s driver timeout.
+**Pass Count** is an instrument, not a quality setting. It has never measured better, and the
+only reading ever taken of it was `Passes=3` giving a residual of exactly zero. Raise it to
+compare two `measure, residual` lines, not to play.
 
-It now records **one** engine N times, so the cost is time rather than memory, and the ceiling
-is 3. `dlssnr_amd_pass2.dll` and up are no longer used and can be deleted.
-
-Raise it to measure, not to play: run a scene at 1 and at 2 and compare the `measure, residual`
-line in the log.
+**Save Settings** writes everything to `dlss5-neural.ini` next to the exe; without it the panel
+is a scratchpad. **Language** switches the whole panel, tooltips included, between English and
+Brazilian Portuguese.
 
 ### The engine ini
 
@@ -334,9 +311,10 @@ so if the badge is green the repository builds as-is.
 
 ## What the network can actually be fed
 
-Right now: **colour only**, taken from the presented back buffer. Not because depth is missing,
-but because on D3D12 it is out of reach. Measured with the probe in `src/probe`, same game, same
-frame, only the renderer changed:
+**It depends entirely on the renderer, and that is the single most important thing on this
+page.** On D3D11 the network gets colour, depth and motion. On D3D12 it gets colour and nothing
+else — not because depth is missing, but because it is out of reach there. Measured with the
+probe in `src/probe`, same game, same frame, only the renderer changed:
 
 | | PCSX2 on **D3D12** | PCSX2 on **D3D11** |
 |---|---|---|
@@ -471,12 +449,13 @@ None of this is settled, it's just where I stopped. One card, one program, one n
 * ~~Model/style, UI correction, character mask.~~ Settled, see
   [Model A/B/C](#model-abc-will-not-be-implemented). Character mask was there all along
   (`UseAutoMask`) and is now exposed. Model/style genuinely is not, and that one is closed.
-* Depth. PCSX2 writes a real 512x512 R32G8X24_TYPELESS buffer, the probe in this repo finds it.
-  ReShade's `bind_render_targets_and_depth_stencil` never reached my add-on on D3D12 though, so
-  it's not hooked up. Code's written, sitting behind the Depth switch. If you get it working
-  you're feeding one more guide than the NVIDIA path does here.
-* Motion. Nothing showed up. Those games didn't compute per-pixel motion, but optical flow or
-  digging into the emulator's own buffers are both unexplored.
+* ~~Depth. Motion.~~ Both done, on D3D11, through the bridge. Depth is copied out of the game
+  and converted before it crosses; motion comes from the game's own velocity buffer where there
+  is one, and from a block-matching estimator where there isn't. Still open: nobody has read the
+  guide probe **during real gameplay**, only on menus, where flat depth and zero motion are what
+  you would expect anyway. That reading is the next thing worth having.
+* Exposure. The fourth slot of the network's input packet is still never filled, and it has
+  never been shown that the engine reads it.
 * The network itself. DLSS-NR is a denoiser for modern ray traced stuff. Something built for
   restoration or upscaling old content would probably fit emulators better, and swapping it
   doesn't mean rewriting everything.
