@@ -35,11 +35,265 @@ namespace vkroute
 
 using namespace vkraw;
 
+// ---------------------------------------------------------------------------------------------
+// Making the host's device interop-capable, which it is not by default.
+//
+// Measured on RPCS3: ReShade's own vkCreateDevice does NOT enable the interop extensions. The
+// route's first run stood down at `vkImportSemaphoreWin32HandleKHR is missing`, which is the exact
+// symptom the note above predicted -- so the simplification does not hold and plan B is needed.
+//
+// The reference implementations reach for MinHook and trampoline vulkan-1!vkCreateDevice. This
+// does not have to: RPCS3 imports vkCreateDevice **by name, statically**, so the address it calls
+// lives in its own import address table and swapping one pointer there is the whole hook. No code
+// is patched, nothing is disassembled, and undoing it is writing the old pointer back.
+//
+// A host that resolves Vulkan dynamically has no such entry and nothing is patched, which is
+// reported rather than assumed -- on such a host the route stands down exactly as it does now.
+namespace devicehook
+{
+
+// The seven the transport needs, in the order vkprobe proved them on this GPU. Only ones the
+// physical device actually advertises are added: asking for an unsupported extension does not
+// degrade gracefully, it fails the whole device creation and takes the game's renderer with it.
+const char *const kWanted[] = {
+    "VK_KHR_external_memory",       "VK_KHR_external_memory_win32",
+    "VK_KHR_external_semaphore",    "VK_KHR_external_semaphore_win32",
+    "VK_KHR_dedicated_allocation",  "VK_KHR_get_memory_requirements2",
+    "VK_KHR_timeline_semaphore",
+};
+
+PFN_vkCreateDevice g_original = nullptr;
+void **g_slot = nullptr;
+bool g_installed = false;
+bool g_ran = false;
+char g_report[512] = "the host never created a Vulkan device through the patched entry";
+
+// VkPhysicalDeviceVulkan12Features, when the host chains one, carries timelineSemaphore itself and
+// the two must not both be present. Its layout is fixed by the spec: sType, four bytes of padding,
+// pNext, then 47 VkBool32 in declaration order, of which timelineSemaphore is the 38th --
+// samplerMirrorClampToEdge, drawIndirectCount, storageBuffer8BitAccess,
+// uniformAndStorageBuffer8BitAccess, storagePushConstant8, shaderBufferInt64Atomics,
+// shaderSharedInt64Atomics, shaderFloat16, shaderInt8, descriptorIndexing, then the ten
+// shader*Array*Indexing, then the ten descriptorBinding*, runtimeDescriptorArray,
+// samplerFilterMinmax, scalarBlockLayout, imagelessFramebuffer, uniformBufferStandardLayout,
+// shaderSubgroupExtendedTypes, separateDepthStencilLayouts, hostQueryReset, timelineSemaphore.
+constexpr uint32_t kVulkan12Features = 49;
+constexpr size_t kTimelineSemaphoreOffset = 16 + 37 * 4;
+
+int __stdcall CreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *info, const void *alloc,
+                           VkDevice *out)
+{
+    g_ran = true;
+    if (g_original == nullptr || info == nullptr)
+        return -1;
+
+    auto enumerate = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+        GetProcAddress(GetModuleHandleW(L"vulkan-1.dll"), "vkEnumerateDeviceExtensionProperties"));
+
+    std::vector<VkExtensionProperties> supported;
+    if (enumerate != nullptr)
+    {
+        uint32_t count = 0;
+        enumerate(gpu, nullptr, &count, nullptr);
+        supported.resize(count);
+        if (count != 0)
+            enumerate(gpu, nullptr, &count, supported.data());
+    }
+    auto advertised = [&](const char *name) {
+        for (const auto &e : supported)
+            if (std::strcmp(e.extensionName, name) == 0)
+                return true;
+        return false;
+    };
+
+    std::vector<const char *> names(info->ppEnabledExtensionNames,
+                                    info->ppEnabledExtensionNames + info->enabledExtensionCount);
+    auto already = [&](const char *name) {
+        for (const char *n : names)
+            if (n != nullptr && std::strcmp(n, name) == 0)
+                return true;
+        return false;
+    };
+
+    int added = 0, missing = 0;
+    bool addedTimeline = false;
+    for (const char *want : kWanted)
+    {
+        if (already(want))
+            continue;
+        if (enumerate != nullptr && !advertised(want))
+        {
+            ++missing;
+            continue;
+        }
+        names.push_back(want);
+        ++added;
+        if (std::strcmp(want, "VK_KHR_timeline_semaphore") == 0)
+            addedTimeline = true;
+    }
+
+    VkDeviceCreateInfo patched = *info;
+    patched.enabledExtensionCount = static_cast<uint32_t>(names.size());
+    patched.ppEnabledExtensionNames = names.data();
+
+    // The feature, which is separate from the extension: enabling VK_KHR_timeline_semaphore
+    // without turning timelineSemaphore on creates a device that has the entry points and refuses
+    // to make a timeline.
+    const bool wantTimeline = addedTimeline || already("VK_KHR_timeline_semaphore");
+    bool patchedInPlace = false;
+    if (wantTimeline)
+    {
+        for (auto *node = static_cast<const uint8_t *>(info->pNext); node != nullptr;)
+        {
+            uint32_t sType = 0;
+            std::memcpy(&sType, node, sizeof(sType));
+            if (sType == kVulkan12Features)
+            {
+                auto *bits = const_cast<uint8_t *>(node) + kTimelineSemaphoreOffset;
+                uint32_t on = 0;
+                std::memcpy(&on, bits, sizeof(on));
+                if (on == 0)
+                {
+                    on = 1;
+                    std::memcpy(bits, &on, sizeof(on));
+                }
+                patchedInPlace = true;
+                break;
+            }
+            const void *next = nullptr;
+            std::memcpy(&next, node + 8, sizeof(next));
+            node = static_cast<const uint8_t *>(next);
+        }
+    }
+
+    VkPhysicalDeviceTimelineSemaphoreFeatures timeline {};
+    if (wantTimeline && !patchedInPlace)
+    {
+        timeline.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+        timeline.pNext = const_cast<void *>(info->pNext);
+        timeline.timelineSemaphore = 1;
+        patched.pNext = &timeline;
+    }
+
+    int result = g_original(gpu, &patched, alloc, out);
+    if (result == 0)
+    {
+        std::snprintf(g_report, sizeof(g_report),
+                      "vulkan: the host's device was created with %d extension(s) added by this "
+                      "add-on (%d of the seven were not advertised by the driver), timeline "
+                      "feature %s. Without this the host creates a device that cannot import a "
+                      "D3D12 texture and the route stands down.",
+                      added, missing,
+                      !wantTimeline      ? "not needed"
+                      : patchedInPlace   ? "set on the host's own Vulkan 1.2 features"
+                                         : "chained");
+        return result;
+    }
+
+    // Nothing about the game's own rendering depends on what was added here, so a refusal must
+    // cost the route and not the session. Hand the host exactly what it asked for and let it run.
+    std::snprintf(g_report, sizeof(g_report),
+                  "vulkan: the host's device REFUSED the added extensions (VkResult %d). Retrying "
+                  "with the host's own request untouched -- the game will run and this route will "
+                  "not.", result);
+    return g_original(gpu, info, alloc, out);
+}
+
+// Swap one pointer in the executable's import address table.
+void Install()
+{
+    if (g_installed)
+        return;
+    auto *base = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr));
+    if (base == nullptr)
+        return;
+    const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return;
+    const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return;
+    const auto &dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (dir.VirtualAddress == 0)
+        return;
+
+    for (auto *desc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>(base + dir.VirtualAddress);
+         desc->Name != 0; ++desc)
+    {
+        const char *dll = reinterpret_cast<const char *>(base + desc->Name);
+        if (_stricmp(dll, "vulkan-1.dll") != 0)
+            continue;
+        // OriginalFirstThunk carries the names, FirstThunk the addresses the process calls. Some
+        // linkers omit the first, in which case the second still holds names before binding.
+        const auto *names = reinterpret_cast<const IMAGE_THUNK_DATA *>(
+            base + (desc->OriginalFirstThunk != 0 ? desc->OriginalFirstThunk : desc->FirstThunk));
+        auto *addrs = reinterpret_cast<IMAGE_THUNK_DATA *>(base + desc->FirstThunk);
+        for (; names->u1.AddressOfData != 0; ++names, ++addrs)
+        {
+            if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal))
+                continue;
+            const auto *import =
+                reinterpret_cast<const IMAGE_IMPORT_BY_NAME *>(base + names->u1.AddressOfData);
+            if (std::strcmp(import->Name, "vkCreateDevice") != 0)
+                continue;
+            DWORD old = 0;
+            if (!VirtualProtect(&addrs->u1.Function, sizeof(addrs->u1.Function),
+                                PAGE_READWRITE, &old))
+                return;
+            g_original = reinterpret_cast<PFN_vkCreateDevice>(addrs->u1.Function);
+            g_slot = reinterpret_cast<void **>(&addrs->u1.Function);
+            *g_slot = reinterpret_cast<void *>(&CreateDevice);
+            VirtualProtect(&addrs->u1.Function, sizeof(addrs->u1.Function), old, &old);
+            g_installed = true;
+            return;
+        }
+    }
+}
+
+void Remove()
+{
+    if (!g_installed || g_slot == nullptr)
+        return;
+    DWORD old = 0;
+    if (VirtualProtect(g_slot, sizeof(void *), PAGE_READWRITE, &old))
+    {
+        *g_slot = reinterpret_cast<void *>(g_original);
+        VirtualProtect(g_slot, sizeof(void *), old, &old);
+    }
+    g_installed = false;
+}
+
+// Said once, on the first Vulkan present: DllMain runs before the log file exists.
+void ReportOnce()
+{
+    static bool said = false;
+    if (said)
+        return;
+    said = true;
+    if (!g_installed)
+    {
+        Log("vulkan: this host does not import vkCreateDevice by name, so the interop extensions "
+            "could not be added to its device. If the route stands down on missing entry points, "
+            "that is why.");
+        return;
+    }
+    Log("%s", g_ran ? g_report
+                    : "vulkan: vkCreateDevice was patched but the host had already created its "
+                      "device before this add-on loaded, so nothing was added to it.");
+}
+
+}  // namespace devicehook
+
 // ReShade's format enum carries DXGI's numbering, so the DXGI side of this is a cast. The Vulkan
 // side is not: only the formats a swapchain actually appears in are here, and an unknown one is
 // reported rather than guessed, because guessing produces a copy that silently reorders channels.
-int VkFormatFor(DXGI_FORMAT f)
+int VkFormatFor(DXGI_FORMAT typedOrTypeless)
 {
+    // Through ColourReadFormat first. RPCS3's swapchain arrives from ReShade as DXGI 90, which is
+    // B8G8R8A8_TYPELESS -- a real answer, not a broken one, and there is no typeless anything in
+    // Vulkan to map it to. The table below wants the concrete format, and resolving a typeless to
+    // its UNORM member is a thing this add-on already knows how to do everywhere else.
+    const DXGI_FORMAT f = ColourReadFormat(typedOrTypeless);
     switch (f)
     {
     case DXGI_FORMAT_R8G8B8A8_UNORM:      return VK_FORMAT_R8G8B8A8_UNORM;
@@ -493,6 +747,7 @@ bool Ensure(Route &r, device *dev, command_queue *queue, UINT w, UINT h, DXGI_FO
 void Present(command_queue *queue, swapchain *sc)
 {
     Route &r = g_route;
+    devicehook::ReportOnce();
     device *dev = sc->get_device();
 
     const resource back = sc->get_current_back_buffer();
@@ -502,8 +757,12 @@ void Present(command_queue *queue, swapchain *sc)
     if (bd.texture.samples != 1)
         return;
 
+    // Resolved once, here, so the D3D12 side of the crossing, the private copy, the working
+    // textures and compose all agree on one concrete format. A typeless swapchain is legal on the
+    // D3D12 side and impossible on the Vulkan one; carrying it further would mean the two sides of
+    // the same memory disagreeing about what is in it.
     if (!Ensure(r, dev, queue, bd.texture.width, bd.texture.height,
-                static_cast<DXGI_FORMAT>(bd.texture.format)))
+                ColourReadFormat(static_cast<DXGI_FORMAT>(bd.texture.format))))
         return;
 
     // The working textures. Both of the other routes call this and this one did not, so

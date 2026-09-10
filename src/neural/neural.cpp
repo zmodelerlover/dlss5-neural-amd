@@ -5413,8 +5413,15 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         if (g.events & 16)
             reshade::register_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
         Log("events subscribed: mask %d", g.events);
+        // Has to happen here and not at the first present: the host's VkDevice is created when a
+        // game boots, and by the time a frame is presented it is far too late to change what that
+        // device was created with. Patches one import-table entry and does nothing at all in a
+        // process that has no static vkCreateDevice import, which is every D3D11 and D3D12 target.
+        if (!g.noBridge.load())
+            vkroute::devicehook::Install();
         break;
     case DLL_PROCESS_DETACH:
+        vkroute::devicehook::Remove();
         if (g.events & 16)
             reshade::unregister_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
         reshade::unregister_addon(module);
