@@ -1,18 +1,23 @@
 # dlss5-neural-amd
 
-## Current preview — 2026-09-10
+## v0.4.0
 
-Preview builds are published in [dlss5-neural-amd-preview](https://github.com/zmodelerlover/dlss5-neural-amd-preview/releases).
-`master` builds the normal D3D11/D3D12 add-on. `vulkan` adds the experimental Vulkan transport.
-Choose one package; both contain an add-on named `dlss5-neural.addon64`.
+**One package now.** There is no longer a separate Vulkan build to choose between. The Vulkan
+transport is compiled in and does nothing at all on a D3D11 or D3D12 game — it hooks one import
+table entry, and a game that does not import Vulkan has none. Measured, not assumed: the same
+binary ran NFS 2015 on D3D11, GTA V Enhanced on D3D12 and RPCS3 on Vulkan.
 
-Both variants now use the pinned **v0.2.17** runtime, correct automatic tonemapping for SDR input,
-remove an invalid watchdog-pointer write, and submit inline passes separately so each inference
-consumes its own parameters. **FSR upscaling is not implemented.**
+**This release requires the pinned v0.2.17 runtime.** v0.2.14 is refused. If you are updating
+from v0.3.0, you must replace `dlssnr_amd_pass1.dll` and `dlssnr_on_amd_weights.bin` — see
+[the three files](#the-three-files) for the hashes. Delete `dlssnr_amd_pass2.dll` and
+`pass3.dll` if you still have them; nothing has used them for two releases.
 
-Read [the preview notes](docs/preview-2026-09-10.md) for settings, runtime hashes, diagnostics and
-validation limits. The latest serialized multipass build was tested on saved NFS frames outside
-the game; it has not yet been retested live on the D3D12 or Vulkan presentation paths.
+**Vulkan is experimental, and narrowly so — read [Case 3](#case-3--vulkan-rpcs3-experimental)
+before trying it.** It works on RPCS3 and is known not to work on PCSX2, for a reason that is
+structural rather than a bug.
+
+**FSR upscaling is still not implemented**, and this release stops calling it upcoming. The
+measurement that closed it is in [Stuff I didn't get to](#stuff-i-didnt-get-to).
 
 ReShade add-on that runs the DLSS-NR network on AMD cards.
 
@@ -27,11 +32,13 @@ guesses at the rest.
 
 Run so far, on an RX 9070 XT:
 
-| | |
-|---|---|
-| **Euro Truck Simulator 2** | The best result so far — comparable to the same network running on NVIDIA. |
-| **PCSX2** (PS2 emulator) | Same, and the clips below are from it. |
-| **Need for Speed 2015** | Runs, 10,920 frames with no resize failures. It is the worked example in Case 1. |
+| | API | |
+|---|---|---|
+| **Euro Truck Simulator 2** | D3D11 | The best result so far — comparable to the same network running on NVIDIA. |
+| **PCSX2** (PS2 emulator) | D3D11 / D3D12 | Same, and the clips below are from it. |
+| **Need for Speed 2015** | D3D11 | The worked example in Case 1. 1,205 frames on the v0.4.0 build with one skip and no failures. |
+| **GTA V Enhanced** | D3D12 | 23,663 frames, no failures. The degraded case: an add-on is shown nothing but the swapchain, so there is no depth and no game motion. |
+| **RPCS3** | Vulkan | 1,879 frames on the v0.4.0 build, after 3,360 on the previous one. Experimental — see Case 3. |
 
 **Anything else is untested, not unsupported.** There is no whitelist and nothing to compile:
 point ReShade at any D3D11 or D3D12 game, drop the same three files beside it, and it runs. The
@@ -43,8 +50,9 @@ Discord: https://discord.gg/wYhvS3JSHM — for DLSS 5 in general, not a support 
 [![Support this project on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T213OVFE)
 
 **Installing it?** → [the three files](#the-three-files), then your case:
-**[DirectX 11 game](#case-1--directx-11-games)** or
-**[PS2 emulator](#case-2--ps2-emulator-pcsx2)**. No compiler needed.
+**[DirectX 11 game](#case-1--directx-11-games)**,
+**[PS2 emulator](#case-2--ps2-emulator-pcsx2)** or
+**[Vulkan / RPCS3](#case-3--vulkan-rpcs3-experimental)**. No compiler needed.
 **Broken?** → [Troubleshooting](#troubleshooting), keyed by what you see on screen.
 **Changing the code?** → [Building it yourself](#building-it-yourself-optional).
 
@@ -67,7 +75,7 @@ PCSX2, no audio. Click a thumbnail, or use the plain links if the thumbnails do 
 | | |
 |---|---|
 | **GPU** | AMD **RDNA3 or RDNA4** with the **HIP 7** runtime, i.e. `amdhip64_7.dll` on the search path. HIP 6 will not do. A current Adrenalin driver ships it. Does nothing on NVIDIA or Intel. |
-| **Renderer** | Normal preview: **Direct3D 11 / Direct3D 12**. Vulkan preview: those APIs plus **experimental Vulkan**. OpenGL has no route. |
+| **Renderer** | **Direct3D 11**, **Direct3D 12**, and **Vulkan** (experimental, see Case 3). One package covers all three. OpenGL has no route. |
 | **ReShade** | The **add-on** build, 6.x. The plain one will not load add-ons. Tested on 6.8.0. |
 | **Disk** | About 150 MB for the network weights. |
 
@@ -80,8 +88,9 @@ PCSX2, no audio. Click a thumbnail, or use the plain links if the thumbnails do 
 The same three, whichever case you are in. They go next to the game's or the emulator's `.exe`.
 
 **1. `dlss5-neural.addon64`** — from
-[Preview releases](https://github.com/zmodelerlover/dlss5-neural-amd-preview/releases). Nothing to build;
-that file is compiled from this repository.
+[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases). One file, covering D3D11,
+D3D12 and Vulkan; there is no variant to choose. Nothing to build — it is compiled from this
+repository.
 
 **2. `dlssnr_amd_pass1.dll` (7 MB) and `dlssnr_on_amd_weights.bin` (141 MB)** — from the `files`
 channel on the **[discord](https://discord.gg/wYhvS3JSHM)**. They are **not in this repo and
@@ -163,13 +172,67 @@ read, and the depth it does have is faint. That is a property of the console, no
 
 ---
 
+## Case 3 — Vulkan (RPCS3), experimental
+
+Read this before trying it. The Vulkan route works, and it works narrowly.
+
+**It needs a host that imports `vkCreateDevice` statically, by name.** A Vulkan device has to be
+created with the external-memory and external-semaphore extensions or it can never import a D3D12
+texture, and once the device exists that cannot be fixed. So the add-on patches one entry in the
+host's import table and adds the seven extensions on the way through.
+
+A program that resolves Vulkan dynamically has no such entry, and there is nothing to patch.
+
+| Host | `vulkan-1.dll` in its import table | Result |
+|---|---|---|
+| **RPCS3** | yes | Works. 1,879 frames, bridge up, full round trip. |
+| **PCSX2** | no — resolves through `vkGetInstanceProcAddr` | Stands down and leaves the picture alone. |
+
+When it stands down it says so, in `dlss5-neural.log`, in those words:
+
+```
+vulkan: this host does not import vkCreateDevice by name, so the interop extensions
+        could not be added to its device.
+vulkan: the host's VkDevice has no external-memory/semaphore entry points --
+        vkImportSemaphoreWin32HandleKHR is missing. Standing down and leaving the
+        host's own image alone.
+```
+
+That is the designed answer, not a crash. Nothing is written to the picture.
+
+**On Vulkan the network is fed colour and estimated motion, and nothing else.** There is no depth
+path: depth reaches the network from the game on D3D11 and from the swapchain's own buffer on
+D3D12, and both of those are behind an API check. Turning `Depth=1` on changes nothing here.
+Measured separately: across 5,239 frames on RPCS3, not one depth-stencil bind was ever delivered
+to the add-on — which may mean the emulator does not make one, or that ReShade does not report
+them on Vulkan. Neither has been separated, and neither changes the outcome.
+
+**Setup.** ReShade's Vulkan support is a global layer, not a proxy DLL, and it only applies to
+programs listed in `C:\ProgramData\ReShade\ReShadeApps.ini`. Run the ReShade installer against
+`rpcs3.exe` and pick **Vulkan**; that writes the entry. Then drop the three files next to
+`rpcs3.exe`. If you also have a proxy DLL (`dxgi.dll`, `d3d11.dll`) in the same folder from a
+previous install, remove it: two ReShade instances in one process is not a supported arrangement.
+
+---
+
 ## Turn it on
 
 **Home** → **Add-ons** tab → **DLSS Neural Rendering (AMD)**.
 
-**It starts switched off, every launch.** Tick **Enabled**, or press `Ctrl+End`. That is
-deliberate: the add-on rewrites every frame the game presents, and a couple of the settings can
-take the display driver down, so nothing happens until you have seen what it is set to.
+**It starts switched off.** Tick **Enabled**, or press `Ctrl+End`. That is the shipped default on
+purpose: the add-on rewrites every frame the game presents, and a couple of the settings can take
+the display driver down, so nothing happens until you have seen what it is set to.
+
+**You can change all three of those.** New in v0.4.0, and all in the panel:
+
+| | |
+|---|---|
+| **Enabled from the first frame** | The effect is on when the game opens, instead of waiting for a keypress. For a game that is a chore to get back into, set it once. `StartOn=1`. |
+| **Toggle hotkey** | `Ctrl+End` is only the default. Click the key button, press the combination you want, Save. `ToggleKey` and `ToggleMods` in the ini; the panel writes both for you. |
+| **Disable the effect on alt-tab** | Switches the effect off the moment the game stops being the window in front, and leaves it off — you turn it back on with the hotkey. `DisableOnAltTab=1`. Separate from the minimised-window handling, which is always on and does resume by itself. |
+
+The add-on also writes a **commented `dlss5-neural.ini`** when there isn't one, so the file
+explains itself instead of being a bare list of keys. It never overwrites an existing one.
 
 The defaults are fine to start with. The status line says whether it is really running, and
 `dlss5-neural.log` next to the exe has the details. Everything else is in
@@ -180,13 +243,13 @@ The defaults are fine to start with. The status line says whether it is really r
 | What you see | What it is |
 |---|---|
 | Add-on isn't in the Add-ons tab at all | `ReShade.ini` has `DisabledAddons=dlss5 neural@dlss5-neural.addon64` under `[ADDON]`. ReShade writes that line if you ever untick the add-on, and then it never loads again, with no error anywhere. Clear it. |
-| Status says the API is wrong | Normal builds accept D3D11/D3D12; use the Vulkan package for Vulkan. OpenGL has no route. Check per-game renderer overrides. |
+| Status says the API is wrong | D3D11, D3D12 and Vulkan are all accepted by the one package. OpenGL has no route. Check per-game renderer overrides -- they beat the global setting silently. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 isn't installed. HIP 6 doesn't count. |
 | `hash mismatch; refused` | Wrong `dlssnr_amd_pass1.dll`. Compare against `tools/SHA256SUMS.txt`. The refusal is deliberate — the alternative is a hang. |
 | Game dies with `887A0005` / device removed | `DXGI_ERROR_DEVICE_REMOVED`, from a Windows TDR. See [the engine ini](#the-engine-ini). |
 | It runs but "only shifts the colours a bit" | For an SDR game try Encoding=0 and Tonemap=-1, then restart. Auto now leaves SDR tonemapping off even in FP16 transport. Compare the runtime output with final composition. |
 | Colour and tone change, but **textures look identical** | Try network scale 0.75 or 1.00 and compare the same scene. Smaller inputs reduce fine detail but can still change materials. Larger inputs cost more GPU time. |
-| Pass Count above 1 changes nothing, or costs a lot | Use Same frame timing: this preview preserves separate pass parameters. Extra passes cost extra inference and can amplify grain. Try Taper or lower later-pass Structure. |
+| Pass Count above 1 changes nothing, or costs a lot | Use Same frame timing: this release preserves separate pass parameters. Extra passes cost extra inference and can amplify grain. Try Taper or lower later-pass Structure. |
 | `imgui.h` or `reshade.hpp` not found when building | You deleted `external/`. It's in the repo now; `git checkout external` puts it back. |
 
 ### If you're reporting a problem
@@ -221,7 +284,7 @@ turning it back down clears it.
 
 **Timing:** Same frame waits for the current result and serializes per-pass parameter handoff.
 Async uses an older correction and retains the legacy handoff; it is not the validation path for
-per-pass settings in this preview.
+per-pass settings in this release.
 
 **Resolution Scale** sets network width and height relative to the frame. 0.50 uses one quarter
 of the pixels; 1.00 uses the full frame. Smaller scales lose fine information but can still change
@@ -243,6 +306,32 @@ the panel.
 **Save Settings** writes everything to `dlss5-neural.ini` next to the exe; without it the panel
 is a scratchpad. **Language** switches the whole panel, tooltips included, between English and
 Brazilian Portuguese.
+
+### The Experimental tab
+
+New in v0.4.0, and it contains exactly what the name says: **proofs of concept**. Things that
+run, were measured on one route, and are not the shipped arrangement. Everything in there is off
+by default.
+
+**Network Output (bypass composition)** — `NetworkOutput=1`. Shows the network's answer directly
+instead of composing it onto the game's frame.
+
+There is no residual in this mode, so **Highlight Guard, Colour Strength, Residual Limit and Edge
+Fade all stop doing anything.** Nothing bounds how far a pixel may move and hue is whatever the
+network returned. That is the trade, and it is the whole reason it sits under Experimental rather
+than beside Composition.
+
+It exists because of what GTA V Enhanced showed on D3D12. There the ratio composition left a
+heavy trail behind everything while driving, and the cause was measured rather than guessed: the
+network costs about 29 ms at full Resolution Scale, the game presents faster than that, and 37%
+of frames (13,921 of 37,584) were skipped with the previous evaluation still on the GPU. Compose
+ran on those frames anyway and pasted a correction that belonged to a picture which had already
+moved. **That bug is fixed separately** — a skipped frame now goes out as the game drew it — but
+this mode has no correction to misplace at all, and by eye it was the one preferred.
+
+What is not known: it was preferred on one game, one route, at Pass Count 2 and full Resolution
+Scale. Nothing has measured it against the composition on a slow scene, in HDR, or on the D3D11
+and Vulkan routes. Reports welcome; that is what it is there for.
 
 ### The engine ini
 
@@ -292,7 +381,7 @@ add-on inverted the engine's own default on every run. `UseAutoMask` was never w
 ## Building it yourself (optional)
 
 **Skip this unless you want to change the code.** The `.addon64` in
-[Preview releases](https://github.com/zmodelerlover/dlss5-neural-amd-preview/releases) is built from this
+[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases) is built from this
 repository and is the same file you would produce here.
 
 **What to install first.** One thing: Microsoft's C++ compiler. You do not need the full Visual
@@ -463,8 +552,26 @@ identical from the couch and need completely different fixes.
 
 None of this is settled, it is just where things stand. One card, three programs.
 
-* Upscaling. I couldn't find an upscaling path in the AMD runtime I used, input and output
-  share the same texture. Maybe another build has one.
+* ~~Upscaling. FSR after the network.~~ Closed, with a measurement. The plan was to run the
+  network at reduced Resolution Scale and hand the result to FSR, so the network cost less and
+  the picture came back. The gap it was meant to close turned out not to be an upscaling gap at
+  all.
+
+  Running the network below full resolution costs 30–57% of its whole effect (measured on two
+  scenes, at one and two passes). But **the bicubic upsample contributes essentially none of it**:
+  0.1%, 0.7% and −2.8% across the three cases. The rest is the network answering differently. A
+  correction computed at half resolution is not the full-resolution correction sampled more
+  sparsely — it is a different field, differing by 31–61% of its own magnitude, 62–90% of that
+  difference at low frequency, correlating only 0.84–0.95 with what full resolution produces.
+  The receptive field is fixed in pixels, so at half resolution it covers twice the scene and the
+  network judges a different neighbourhood.
+
+  No upsampler recovers that. Not FSR 4, not FSR 3, not FSR 2, not a guided filter — the
+  information was never produced. A global per-channel gain-and-offset fit removes 2.9%, −0.7%
+  and 0.2% of the deviation, so it is not a fixed bias either, and there is nothing to correct
+  for at runtime without computing the full-resolution answer you were trying to avoid.
+
+  The AMD runtime also has no upscaling path of its own: input and output share one texture.
 * ~~Model/style, UI correction, character mask.~~ Settled, see
   [Model A/B/C](#model-abc-will-not-be-implemented). Character mask was there all along
   (`UseAutoMask`) and is now exposed. Model/style genuinely is not, and that one is closed.

@@ -855,7 +855,11 @@ void Present(command_queue *queue, swapchain *sc)
         return;
     Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
-    if (ok)
+    // Freshness gate, same as the other two routes: on a frame where the network was skipped the
+    // residual belongs to an older picture, and the host is better served by its own image than
+    // by a correction aimed at where things used to be.
+    const bool fresh = ok && CompositionIsFresh(runNetwork);
+    if (fresh)
     {
         Barrier(cmd12, g.composed.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -880,7 +884,7 @@ void Present(command_queue *queue, swapchain *sc)
     WaitForWorkQueue(g.completion);
 
     // --- 3. and the finished image goes back over the host's -------------------------------
-    if (ok && !g.noBackBuffer.load())
+    if (fresh && !g.noBackBuffer.load())
     {
         command_list *list = queue->get_immediate_command_list();
         auto *cmd = reinterpret_cast<VkCommandBuffer>(list->get_native());

@@ -939,11 +939,29 @@ struct State
 
     bool unavailable = false;
     bool loggedWrongApi = false;
-    // Starts off on purpose: the add-on rewrites every presented frame, and the settings that
-    // do that are the ones that have taken the machine down. Turn it on from the overlay, or
-    // with Ctrl+End, once you have seen what it is set to. Deliberately not persisted: every
-    // run starts with the game showing its own image.
+    // Starts off unless StartOn says otherwise. The add-on rewrites every presented frame, and
+    // the settings that do that are the ones that have taken the machine down, so the shipped
+    // default is still off -- but "off every single launch" was a diagnostic's rule, not a
+    // user's, and somebody who has already chosen their settings should not have to press a key
+    // every time. StartOn is a normal setting now: in the overlay, and written back.
     std::atomic<bool> enabled { false };
+    std::atomic<bool> startOn { false };
+    // Which key toggles the effect. A virtual-key code plus a modifier mask: 1 Ctrl, 2 Alt,
+    // 4 Shift. Ctrl+End is the default because that is what every note, log line and README
+    // already says. A bare key with no modifier is allowed and is the user's business -- it will
+    // fire during normal play if they bind a letter.
+    std::atomic<int> toggleKey { VK_END };
+    std::atomic<int> toggleMods { 1 };
+    // Switch the effect off when the game stops being the focused window, and leave it off.
+    //
+    // Not a pause. Coming back to a game that quietly resumed rewriting every frame is the
+    // surprise; being handed the game's own image and turning the effect back on deliberately is
+    // the point. The hotkey brings it back.
+    //
+    // Separate from the minimised handling further down, which is an unconditional safety and
+    // does resume on its own: nothing we draw is visible while minimised and every wait in this
+    // file misbehaves there, so sitting those frames out is never a user-visible decision.
+    std::atomic<bool> disableOnAltTab { false };
     std::atomic<float> structure { 1.0f };
     std::atomic<float> tone { 1.0f };
     std::atomic<float> skin { 1.0f };
@@ -1027,6 +1045,14 @@ struct State
     // colour and only its brightness carries the network's verdict.
     std::atomic<float> colourStrength { 1.0f };
     std::atomic<bool> bicubic { true };
+    // Show the network's own answer instead of composing it onto the game's frame.
+    //
+    // This is the picture the Debug View "Network output" always drew; it is here as a mode
+    // because on the D3D12 route it was the one that looked right, and a thing people run for
+    // hours should not live in a diagnostics dropdown. It is not a better composition -- it is
+    // no composition. Highlight Guard, Colour Strength and both residual limits are bypassed
+    // entirely, because there is no residual for them to bound.
+    std::atomic<bool> networkOutput { false };
     std::atomic<int> debugView { 0 };
     std::atomic<bool> measureNow { false };
     bool diagnostics = false;
@@ -1257,6 +1283,34 @@ struct State
 
 State g;
 
+// Whether this frame's composition carries something the network produced for THIS frame.
+//
+// Compose runs on every present, including the ones where the network was skipped because its
+// previous evaluation was still on the GPU. On those frames the residual it reads belongs to an
+// older picture, and pasting it onto a frame that has already moved is not a correction -- it is
+// a ghost of where the edges used to be. A slow scene hides it completely, which is why no test
+// before GTA V ever saw it: NFS skipped 1 frame in 1205. GTA V skipped 13,921 of 37,584 -- 37%,
+// because the network costs 29 ms and the game presents faster than that -- and at speed those
+// frames read as a heavy trail behind everything.
+//
+// The measurement that says dropping it is the right answer rather than a trade: the correction's
+// own mean in that scene is 0.003. Leaving it out of a frame is below anyone's threshold;
+// putting it in the wrong place is not.
+bool CompositionIsFresh(bool ranNetwork)
+{
+    // A debug view draws a buffer, not a correction, so it has nothing that can go stale -- and
+    // gating it here would make the views themselves strobe, which is the opposite of readable.
+    //
+    // Network Output is ungated for the same reason and a second one: what it shows on a skipped
+    // frame is the previous *whole* picture, which reads as a held frame. That is a different
+    // artefact from a correction aimed at where the edges used to be, and on D3D12 it is the one
+    // that was preferred. Gating it would replace the held frame with the game's own image and
+    // make the mode flicker between two different pictures, which is worse than either.
+    if (g.debugView.load() != 0 || g.networkOutput.load())
+        return true;
+    return ranNetwork && g.activePasses != 0;
+}
+
 int RuntimeTonemap()
 {
     const int requested = g.tonemap.load();
@@ -1271,6 +1325,68 @@ int RuntimeTonemap()
 // survived a restart, so every A/B test meant re-dialling half a dozen sliders by hand; and a
 // headless run had no way to reach them at all, which made a parameter sweep impossible to
 // automate. GetPrivateProfile* is the Win32 ini reader -- no parser to write or get wrong.
+// A settings file nobody can read is a settings file nobody edits. The overlay writes this one
+// back through WritePrivateProfileString, which cannot carry a comment, so an install that had
+// only ever been saved from the overlay ended up as a bare list of keys -- and the two questions
+// people actually have, "can it come on by itself" and "can I change the key", had no visible
+// answer in it at all.
+//
+// Written only when the file is absent, so a personal tuning is never overwritten. The values
+// here are the same defaults the code carries; this file existing changes nothing about how the
+// add-on behaves.
+void EnsureNeuralIni()
+{
+    const auto ini = ExeDirectory() / L"dlss5-neural.ini";
+    std::error_code ec;
+    if (std::filesystem::exists(ini, ec))
+        return;
+
+    std::ofstream f(ini, std::ios::binary);
+    if (!f)
+    {
+        Log("could not write %ls; the built-in defaults are used instead.", ini.c_str());
+        return;
+    }
+    f << "[dlss5]\r\n"
+         "; Written because no dlss5-neural.ini was here. Every value below is the default, so\r\n"
+         "; this file changes nothing until you edit it. The overlay's Save writes back here.\r\n"
+         "\r\n"
+         "; --- starting up -------------------------------------------------------------\r\n"
+         "; 1 = the effect is already on when the game opens. 0 = the game shows its own\r\n"
+         "; image until you press the hotkey. Set this to 1 for a game that is a chore to\r\n"
+         "; get back into; you will not have to press anything again.\r\n"
+         "StartOn=0\r\n"
+         "\r\n"
+         "; --- the hotkey --------------------------------------------------------------\r\n"
+         "; ToggleKey is a Windows virtual-key code; 0x23 (35) is End. ToggleMods adds up\r\n"
+         "; 1 Ctrl + 2 Alt + 4 Shift, so 1 is Ctrl and 0 is no modifier at all. Together\r\n"
+         "; these default to Ctrl+End. Easier than looking codes up: open the overlay,\r\n"
+         "; click the key button, press the combination you want, then Save.\r\n"
+         "ToggleKey=35\r\n"
+         "ToggleMods=1\r\n"
+         "\r\n"
+         "; 1 = alt-tabbing out switches the effect OFF, and it stays off when you come\r\n"
+         "; back -- you turn it on again with the hotkey. 0 = alt-tab changes nothing.\r\n"
+         "; Either way, a minimised window is always sat out and always resumes on its own.\r\n"
+         "DisableOnAltTab=0\r\n"
+         "\r\n"
+         "; --- the picture -------------------------------------------------------------\r\n"
+         "; Scale is the resolution the network runs at, as a fraction of the screen. Lower\r\n"
+         "; is faster and the network answers differently, not just softer. Passes is how\r\n"
+         "; many times it runs over the frame; 1 is the default and 2 is already heavy.\r\n"
+         "Scale=1.0\r\n"
+         "Passes=1\r\n"
+         "; 0 sRGB (use this for an ordinary SDR game), 1 Linear, 2 scRGB-nl.\r\n"
+         "Encoding=0\r\n"
+         "; 0 English, 1 Portugues do Brasil.\r\n"
+         "Language=0\r\n"
+         "\r\n"
+         "; --- everything else ---------------------------------------------------------\r\n"
+         "; The overlay carries the rest and explains each one where it sits. Change things\r\n"
+         "; there, press Save, and they appear in this file.\r\n";
+    Log("wrote a commented dlss5-neural.ini next to the exe; every value in it is a default.");
+}
+
 void LoadSettings()
 {
     const auto ini = (ExeDirectory() / L"dlss5-neural.ini").wstring();
@@ -1328,6 +1444,7 @@ void LoadSettings()
     g.debugView.store(std::clamp(static_cast<int>(num(L"DebugView", 0.0f)), 0, 5));
     g.inlineMode.store(flag(L"Inline", g.inlineMode.load()));
     g.bicubic.store(flag(L"Bicubic", g.bicubic.load()));
+    g.networkOutput.store(flag(L"NetworkOutput", false));
     g.useMotion.store(flag(L"Motion", g.useMotion.load()));
     g.useHistory.store(flag(L"History", g.useHistory.load()));
     g.useDepth.store(flag(L"Depth", g.useDepth.load()));
@@ -1342,12 +1459,19 @@ void LoadSettings()
     // at the machine -- and the Vulkan route is the one that has to be booted, watched and shut
     // down without one. Anything left holding this on gets an add-on that starts on, which is
     // why it is not in the overlay and not saved.
-    if (flag(L"StartOn", false))
-    {
-        g.enabled.store(true);
-        Log("StartOn=1 in the ini: the add-on is on from the first frame. Diagnostic only -- it "
-            "is never written back, so removing the line is enough to undo it.");
-    }
+    const bool startOn = flag(L"StartOn", false);
+    g.startOn.store(startOn);
+    g.enabled.store(startOn);
+    if (startOn)
+        Log("StartOn=1: the effect is on from the first frame. Set it to 0, or clear the box in "
+            "the overlay, to go back to starting with the game's own image.");
+
+    // Hotkey. Stored as a virtual-key code and a modifier mask rather than as text, because
+    // parsing "Ctrl+End" back into a key is a table that is wrong on the first non-US layout.
+    // The overlay writes both by capturing an actual keypress, so nobody has to look up a code.
+    g.toggleKey.store(std::clamp(static_cast<int>(num(L"ToggleKey", VK_END)), 0, 0xFE));
+    g.toggleMods.store(std::clamp(static_cast<int>(num(L"ToggleMods", 1.0f)), 0, 7));
+    g.disableOnAltTab.store(flag(L"DisableOnAltTab", false));
     g.motionScale.store(num(L"MotionScale", g.motionScale.load()));
     g.autoMask.store(static_cast<int>(num(L"AutoMask", 1.0f)));
     g.toneChannels.store(static_cast<int>(num(L"ToneChannels", 0.0f)));
@@ -1440,10 +1564,18 @@ void SaveSettings()
     num(L"MotionScale", g.motionScale.load());
     flag(L"Inline", g.inlineMode.load());
     flag(L"Bicubic", g.bicubic.load());
+    flag(L"NetworkOutput", g.networkOutput.load());
     flag(L"Motion", g.useMotion.load());
     flag(L"History", g.useHistory.load());
     flag(L"Depth", g.useDepth.load());
     flag(L"GameGuides", g.useGameGuides.load());
+    // StartOn used to be deliberately unsaved, so a diagnostic could not leave an install that
+    // boots with the effect on. It is a normal setting now and the overlay owns it, so it has to
+    // survive a save like everything else beside it.
+    flag(L"StartOn", g.startOn.load());
+    flag(L"DisableOnAltTab", g.disableOnAltTab.load());
+    num(L"ToggleKey", g.toggleKey.load());
+    num(L"ToggleMods", g.toggleMods.load());
     // Stage / Events / NoBridge / NoBackBuffer are deliberately not written back. They are
     // startup diagnostics, they cannot take effect live, and rewriting them here would quietly
     // re-save a one-off value that was meant for a single run.
@@ -2313,7 +2445,9 @@ void BridgePresent(device *dev, swapchain *sc)
     {
         runNetwork = false;
         if (++g.skipped % 120 == 1)
-            Log("network skipped: previous evaluation still pending (%llu skipped, %llu done)",
+            Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). Those "
+                    "frames go out as the game drew them; a correction aimed at an older picture "
+                    "reads as a trail, not as detail.",
                 static_cast<unsigned long long>(g.skipped),
                 static_cast<unsigned long long>(g.frame));
     }
@@ -2402,7 +2536,7 @@ void BridgePresent(device *dev, swapchain *sc)
         return;
     Barrier(cmd, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
-    if (ok)
+    if (ok && CompositionIsFresh(runNetwork))
     {
         Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -2433,7 +2567,10 @@ void BridgePresent(device *dev, swapchain *sc)
     // 3. and the finished image comes back, once our queue has actually produced it
     ++g.backValue;
     WaitForWorkQueue(g.completion);
-    if (ok && !g.noBackBuffer.load() && g.stageOut11 != nullptr)
+    // Gated on freshness as well: without that, a skipped frame copies back whatever composition
+    // the last evaluated frame left in the shared texture -- a whole stale picture, which is a
+    // worse artefact than the stale correction this is here to avoid.
+    if (ok && CompositionIsFresh(runNetwork) && !g.noBackBuffer.load() && g.stageOut11 != nullptr)
     {
         g.game11ctx->CopyResource(g.stageOut11.Get(), g.bridgeOut.on11.Get());
         g.game11ctx->CopyResource(reinterpret_cast<ID3D11Resource *>(back.handle),
@@ -3348,11 +3485,51 @@ void OnInitSwapchain(swapchain *sc, bool resize)
 bool ToggleRequested()
 {
     static bool down = false;
-    const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    const bool now = ctrl && (GetAsyncKeyState(VK_END) & 0x8000) != 0;
+    const int key = g.toggleKey.load(), mods = g.toggleMods.load();
+    const auto held = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+    const bool modsOk = (!(mods & 1) || held(VK_CONTROL)) && (!(mods & 2) || held(VK_MENU)) &&
+                        (!(mods & 4) || held(VK_SHIFT));
+    const bool now = key != 0 && modsOk && held(key);
     const bool pressed = now && !down;
     down = now;
     return pressed;
+}
+
+// The bound key, spelled the way the user's keyboard layout spells it.
+//
+// Win32 already knows every key's localised name, so there is no table here to fall out of date
+// or to be wrong on a non-US layout. The one trap is the extended-key bit: without it
+// GetKeyNameText answers with the numpad twin, and End prints as "Num 1".
+std::string HotkeyName()
+{
+    const int key = g.toggleKey.load(), mods = g.toggleMods.load();
+    std::string out;
+    if (mods & 1) out += "Ctrl+";
+    if (mods & 2) out += "Alt+";
+    if (mods & 4) out += "Shift+";
+    if (key == 0)
+        return out.empty() ? "unbound" : out + "?";
+
+    UINT sc = MapVirtualKeyW(static_cast<UINT>(key), MAPVK_VK_TO_VSC);
+    switch (key)
+    {
+    case VK_END: case VK_HOME: case VK_INSERT: case VK_DELETE: case VK_PRIOR: case VK_NEXT:
+    case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_DIVIDE: case VK_NUMLOCK:
+        sc |= 0x100;
+        break;
+    default:
+        break;
+    }
+    wchar_t wide[64] {};
+    if (sc != 0 && GetKeyNameTextW(static_cast<LONG>(sc) << 16, wide, 64) > 0)
+    {
+        char name[128] {};
+        if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, name, sizeof(name), nullptr, nullptr) > 0)
+            return out + name;
+    }
+    char fallback[16] {};
+    std::snprintf(fallback, sizeof(fallback), "VK 0x%02X", key);
+    return out + fallback;
 }
 
 // What compose is allowed to move a pixel by, this frame.
@@ -3436,7 +3613,12 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     g.device->CreateShaderResourceView(colourSrc, &srv, slot(8));
     srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     g.device->CreateShaderResourceView(g.netResidual.Get(), &srv, slot(9));
-    const int dbg = g.debugView.load();
+    // Network Output reaches the shader as view 2, which is the same path the debug view has
+    // always drawn: bind netColour to the debug slot and let compose sample it instead of
+    // building a composition. Reusing it rather than adding a second one means the mode cannot
+    // drift away from the picture that was actually tested. An explicit Debug View still wins,
+    // so the diagnostics stay usable with the mode on.
+    const int dbg = g.debugView.load() != 0 ? g.debugView.load() : (g.networkOutput.load() ? 2 : 0);
     if (dbg == 2)
     {
         g.device->CreateShaderResourceView(g.netColour.Get(), &srv, slot(10));
@@ -4214,7 +4396,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     {
         const bool on = !g.enabled.load();
         g.enabled.store(on);
-        Log("Ctrl+End: %s", on ? "on" : "off");
+        Log("%s: %s", HotkeyName().c_str(), on ? "on" : "off");
     }
     if (!g.enabled.load() || g.unavailable || g.failed)
         return;
@@ -4240,20 +4422,37 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     //
     // Standing down here costs a frame nobody is looking at, and it covers all three routes.
     //
-    // ponytail: minimised only. Alt-tab out of exclusive fullscreen minimises, which is where the
-    // reports come from; alt-tab out of a borderless window does not, and that case is still
-    // exposed. The upgrade is GetForegroundWindow() != hwnd, which also switches the add-on off
-    // for anyone watching the game on a second monitor -- so it waits for a report that needs it.
-    if (auto *hwnd = static_cast<HWND>(sc->get_hwnd()); hwnd != nullptr && IsIconic(hwnd))
+    if (auto *hwnd = static_cast<HWND>(sc->get_hwnd()); hwnd != nullptr)
     {
-        if (!g.loggedHidden)
+        // Alt-tab, when the user asked for it to switch the effect off. A real switch-off, not a
+        // pause: the next frame leaves through the `!enabled` return further up and stays there
+        // until the hotkey is pressed. Losing focus is the broader condition and fires first, so
+        // this also covers exclusive fullscreen, which minimises on the way out.
+        if (g.disableOnAltTab.load() && GetForegroundWindow() != hwnd)
         {
-            g.loggedHidden = true;
-            Log("the window is minimised, so the add-on is sitting the frame out. It picks back "
-                "up on restore. This is not an error, and it is only logged once.");
+            g.enabled.store(false);
+            // Whenever it is switched back on, that first frame must not be handed a history
+            // from before the alt-tab, however many minutes ago that was.
+            g.historyValid.store(false);
+            Log("alt-tab: effect switched off, because Disable On Alt-Tab is on. It stays off; "
+                "press %s in the game to bring it back.", HotkeyName().c_str());
+            return;
         }
-        g.windowHidden = true;
-        return;
+
+        // Minimised, unconditionally and whatever the switch above is set to. This one resumes
+        // on its own, because it is a safety rather than a preference: there is no decision for
+        // a user to make about frames nobody can see.
+        if (IsIconic(hwnd))
+        {
+            if (!g.loggedHidden)
+            {
+                g.loggedHidden = true;
+                Log("the window is minimised, so the add-on is sitting the frame out. It picks "
+                    "back up on restore. This is not an error, and it is only logged once.");
+            }
+            g.windowHidden = true;
+            return;
+        }
     }
     if (g.windowHidden)
     {
@@ -4429,7 +4628,9 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         {
             runNetwork = false;
             if (++g.skipped % 120 == 1)
-                Log("network skipped: previous evaluation still pending (%llu skipped, %llu done)",
+                Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). Those "
+                    "frames go out as the game drew them; a correction aimed at an older picture "
+                    "reads as a trail, not as detail.",
                     static_cast<unsigned long long>(g.skipped),
                     static_cast<unsigned long long>(g.frame));
         }
@@ -4469,13 +4670,24 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         queue->flush_immediate_command_list();
         return;
     }
+    if (CompositionIsFresh(runNetwork))
     {
-        resource_usage a = resource_usage::shader_resource, b = resource_usage::copy_dest;
-        cmd_list->barrier(1, &backRes, &a, &b);
+        {
+            resource_usage a = resource_usage::shader_resource, b = resource_usage::copy_dest;
+            cmd_list->barrier(1, &backRes, &a, &b);
+        }
+        cmd->CopyResource(backbuffer, g.composed.Get());
+        {
+            resource_usage a = resource_usage::copy_dest, b = resource_usage::present;
+            cmd_list->barrier(1, &backRes, &a, &b);
+        }
     }
-    cmd->CopyResource(backbuffer, g.composed.Get());
+    else
     {
-        resource_usage a = resource_usage::copy_dest, b = resource_usage::present;
+        // Skipped frame: the game's own image goes out untouched. Same transition the early-out
+        // above uses, because the back buffer was put into shader_resource on the way in and has
+        // to reach present either way.
+        resource_usage a = resource_usage::shader_resource, b = resource_usage::present;
         cmd_list->barrier(1, &backRes, &a, &b);
     }
     const UINT nw = g.netWidth, nh = g.netHeight;
@@ -4615,9 +4827,96 @@ void OnOverlay(effect_runtime *)
         Log("menu: %s", on ? "on" : "off");
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("(Ctrl+End)");
+    const std::string hotkey = HotkeyName();
+    ImGui::TextDisabled("(%s)", hotkey.c_str());
     ImGui::SameLine();
     StatusLine();
+
+    {
+        bool start = g.startOn.load();
+        if (ImGui::Checkbox(T("Enabled from the first frame", "Ligado desde o primeiro quadro"),
+                            &start))
+        {
+            g.startOn.store(start);
+            Log("menu: start enabled %d", start ? 1 : 0);
+        }
+        Help("Whether Enabled above is already ticked when the game opens, instead of waiting "
+             "for the hotkey every time. `StartOn=1` in dlss5-neural.ini.\n\n"
+             "For a game that takes a while to get back into, pressing a key every launch is "
+             "work for nothing. Set this once and it stays set.",
+
+             "Se o Ligado aí em cima já vem marcado quando o jogo abre, em vez de esperar a "
+             "tecla de atalho toda vez. `StartOn=1` no dlss5-neural.ini.\n\n"
+             "Em jogo que dá trabalho pra voltar, apertar tecla todo lançamento é trabalho à "
+             "toa. Marque uma vez e fica.");
+
+        bool altTab = g.disableOnAltTab.load();
+        if (ImGui::Checkbox(T("Disable the effect on alt-tab",
+                              "Desativar o efeito ao dar alt-tab"), &altTab))
+        {
+            g.disableOnAltTab.store(altTab);
+            Log("menu: disable on alt-tab %d", altTab ? 1 : 0);
+        }
+        Help("Switch the effect off the moment the game stops being the window in front, and "
+             "leave it off. Coming back to the game, it is still off: turn it on with the hotkey "
+             "or the box above when you want it. `DisableOnAltTab=1` in dlss5-neural.ini.\n\n"
+             "This does not resume by itself, on purpose. Sitting out a minimised window is a "
+             "separate safety that is always on and does resume, because frames nobody can see "
+             "are not a decision anyone needs to make.",
+
+             "Desliga o efeito no instante em que o jogo deixa de ser a janela da frente, e "
+             "deixa desligado. Ao voltar pro jogo ele continua desligado: você liga na tecla de "
+             "atalho ou na caixa aí em cima quando quiser. `DisableOnAltTab=1` no "
+             "dlss5-neural.ini.\n\n"
+             "Não volta sozinho, de propósito. Pular quadros de janela minimizada é outra coisa, "
+             "uma proteção que está sempre ligada e essa sim volta sozinha — quadro que ninguém "
+             "vê não é decisão de usuário.");
+
+        // Rebinding by capturing a real keypress, rather than by typing a virtual-key code.
+        // Only advances while the overlay is open, which is where the button is.
+        static bool capturing = false;
+        ImGui::TextUnformatted(T("Toggle hotkey", "Tecla de atalho"));
+        ImGui::SameLine();
+        if (ImGui::Button(capturing ? T("press a key (Esc cancels)", "aperte uma tecla (Esc cancela)")
+                                    : hotkey.c_str()))
+            capturing = !capturing;
+        Help("Click, then press the combination you want. Modifiers held at that moment are part "
+             "of the binding. Esc cancels and keeps the current one.\n\n"
+             "Saved to the ini as ToggleKey (a virtual-key code) and ToggleMods (1 Ctrl, 2 Alt, "
+             "4 Shift, added together). A key with no modifier is allowed and will fire during "
+             "normal play, so pick one the game does not use.",
+
+             "Clique e aperte a combinação que quiser. Os modificadores segurados nesse momento "
+             "fazem parte do atalho. Esc cancela e mantém o atual.\n\n"
+             "Salvo no ini como ToggleKey (código de tecla virtual) e ToggleMods (1 Ctrl, 2 Alt, "
+             "4 Shift, somados). Uma tecla sem modificador é permitida e vai disparar durante o "
+             "jogo normal, então escolha uma que o jogo não use.");
+
+        if (capturing)
+        {
+            // From 0x08 so the mouse buttons, which are what clicked the button, cannot bind.
+            for (int vk = 0x08; vk <= 0xFE; ++vk)
+            {
+                if (vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT || vk == VK_LWIN ||
+                    vk == VK_RWIN || vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_LMENU ||
+                    vk == VK_RMENU || vk == VK_LSHIFT || vk == VK_RSHIFT)
+                    continue;
+                if ((GetAsyncKeyState(vk) & 0x8000) == 0)
+                    continue;
+                capturing = false;
+                if (vk == VK_ESCAPE)
+                    break;
+                int mods = 0;
+                if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= 1;
+                if (GetAsyncKeyState(VK_MENU) & 0x8000) mods |= 2;
+                if (GetAsyncKeyState(VK_SHIFT) & 0x8000) mods |= 4;
+                g.toggleKey.store(vk);
+                g.toggleMods.store(mods);
+                Log("menu: toggle bound to %s", HotkeyName().c_str());
+                break;
+            }
+        }
+    }
 
     int lang = g.language.load();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
@@ -5588,6 +5887,66 @@ void OnOverlay(effect_runtime *)
              "eles que acharam a falha de resize da DXGI.");
     }
 
+    // Experimental. Things that work, were measured on one route, and are not the shipped
+    // arrangement. New entries go above Network Output, which stays at the bottom.
+    if (ImGui::CollapsingHeader(T("Experimental", "Experimental")))
+    {
+        ImGui::TextDisabled(T("Proof of concept. Measured on one route each, and not the shipped "
+                              "arrangement.",
+                              "Prova de conceito. Medidos numa rota cada, e não são o arranjo "
+                              "padrão."));
+        ImGui::Separator();
+
+        bool raw = g.networkOutput.load();
+        if (ImGui::Checkbox(T("Network Output (bypass composition) -- proof of concept",
+                              "Saída da Rede (ignora a composição) -- prova de conceito"), &raw))
+        {
+            g.networkOutput.store(raw);
+            Log("menu: network output mode %d", raw ? 1 : 0);
+        }
+        Help(
+            "A PROOF OF CONCEPT. It is here because it was preferred by eye in one game, not "
+            "because it is finished or because it is known to be better. Treat it as something "
+            "to try and report on, not as a setting to leave on and forget.\n\n"
+            "Show the network's answer directly instead of composing it onto the game's frame.\n\n"
+            "WHAT IT TURNS OFF. There is no residual in this mode, so Highlight Guard, Colour "
+            "Strength, Residual Limit and Edge Fade all do nothing. Nothing bounds how far a "
+            "pixel may move, and hue is whatever the network returned. That is the trade.\n\n"
+            "WHERE IT COMES FROM. Tested on D3D12, in GTA V Enhanced. There the ratio "
+            "composition showed a heavy trail behind everything while driving. The cause was "
+            "measured: the network costs about 29 ms at full Resolution Scale and the game "
+            "presents faster, so 37% of frames (13,921 of 37,584) were skipped with the previous "
+            "evaluation still on the GPU -- and the correction being pasted on belonged to a "
+            "picture that had already moved. This mode has no correction to misplace, so the "
+            "trail cannot happen.\n\n"
+            "ON A SKIPPED FRAME. You see the previous network output, a whole picture, which "
+            "reads as a held frame rather than as a trail. It is deliberately not gated on "
+            "freshness: gating it would flicker between two different pictures instead.\n\n"
+            "WHAT IS NOT KNOWN. It was preferred by eye on one game, on one route, at Pass Count "
+            "2 and full Resolution Scale. Nothing here has measured it against the composition on "
+            "a slow scene, in HDR, or on the D3D11 and Vulkan routes.",
+
+            "UMA PROVA DE CONCEITO. Está aqui porque foi preferido a olho em um jogo, não porque "
+            "esteja pronto nem porque se saiba que é melhor. Trate como algo para experimentar e "
+            "relatar, não como ajuste para deixar ligado e esquecer.\n\n"
+            "Mostra a resposta da rede direto, em vez de compô-la sobre o quadro do jogo.\n\n"
+            "O QUE ISTO DESLIGA. Não existe resíduo neste modo, então Trava de Realce, Força da "
+            "Cor, Limite do Resíduo e Esmaecimento de Borda não fazem nada. Nada limita o quanto "
+            "um pixel pode andar, e o matiz é o que a rede devolveu. Essa é a troca.\n\n"
+            "DE ONDE VEIO. Testado em D3D12, no GTA V Enhanced. Lá a composição por razão deixava "
+            "um rastro pesado atrás de tudo ao dirigir. A causa foi medida: a rede custa cerca de "
+            "29 ms na Escala de Resolução cheia e o jogo apresenta mais rápido, então 37% dos "
+            "quadros (13.921 de 37.584) foram pulados com a avaliação anterior ainda na GPU -- e "
+            "a correção colada vinha de uma imagem que já tinha andado. Este modo não tem "
+            "correção para colar no lugar errado, então o rastro não acontece.\n\n"
+            "NUM QUADRO PULADO. Você vê a saída anterior da rede, uma imagem inteira, que lê como "
+            "quadro segurado e não como rastro. É de propósito que ele não é cortado por "
+            "atualidade: cortar faria piscar entre duas imagens diferentes.\n\n"
+            "O QUE NÃO SE SABE. Foi preferido a olho em um jogo, numa rota, com Número de Passes "
+            "2 e Escala de Resolução cheia. Nada aqui mediu ele contra a composição em cena lenta, "
+            "em HDR, nem nas rotas D3D11 e Vulkan.");
+    }
+
     if (ImGui::CollapsingHeader(T("Status", "Estado"), ImGuiTreeNodeFlags_DefaultOpen))
     {
         const Profile &profile = ProfileForThisProcess();
@@ -5730,6 +6089,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             Log("dlss5 neural: %s", ProfileForThisProcess().note);
             Log("preview 2026-09-10: SDR input contract, serialized inline passes; Vulkan %d",
                 DLSS5_WITH_VULKAN);
+            // Before the read, so a first run has a documented file to read and the user has
+            // something to edit without being told which keys exist.
+            EnsureNeuralIni();
             LoadSettings();
         }
         // Kept even though it has never fired on D3D12: measured, PCSX2 on D3D12 delivers zero
