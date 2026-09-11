@@ -1588,6 +1588,36 @@ void SaveSettings()
 // The adapter comes from the game's own D3D11 device, which BridgeStep1 has already asked. That
 // is the same adapter by construction, and it means no DXGI factory has to be created -- one
 // fewer library to touch, and one fewer chance to disturb the runtime the game is using.
+bool RecreateWorkSlot(UINT slot)
+{
+    if (slot >= State::kRing || g.workDevice == nullptr)
+        return false;
+
+    // A failed Close leaves the list recording and unusable, while an allocator Reset followed by
+    // a failed list Reset leaves the pair out of step. Recreate both so a transient bad recording
+    // cannot poison this ring slot for the rest of the process.
+    g.list[slot].Reset();
+    g.alloc[slot].Reset();
+    const HRESULT allocatorHr = g.workDevice->CreateCommandAllocator(
+        D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g.alloc[slot]));
+    const HRESULT listHr = SUCCEEDED(allocatorHr)
+                               ? g.workDevice->CreateCommandList(
+                                     0, D3D12_COMMAND_LIST_TYPE_DIRECT, g.alloc[slot].Get(), nullptr,
+                                     IID_PPV_ARGS(&g.list[slot]))
+                               : allocatorHr;
+    const HRESULT closeHr = SUCCEEDED(listHr) ? g.list[slot]->Close() : listHr;
+    if (FAILED(allocatorHr) || FAILED(listHr) || FAILED(closeHr))
+    {
+        Log("bridge: could not recreate work slot %u (allocator 0x%08lX, list 0x%08lX, "
+            "close 0x%08lX).", slot, allocatorHr, listHr, closeHr);
+        g.list[slot].Reset();
+        g.alloc[slot].Reset();
+        return false;
+    }
+    g.ringValue[slot] = 0;
+    return true;
+}
+
 bool CreateWorkDevice(IDXGIAdapter *adapter, LUID luid)
 {
     DXGI_ADAPTER_DESC ad {};
@@ -1608,16 +1638,11 @@ bool CreateWorkDevice(IDXGIAdapter *adapter, LUID luid)
     }
     for (UINT i = 0; i < State::kRing; ++i)
     {
-        if (FAILED(g.workDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                        IID_PPV_ARGS(&g.alloc[i]))) ||
-            FAILED(g.workDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                   g.alloc[i].Get(), nullptr,
-                                                   IID_PPV_ARGS(&g.list[i]))))
+        if (!RecreateWorkSlot(i))
         {
             Log("bridge: could not create the command allocator or list.");
             return false;
         }
-        g.list[i]->Close();
     }
     if (FAILED(g.workDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.ringFence))) ||
         FAILED(g.workDevice->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&g.crossFence))) ||
@@ -2019,7 +2044,9 @@ void DrainReadbacks(UINT nw, UINT nh)
 }
 
 bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale);
-bool CreateTexture(UINT w, UINT h, DXGI_FORMAT f, ComPtr<ID3D12Resource> &out, const char *what);
+bool CreateTexture(UINT w, UINT h, DXGI_FORMAT f, ComPtr<ID3D12Resource> &out, const char *what,
+                   D3D12_RESOURCE_STATES initialState =
+                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 using SubmitPassFn = std::function<bool()>;
 bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                    DXGI_FORMAT colourFmt, ID3D12Resource *outTarget, bool runNetwork, UINT wanted,
@@ -2421,7 +2448,8 @@ void BridgePresent(device *dev, swapchain *sc)
     if (g.crossLocal == nullptr || g.crossLocal->GetDesc().Width != w ||
         g.crossLocal->GetDesc().Height != h)
     {
-        if (!CreateTexture(w, h, fmt, g.crossLocal, "crossLocal"))
+        if (!CreateTexture(w, h, fmt, g.crossLocal, "crossLocal",
+                           D3D12_RESOURCE_STATE_COPY_DEST))
         {
             g.bridgeFailed = true;
             return;
@@ -2495,10 +2523,16 @@ void BridgePresent(device *dev, swapchain *sc)
     if (g.ringValue[i] != 0 &&
         !WaitFence(g.ringFence.Get(), g.ringValue[i], g.ringEvent, "the ring slot to come free"))
         return;
-    if (FAILED(g.alloc[i]->Reset()) || FAILED(g.list[i]->Reset(g.alloc[i].Get(), nullptr)))
+    const HRESULT allocatorHr = g.alloc[i]->Reset();
+    const HRESULT listHr = SUCCEEDED(allocatorHr)
+                               ? g.list[i]->Reset(g.alloc[i].Get(), nullptr)
+                               : allocatorHr;
+    if (FAILED(allocatorHr) || FAILED(listHr))
     {
-        Log("bridge: command list reset failed.");
-        g.bridgeFailed = true;
+        Log("bridge: work slot %u reset failed (allocator 0x%08lX, list 0x%08lX); "
+            "recreating the pair.", i, allocatorHr, listHr);
+        if (!RecreateWorkSlot(i))
+            g.bridgeFailed = true;
         return;
     }
     auto *cmd = g.list[i].Get();
@@ -2551,7 +2585,11 @@ void BridgePresent(device *dev, swapchain *sc)
         // add-on then returned from every present in silence and left the last image it wrote on
         // screen. Both halves of that were wrong.
         Log("bridge: closing the command list failed (0x%08lX); rebuilding.", hr);
-        g.bridgeFailed = true;
+        g.lastJob = 0;
+        g.activePasses = 0;
+        g.historyValid.store(false);
+        if (!RecreateWorkSlot(i))
+            g.bridgeFailed = true;
         return;
     }
     ID3D12CommandList *lists[] { cmd };
@@ -3012,7 +3050,8 @@ bool InitPipeline()
     return SUCCEEDED(g.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g.heap)));
 }
 
-bool CreateTexture(UINT w, UINT h, DXGI_FORMAT f, ComPtr<ID3D12Resource> &out, const char *what)
+bool CreateTexture(UINT w, UINT h, DXGI_FORMAT f, ComPtr<ID3D12Resource> &out, const char *what,
+                   D3D12_RESOURCE_STATES initialState)
 {
     out.Reset();
     D3D12_HEAP_PROPERTIES hp {};
@@ -3026,8 +3065,7 @@ bool CreateTexture(UINT w, UINT h, DXGI_FORMAT f, ComPtr<ID3D12Resource> &out, c
     rd.Format = f;
     rd.SampleDesc.Count = 1;
     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    if (FAILED(g.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
-                                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+    if (FAILED(g.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, initialState,
                                                  nullptr, IID_PPV_ARGS(&out))))
     {
         Log("texture creation failed: %s %ux%u format %d", what, w, h, static_cast<int>(f));
@@ -3392,9 +3430,33 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
 // Flushing per frame is not enough on its own: the documented sequence is ClearState and then
 // Flush, and ClearState is only safe here.
 // Everything sized to the swapchain, dropped together. Ensure rebuilds each one on demand.
+#if DLSS5_WITH_VULKAN
+namespace vkroute { void ReleaseSwapchainSized(); }
+#endif
+
 void ReleaseSwapchainSized()
 {
     WaitForWorkQueue(g.completion);
+#if DLSS5_WITH_VULKAN
+    // The imported VkImages have the same lifetime as the D3D12 resources below. Invalidate the
+    // route even when the replacement swapchain keeps the same size and format, otherwise its
+    // fast path returns with crossLocal already released.
+    vkroute::ReleaseSwapchainSized();
+#endif
+    // Closed command lists retain references to their recorded resources until Reset. Retire all
+    // slots while the queue is idle so no recording from the old swapchain survives the teardown.
+    if (g.workDevice != nullptr)
+    {
+        for (UINT i = 0; i < State::kRing; ++i)
+        {
+            if (RecreateWorkSlot(i))
+                continue;
+            g.bridgeFailed = true;
+            g.unavailable = true;
+            g.reason = "could not retire the D3D12 work slots during swapchain teardown";
+            break;
+        }
+    }
     g.bridgeIn.Destroy();
     g.bridgeOut.Destroy();
     g.crossLocal.Reset();

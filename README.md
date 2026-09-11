@@ -2,21 +2,27 @@
 
 **THIS IS A PROOF-OF-CONCEPT, NOT EVEN CLOSE TO FINAL VERSION, FORK IT, SHARE IT, LETS GROW TOGETHER**
 
-## v0.4.0
+## v0.4.1
 
-**One package now.** There is no longer a separate Vulkan build to choose between. The Vulkan
-transport is compiled in and does nothing at all on a D3D11 or D3D12 game — it hooks one import
-table entry, and a game that does not import Vulkan has none. Measured, not assumed: the same
-binary ran NFS 2015 on D3D11, GTA V Enhanced on D3D12 and RPCS3 on Vulkan.
+**Native Vulkan games are now part of the validation set.** The Vulkan route now rejects
+non-graphics present queues safely, rebuilds its imported images across swapchain recreation, and
+recovers its D3D12 work slots after a failed reset or close. The same binary completed 9,240 frames
+in Detroit: Become Human without a skip and 3,600 frames in DOOM Eternal with one transient skip
+during a scale change, followed by automatic recovery.
+
+**One package covers every supported renderer.** There is no separate Vulkan build to choose
+between. The Vulkan transport is compiled in and does nothing on a D3D11 or D3D12 game — it hooks
+one import-table entry, and a game that does not import Vulkan has none. The add-on now links the
+MSVC runtime statically too, so a game's private, older Visual C++ DLLs cannot prevent it loading.
 
 **This release requires the pinned v0.2.17 runtime.** v0.2.14 is refused. If you are updating
 from v0.3.0, you must replace `dlssnr_amd_pass1.dll` and `dlssnr_on_amd_weights.bin` — see
 [the three files](#the-three-files) for the hashes. Delete `dlssnr_amd_pass2.dll` and
 `pass3.dll` if you still have them; nothing has used them for two releases.
 
-**Vulkan is experimental, and narrowly so — read [Case 3](#case-3--vulkan-rpcs3-experimental)
-before trying it.** It works on RPCS3 and is known not to work on PCSX2, for a reason that is
-structural rather than a bug.
+**Vulkan is still experimental — read [Case 3](#case-3--vulkan-experimental) before trying it.**
+It is validated on RPCS3, Detroit: Become Human and DOOM Eternal. It is known not to work on PCSX2,
+for a reason that is structural rather than a bug.
 
 **FSR upscaling is still not implemented**, and this release stops calling it upcoming. The
 measurement that closed it is in [Stuff I didn't get to](#stuff-i-didnt-get-to).
@@ -46,11 +52,14 @@ Run so far, on an RX 9070 XT:
 | **Need for Speed 2015** | D3D11 | The worked example in Case 1. 1,205 frames on the v0.4.0 build with one skip and no failures. |
 | **GTA V Enhanced** | D3D12 | 23,663 frames, no failures. The degraded case: an add-on is shown nothing but the swapchain, so there is no depth and no game motion. |
 | **RPCS3** | Vulkan | 1,879 frames on the v0.4.0 build, after 3,360 on the previous one. Experimental — see Case 3. |
+| **Detroit: Become Human** | Vulkan | 9,240 frames, no skips, repeated toggles and two complete swapchain rebuilds on v0.4.1. |
+| **DOOM Eternal** | Vulkan | 3,600 frames, one transient skip during a scale change, repeated Alt+Tab rebuilds on v0.4.1. Requires a graphics present queue; see Case 3. |
 
 **Anything else is untested, not unsupported.** There is no whitelist and nothing to compile:
-point ReShade at any D3D11 or D3D12 game, drop the same three files beside it, and it runs. The
-status line will just say *uncatalogued target*, which changes nothing. If a game does something
-odd, the probe in `src/probe` dumps what it actually exposes.
+point ReShade at a D3D11, D3D12 or compatible Vulkan host, drop the same three files beside it, and
+it runs. A Vulkan host must import `vkCreateDevice` by name and present on a graphics-capable queue.
+The status line will just say *uncatalogued target*, which changes nothing. If a game does
+something odd, the probe in `src/probe` dumps what it actually exposes.
 
 Discord: https://discord.gg/wYhvS3JSHM — for DLSS 5 in general, not a support channel for this.
 
@@ -60,7 +69,7 @@ Discord: https://discord.gg/wYhvS3JSHM — for DLSS 5 in general, not a support 
 [the three files](#the-three-files) by hand, then your case:
 **[DirectX 11 game](#case-1--directx-11-games)**,
 **[PS2 emulator](#case-2--ps2-emulator-pcsx2)** or
-**[Vulkan / RPCS3](#case-3--vulkan-rpcs3-experimental)**. No compiler needed.
+**[Vulkan](#case-3--vulkan-experimental)**. No compiler needed.
 **Broken?** → [Troubleshooting](#troubleshooting), keyed by what you see on screen.
 **Changing the code?** → [Building it yourself](#building-it-yourself-optional).
 
@@ -198,20 +207,25 @@ read, and the depth it does have is faint. That is a property of the console, no
 
 ---
 
-## Case 3 — Vulkan (RPCS3), experimental
+## Case 3 — Vulkan, experimental
 
-Read this before trying it. The Vulkan route works, and it works narrowly.
+Read this before trying it. The Vulkan route works in emulators and native games, within two hard
+requirements imposed by the interop design.
 
 **It needs a host that imports `vkCreateDevice` statically, by name.** A Vulkan device has to be
 created with the external-memory and external-semaphore extensions or it can never import a D3D12
 texture, and once the device exists that cannot be fixed. So the add-on patches one entry in the
 host's import table and adds the seven extensions on the way through.
 
-A program that resolves Vulkan dynamically has no such entry, and there is nothing to patch.
+A program that resolves Vulkan dynamically has no such entry, and there is nothing to patch. The
+queue used for presentation must also support graphics commands; the add-on refuses an async-only
+present queue instead of trying to record a copy through a null immediate command list.
 
 | Host | `vulkan-1.dll` in its import table | Result |
 |---|---|---|
 | **RPCS3** | yes | Works. 1,879 frames, bridge up, full round trip. |
+| **Detroit: Become Human** | yes | Works. 9,240 frames, no skips, toggle and swapchain-rebuild recovery verified. |
+| **DOOM Eternal** | yes | Works with a graphics present queue. 3,600 frames, one recovered scale-change skip and repeated Alt+Tab rebuilds. |
 | **PCSX2** | no — resolves through `vkGetInstanceProcAddr` | Stands down and leaves the picture alone. |
 
 When it stands down it says so, in `dlss5-neural.log`, in those words:
@@ -234,10 +248,17 @@ to the add-on — which may mean the emulator does not make one, or that ReShade
 them on Vulkan. Neither has been separated, and neither changes the outcome.
 
 **Setup.** ReShade's Vulkan support is a global layer, not a proxy DLL, and it only applies to
-programs listed in `C:\ProgramData\ReShade\ReShadeApps.ini`. Run the ReShade installer against
-`rpcs3.exe` and pick **Vulkan**; that writes the entry. Then drop the three files next to
-`rpcs3.exe`. If you also have a proxy DLL (`dxgi.dll`, `d3d11.dll`) in the same folder from a
-previous install, remove it: two ReShade instances in one process is not a supported arrangement.
+programs listed in `C:\ProgramData\ReShade\ReShadeApps.ini`. Run the ReShade installer against the
+game or emulator executable and pick **Vulkan**; that writes the entry. Then drop the three files
+next to that executable. If you also have a proxy DLL (`dxgi.dll`, `d3d11.dll`) in the same folder
+from a previous install, remove it: two ReShade instances in one process is not a supported
+arrangement.
+
+DOOM Eternal normally presents from an async queue. Set `r_presentFromAsync "0"` so presentation
+uses a graphics-capable queue; otherwise v0.4.1 logs the unsupported queue and leaves the game's
+image untouched. A resize, display-mode change or Alt+Tab may recreate the swapchain. The Vulkan
+bridge now retires and rebuilds every imported image in that case, including when the new
+swapchain has the same dimensions and format.
 
 ---
 
@@ -270,6 +291,7 @@ The defaults are fine to start with. The status line says whether it is really r
 |---|---|
 | Add-on isn't in the Add-ons tab at all | `ReShade.ini` has `DisabledAddons=dlss5 neural@dlss5-neural.addon64` under `[ADDON]`. ReShade writes that line if you ever untick the add-on, and then it never loads again, with no error anywhere. Clear it. |
 | Status says the API is wrong | D3D11, D3D12 and Vulkan are all accepted by the one package. OpenGL has no route. Check per-game renderer overrides -- they beat the global setting silently. |
+| Vulkan log says the present queue is not graphics-capable | The host presented from an async-only queue, which cannot record the bridge copy. If this is DOOM Eternal, set `r_presentFromAsync "0"`, restart the game and try again. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 isn't installed. HIP 6 doesn't count. |
 | `hash mismatch; refused` | Wrong `dlssnr_amd_pass1.dll`. Compare against `tools/SHA256SUMS.txt`. The refusal is deliberate — the alternative is a hang. |
 | Game dies with `887A0005` / device removed | `DXGI_ERROR_DEVICE_REMOVED`, from a Windows TDR. See [the engine ini](#the-engine-ini). |
@@ -431,6 +453,9 @@ cd dlss5-neural-amd
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Target neural
 ```
 
+The release target links the C/C++ runtime statically (`/MT`). The resulting add-on does not rely
+on `msvcp140.dll` or `vcruntime140.dll` beside the game executable.
+
 Note the `-ExecutionPolicy Bypass`. Windows refuses to run downloaded `.ps1` files by default, so
 plain `.\build.ps1` usually fails with *"cannot be loaded because running scripts is disabled on
 this system"*. That message is Windows, not this project. The line above sidesteps it for that
@@ -468,18 +493,22 @@ so if the badge is green the repository builds as-is.
 The network takes four inputs: colour, depth, motion and exposure. **Which of them it gets is
 decided by the renderer, and that is the single most important thing on this page.**
 
-Measured with the probe in `src/probe`, same game, same frame, only the renderer changed:
+The D3D11 and D3D12 columns were measured with the probe in `src/probe`, using the same game and
+frame with only the renderer changed. The Vulkan column describes the current transport route:
 
-| | on **D3D12** | on **D3D11** |
-|---|---|---|
-| render targets ReShade shows the add-on | **2** | **8** |
-| depth | none | the game's own depth target |
-| colour | the presented back buffer | available at render resolution |
+| | on **D3D12** | on **D3D11** | on **Vulkan** |
+|---|---|---|---|
+| render targets ReShade shows the add-on | **2** | **8** | presented image through the Vulkan bridge |
+| depth | none | the game's own depth target | none |
+| motion | estimated from colour | game's velocity target when available | estimated from colour |
+| colour | the presented back buffer | available at render resolution | the presented image |
 
 On D3D12 an add-on sees the swapchain and nothing else — `bind_render_targets_and_depth_stencil`
 fires **zero** times in 600 frames, with or without also subscribing to the draw events, both
 tried and both measured. That is a property of the API path, not of any game. So on D3D12 the
-network runs on colour alone.
+network runs on colour and estimated motion. Vulkan currently follows the same guide policy after
+the presented image crosses into the private D3D12 device; `Depth=1` does not create a Vulkan depth
+source.
 
 **On D3D11 it gets depth and motion too.** The AMD network runtime is D3D12, so the add-on builds
 its own D3D12 device on the game's adapter and carries textures across through shared resources
@@ -612,14 +641,16 @@ None of this is settled, it is just where things stand. One card, three programs
   and converted before it crosses; motion comes from the game's own velocity buffer where there
   is one, and from a block-matching estimator where there isn't. Still open: nobody has read the
   guide probe **during real gameplay**, only on menus, where flat depth and zero motion are what
-  you would expect anyway. That reading is the next thing worth having.
+  you would expect anyway. Vulkan still has estimated motion only; exposing a reliable Vulkan
+  depth source remains open.
 * Exposure. The fourth slot of the network's input packet is still never filled, and it has
   never been shown that the engine reads it.
 * The network itself. DLSS-NR is a denoiser for modern ray traced stuff. Something built for
   restoration or upscaling old content would probably fit emulators better, and swapping it
   doesn't mean rewriting everything.
-* More targets. ETS2, PCSX2 and NFS 2015 are the three that have been run. Everything else is
-  simply untried — the add-on does not check what game it is in.
+* More targets. ETS2, PCSX2, NFS 2015, GTA V Enhanced, RPCS3, Detroit: Become Human and DOOM
+  Eternal have been run. Everything else is simply untried — the add-on does not check what game
+  it is in.
 * One card. Everything here is an RX 9070 XT. RDNA3 is untested.
 
 ## Model A/B/C: will not be implemented
