@@ -1,5 +1,87 @@
 # Changelog
 
+## v0.4.0 — Vulkan, D3D12, and a trail that was not the network's fault
+
+Requires the pinned **v0.2.17** runtime; v0.2.14 is refused. `dlssnr_amd_pass2.dll` and
+`pass3.dll` are unused and can be deleted.
+
+### One package
+
+The separate Vulkan build is gone. The Vulkan transport is compiled into the single add-on and
+does nothing on a game that does not import Vulkan — it patches one import-table entry, and
+there is no entry to patch. The same binary was run on D3D11 (NFS 2015), D3D12 (GTA V Enhanced)
+and Vulkan (RPCS3).
+
+### Tested live, on all three routes
+
+The previous preview shipped with its serialized multipass path validated only on saved frames.
+It has now been run in games.
+
+| Route | Host | Frames | Result |
+|---|---|---|---|
+| D3D11 | NFS 2015 | 1,205 | one skip, no failures |
+| D3D12 | GTA V Enhanced | 23,663 | no failures; found the trail below |
+| Vulkan | RPCS3 | 1,879 | bridge up, full round trip, no failures |
+
+### A stale correction was being pasted onto moving frames
+
+On a frame where the network is skipped — its previous evaluation is still on the GPU — compose
+ran anyway, and the residual it read belonged to an older picture. On a slow scene nobody sees
+it. GTA V Enhanced skipped **37% of frames** (13,921 of 37,584), because the network costs about
+29 ms at full Resolution Scale and the game presents faster, and at speed those frames read as a
+heavy trail behind everything.
+
+A skipped frame now goes out as the game drew it, on all three routes. The gate had to be applied
+to the final copy back to the game's image, not only to the intermediate one: skipping just the
+intermediate copy would have sent back the previous composition whole, which is a held frame and
+worse than the trail. The measurement that says dropping the correction is right rather than a
+trade: its own mean in that scene is 0.003.
+
+No prior test could have caught this. NFS 2015 skipped 1 frame in 1,205.
+
+### Vulkan works on RPCS3 and not on PCSX2, structurally
+
+The route needs a host that imports `vkCreateDevice` statically by name, because the interop
+extensions have to be added while the VkDevice is created and cannot be added afterwards. RPCS3
+has `vulkan-1.dll` in its import table. PCSX2 has zero occurrences of it and resolves through
+`vkGetInstanceProcAddr`, so there is nothing to patch. It stands down, says so in the log, and
+leaves the picture alone.
+
+On Vulkan the network is fed colour and estimated motion and nothing else. There is no depth
+path: both depth sources are behind D3D11 and D3D12 checks. Across 5,239 frames on RPCS3 not one
+depth-stencil bind reached the add-on, which may be the emulator or may be ReShade's Vulkan
+reporting; neither was separated and neither changes the result.
+
+### Starting up, and the hotkey
+
+- **StartOn** is a normal setting now, in the panel and written back. It was an ini line marked
+  diagnostic-only that was deliberately never saved.
+- **ToggleKey / ToggleMods** — `Ctrl+End` is only the default. The panel captures a real keypress
+  and writes both; key names come from Windows, so a non-US layout reads correctly.
+- **DisableOnAltTab** — switches the effect off when the game stops being the focused window, and
+  leaves it off until the hotkey brings it back. Separate from the minimised-window handling,
+  which is unconditional and does resume on its own.
+- The add-on writes a **commented `dlss5-neural.ini`** when none exists. The panel saves through
+  `WritePrivateProfileString`, which cannot carry a comment, so an install that had only ever
+  been saved from the panel was a bare list of keys.
+
+### Experimental tab
+
+New, and everything in it is off by default. **Network Output** shows the network's answer
+instead of composing it, which bypasses Highlight Guard, Colour Strength and both residual
+limits. It is a proof of concept: preferred by eye on one game, on one route, and not measured
+against the composition anywhere else.
+
+### FSR: closed, with numbers
+
+Running the network below full Resolution Scale costs 30–57% of its whole effect, but the bicubic
+upsample accounts for 0.1%, 0.7% and −2.8% of that across three cases. The rest is the network
+answering differently at a different scale: the half-resolution correction differs from the
+full-resolution one by 31–61% of its own magnitude, 62–90% of that at low frequency, correlating
+0.84–0.95. The receptive field is fixed in pixels, so at half resolution it covers twice the
+scene. No upsampler recovers a correction that was never produced, and a global gain-and-offset
+fit removes 2.9%, −0.7% and 0.2%, so it is not a fixed bias either.
+
 ## Preview 2026-09-10 — SDR and serialized inline passes
 
 - Update both normal and Vulkan previews to the pinned v0.2.17 runtime.
