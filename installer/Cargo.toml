@@ -1,0 +1,22 @@
+[package]
+name = "dlss5-installer"
+version = "0.4.0"
+edition = "2021"
+description = "Terminal installer for the dlss5-neural-amd ReShade add-on"
+license = "MIT"
+
+[[bin]]
+name = "dlss5-installer"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+sha2 = "0.10"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

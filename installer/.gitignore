@@ -1,0 +1,4 @@
+# Rust build output. Only the built executable ships, and it ships in a release,
+# not in the tree.
+target/
+Cargo.lock

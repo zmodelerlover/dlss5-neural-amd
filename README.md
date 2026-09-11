@@ -546,6 +546,7 @@ identical from the couch and need completely different fixes.
 | `tools/patch_runtime.py` | rebuilds the runtime from `version.dll`. |
 | `tools/runtime-patches.json` | the five patches, with offsets and bytes. |
 | `tools/SHA256SUMS.txt` | hashes for the runtime and weights, which the repo does not ship. |
+| `installer/` | the terminal installer, in Rust with ratatui. Its own README; `target/` is ignored, so the repo carries no Rust build output. Only the built `.exe` ships, in a release. |
 | `tools/check_shaders.ps1` | extracts the HLSL out of `neural.cpp` and runs `fxc` on it. A shader typo otherwise only shows up as a log line inside the game. |
 | `build.ps1` | builds an add-on with `cl.exe`, no VS project. |
 | `CHANGELOG.md` | what changed between releases. |
