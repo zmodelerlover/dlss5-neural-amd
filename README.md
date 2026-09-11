@@ -21,6 +21,11 @@ structural rather than a bug.
 **FSR upscaling is still not implemented**, and this release stops calling it upcoming. The
 measurement that closed it is in [Stuff I didn't get to](#stuff-i-didnt-get-to).
 
+**There is an installer now** — `dlss5-installer.exe` on the release, one screen instead of this
+page. It verifies both hashes before copying, and tells you what would stop the install before it
+starts. See [Or let the installer do it](#or-let-the-installer-do-it). It is new; report anything
+it does wrong the same way as anything else.
+
 ReShade add-on that runs the DLSS-NR network on AMD cards.
 
 Every tool for DLSS 5 (renodx-dlss, DLSS5-Feeder, DLSS5-Swapper) calls NVIDIA's
@@ -51,7 +56,8 @@ Discord: https://discord.gg/wYhvS3JSHM — for DLSS 5 in general, not a support 
 
 [![Support this project on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T213OVFE)
 
-**Installing it?** → [the three files](#the-three-files), then your case:
+**Installing it?** → [the installer](#or-let-the-installer-do-it), or
+[the three files](#the-three-files) by hand, then your case:
 **[DirectX 11 game](#case-1--directx-11-games)**,
 **[PS2 emulator](#case-2--ps2-emulator-pcsx2)** or
 **[Vulkan / RPCS3](#case-3--vulkan-rpcs3-experimental)**. No compiler needed.
@@ -116,6 +122,24 @@ hangs the game.
 
 You also need the **add-on** build of ReShade (labelled "with full add-on support") from
 <https://reshade.me/>. The plain one will not load add-ons.
+
+## Or let the installer do it
+
+`dlss5-installer.exe`, on the same Releases page, is the three files and the hash check on one
+screen. Pick the target — PCSX2, RPCS3, D3D11, D3D12 or Vulkan — paste the folder holding the two
+files from the discord, paste the folder the game runs from, press F5. The add-on is compiled into
+it, so it cannot hand out one from a different release than the runtime it was built beside, and
+it verifies both SHA-256s before copying anything.
+
+Before you press F5 it says what would stop the install: the game still open and holding the
+files, a folder needing administrator rights, no room for the weights, ReShade missing or
+installed twice, and the `DisabledAddons=` line further down this page — the one that makes the
+add-on silently never load. F8 takes everything back out and leaves `dlss5-neural.ini` alone.
+
+It does **not** install ReShade, and is not going to. That stays ReShade's own installer.
+
+The rest of this section is the same thing by hand, which is worth reading either way: the
+installer copies files, it does not tell you which renderer to set.
 
 Now pick your case.
 
@@ -269,6 +293,12 @@ of them, so it always looks fine. Two things settle almost anything:
 The residual measurement in the first one is the useful bit. `mean 0.000000` means the network
 returned its input untouched, which is a completely different problem from a nonzero residual
 that looks wrong on screen. They are indistinguishable from the couch.
+
+If the problem is the **installer** rather than the add-on, the file is a different one: it writes
+`dlss5-installer.log` next to `dlss5-installer.exe` whenever something fails and prints the path
+on its bottom line. Everything it saw is in there. If the installer's own screen looks wrong —
+no colour, broken layout — run it as `dlss5-installer.exe --diag`, which writes
+`dlss5-installer-diag.txt` next to the exe and asks the console what it actually supports.
 
 ## The settings
 

@@ -1,66 +1,121 @@
 //! Terminal installer for the dlss5-neural-amd ReShade add-on.
 //!
-//! One screen, three fields, two keys. Paste a folder, pick what it is, press F5.
-//!
-//! The add-on is compiled into this executable. The runtime and the weights are not and never
-//! will be -- the weights are NVIDIA-derived and the runtime is a third-party build -- so the
-//! user points at the folder they unzipped them into, and every byte is checked against a known
-//! SHA-256 before it is copied anywhere.
+//! Three numbered steps down the screen, in the order a person does them. The add-on is compiled
+//! into this executable; the runtime and the weights are not and never will be -- the weights are
+//! NVIDIA-derived and the runtime is a third-party build -- so the user points at the folder they
+//! unzipped them into, and every byte is checked against a known SHA-256 before it is copied.
 
-// A TUI has no console window to print to, and opening one behind it is worse than useless.
 #![windows_subsystem = "console"]
 
+mod diag;
+mod logo;
+mod ui;
 mod work;
 
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::{Frame, Terminal};
+use ratatui::Terminal;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use work::{Level, Preset, Report};
+use work::{Preset, Report};
+
+// ---------------------------------------------------------------------------------------------
+// Colour, in two parts.
+//
+// 1. NO_COLOR. crossterm honours https://no-color.org inside `Display for Colored`: with the
+//    variable set to anything non-empty every colour escape it writes comes out with no
+//    parameters at all -- `ESC [ ; m` instead of `ESC [ 38;5;10 m` -- so the layout draws
+//    perfectly and entirely in white while supports_ansi() answers true and the console reports
+//    65535 colours. That is exactly what this installer did for a whole session, because the
+//    shell it was launched from exported NO_COLOR=1. The convention is meant for programs that
+//    add colour to otherwise plain output; this is a full-screen TUI whose panes and focus
+//    marker are the interface, so it opts out explicitly rather than leaving the palette to
+//    whatever a parent process happened to set.
+//
+// 2. Virtual-terminal processing. A console opened by Explorer or Start-Process has it off, and
+//    with it off the escape sequences go nowhere.
+#[cfg(windows)]
+fn enable_colour() {
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, SetConsoleMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    };
+
+    // CONOUT$ rather than GetStdHandle(STD_OUTPUT_HANDLE): it always opens whichever screen
+    // buffer is currently active, so the flag lands on the buffer actually being drawn to.
+    unsafe {
+        let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+        let handle = CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if handle == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut mode = 0u32;
+        if GetConsoleMode(handle, &mut mode) != 0 {
+            SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn enable_colour() {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Focus {
+pub(crate) enum Focus {
     Preset,
     GameDir,
     RuntimeDir,
 }
 
-struct App {
-    preset: usize,
-    game_dir: String,
-    runtime_dir: String,
-    focus: Focus,
-    report: Option<Report>,
-    status: String,
+pub(crate) struct App {
+    pub(crate) preset: usize,
+    pub(crate) game_dir: String,
+    pub(crate) runtime_dir: String,
+    pub(crate) focus: Focus,
+    pub(crate) report: Option<Report>,
+    /// What is wrong right now, recomputed after every keystroke. Cheap enough to do that way --
+    /// it is metadata and one open() -- and it is the difference between finding out the game is
+    /// still running now or after 147 MB have been copied.
+    pub(crate) preflight: Report,
+    pub(crate) status: String,
     quit: bool,
 }
 
 impl App {
     fn new() -> Self {
-        App {
+        let mut app = App {
             preset: 0,
             game_dir: String::new(),
             runtime_dir: String::new(),
-            focus: Focus::GameDir,
+            focus: Focus::RuntimeDir,
             report: None,
-            status: "Paste the game folder, pick what it is, then F5.".into(),
+            preflight: Report::new(),
+            status: String::new(),
             quit: false,
-        }
+        };
+        app.recheck();
+        app
     }
 
-    fn preset(&self) -> Preset {
+    fn recheck(&mut self) {
+        self.preflight = work::preflight(&self.game_dir, &self.runtime_dir, self.preset());
+    }
+
+    pub(crate) fn preset(&self) -> Preset {
         Preset::ALL[self.preset]
     }
 
@@ -73,14 +128,22 @@ impl App {
     }
 
     fn next_focus(&mut self, back: bool) {
-        self.focus = match (self.focus, back) {
-            (Focus::Preset, false) => Focus::GameDir,
-            (Focus::GameDir, false) => Focus::RuntimeDir,
-            (Focus::RuntimeDir, false) => Focus::Preset,
-            (Focus::Preset, true) => Focus::RuntimeDir,
-            (Focus::GameDir, true) => Focus::Preset,
-            (Focus::RuntimeDir, true) => Focus::GameDir,
-        };
+        const ORDER: [Focus; 3] = [Focus::Preset, Focus::RuntimeDir, Focus::GameDir];
+        let at = ORDER.iter().position(|f| *f == self.focus).unwrap_or(1);
+        let next = if back { at + ORDER.len() - 1 } else { at + 1 } % ORDER.len();
+        self.focus = ORDER[next];
+    }
+
+    /// What the screen should be telling you to do next, when nothing has been run yet.
+    pub(crate) fn hint(&self) -> String {
+        if self.runtime_dir.trim().is_empty() {
+            "First: paste the folder holding the two files from the Discord #files channel."
+                .into()
+        } else if self.game_dir.trim().is_empty() {
+            "Now paste the folder the game or emulator runs from, then press F5.".into()
+        } else {
+            "Ready. F5 installs, F8 uninstalls.".into()
+        }
     }
 
     fn run(&mut self, uninstall: bool) {
@@ -94,7 +157,7 @@ impl App {
         self.status = if report.failed {
             match write_log(&report, self.preset(), &self.game_dir) {
                 Ok(path) => format!(
-                    "{what} FAILED. Log written to {} -- send that file and we can tell you why.",
+                    "{what} FAILED.  Log written to {}  --  send that file and we can tell you why.",
                     path.display()
                 ),
                 Err(e) => format!("{what} FAILED, and the log could not be written either: {e}"),
@@ -106,8 +169,8 @@ impl App {
     }
 }
 
-/// Beside the installer if that is writable, otherwise the working directory. Somewhere the
-/// person can actually find it either way, and the path is always printed.
+/// Beside the installer if that is writable, otherwise the working directory. Findable either
+/// way, and the path is always shown on screen.
 fn write_log(report: &Report, preset: Preset, dir: &str) -> io::Result<PathBuf> {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let header = format!(
@@ -119,10 +182,9 @@ fn write_log(report: &Report, preset: Preset, dir: &str) -> io::Result<PathBuf> 
     );
     let body = report.to_log(&header);
 
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("dlss5-installer.log")));
-    if let Some(path) = beside {
+    if let Some(path) =
+        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("dlss5-installer.log")))
+    {
         if std::fs::write(&path, &body).is_ok() {
             return Ok(path);
         }
@@ -133,6 +195,11 @@ fn write_log(report: &Report, preset: Preset, dir: &str) -> io::Result<PathBuf> 
 }
 
 fn main() -> io::Result<()> {
+    crossterm::style::Colored::set_ansi_color_disabled(false);
+    if std::env::args().any(|a| a == "--diag") {
+        return diag::run(enable_colour);
+    }
+    enable_colour();
     let mut terminal = setup()?;
     let mut app = App::new();
     let result = event_loop(&mut terminal, &mut app);
@@ -143,28 +210,27 @@ fn main() -> io::Result<()> {
 fn setup() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut out = io::stdout();
-    // Bracketed paste is the whole point: a pasted path arrives as one event instead of as a
-    // burst of keystrokes the loop would have to reassemble.
-    execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
+    // Deliberately NOT EnterAlternateScreen: on Windows crossterm implements it with a real
+    // second Win32 screen buffer, and drawing on the main one costs only the scrollback, which is
+    // cleared on the way out anyway.
+    execute!(out, EnableBracketedPaste, Clear(ClearType::All))?;
+    enable_colour();
     Terminal::new(CrosstermBackend::new(out))
 }
 
 fn restore(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableBracketedPaste, LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableBracketedPaste, Clear(ClearType::All))?;
+    terminal.set_cursor_position((0, 0))?;
     terminal.show_cursor()
 }
 
-fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    app: &mut App,
-) -> io::Result<()> {
+fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
     while !app.quit {
-        terminal.draw(|f| draw(f, app))?;
+        terminal.draw(|f| ui::draw(f, app))?;
         match event::read()? {
             Event::Paste(text) => {
-                let cleaned: String =
-                    text.chars().filter(|c| !c.is_control()).collect::<String>();
+                let cleaned: String = text.chars().filter(|c| !c.is_control()).collect();
                 if let Some(field) = app.field_mut() {
                     field.push_str(cleaned.trim());
                 }
@@ -172,6 +238,9 @@ fn event_loop(
             Event::Key(key) if key.kind == KeyEventKind::Press => on_key(app, key),
             _ => {}
         }
+        // After every event, not on a timer: the answer only changes when a path changes or when
+        // the user goes and closes the game, and either way there is a keystroke in between.
+        app.recheck();
     }
     Ok(())
 }
@@ -180,10 +249,9 @@ fn on_key(app: &mut App, key: event::KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => app.quit = true,
-        KeyCode::Char('c') if ctrl => app.quit = true,
-        KeyCode::Char('q') if ctrl => app.quit = true,
-        KeyCode::Tab => app.next_focus(false),
-        KeyCode::BackTab => app.next_focus(true),
+        KeyCode::Char('c' | 'q') if ctrl => app.quit = true,
+        KeyCode::Tab | KeyCode::Down | KeyCode::Enter => app.next_focus(false),
+        KeyCode::BackTab | KeyCode::Up => app.next_focus(true),
         KeyCode::F(5) => app.run(false),
         KeyCode::F(8) => app.run(true),
         KeyCode::Left if app.focus == Focus::Preset => {
@@ -192,7 +260,7 @@ fn on_key(app: &mut App, key: event::KeyEvent) {
         KeyCode::Right if app.focus == Focus::Preset => {
             app.preset = (app.preset + 1) % Preset::ALL.len();
         }
-        // Ctrl+U clears a field, which is faster than holding backspace over a long path.
+        // Faster than holding backspace over a long path.
         KeyCode::Char('u') if ctrl => {
             if let Some(field) = app.field_mut() {
                 field.clear();
@@ -212,147 +280,108 @@ fn on_key(app: &mut App, key: event::KeyEvent) {
     }
 }
 
-fn draw(f: &mut Frame, app: &App) {
-    let area = f.area();
-    let rows = Layout::vertical([
-        Constraint::Length(3),  // preset
-        Constraint::Length(3),  // game dir
-        Constraint::Length(3),  // runtime dir
-        Constraint::Length(4),  // preset note
-        Constraint::Min(5),     // log
-        Constraint::Length(3),  // status
-        Constraint::Length(1),  // keys
-    ])
-    .split(area);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
 
-    draw_preset(f, rows[0], app);
-    draw_field(f, rows[1], "Game folder", &app.game_dir, app.focus == Focus::GameDir);
-    draw_field(
-        f,
-        rows[2],
-        "Runtime folder  (dlssnr_amd_pass1.dll + dlssnr_on_amd_weights.bin)",
-        &app.runtime_dir,
-        app.focus == Focus::RuntimeDir,
-    );
-    draw_note(f, rows[3], app);
-    draw_log(f, rows[4], app);
-    draw_status(f, rows[5], app);
-    draw_keys(f, rows[6]);
-}
-
-fn bordered(title: &str, focused: bool) -> Block<'_> {
-    let style = if focused {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    Block::default().borders(Borders::ALL).border_style(style).title(Span::styled(
-        format!(" {title} "),
-        if focused { style } else { Style::default().fg(Color::Gray) },
-    ))
-}
-
-fn draw_preset(f: &mut Frame, area: Rect, app: &App) {
-    let focused = app.focus == Focus::Preset;
-    let mut spans = Vec::new();
-    for (i, p) in Preset::ALL.iter().enumerate() {
-        let selected = i == app.preset;
-        let style = if selected {
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        spans.push(Span::styled(format!(" {} ", p.label()), style));
-        spans.push(Span::raw("  "));
+    fn press(app: &mut App, code: KeyCode) {
+        on_key(app, KeyEvent::new(code, KeyModifiers::NONE));
     }
-    let title = if focused { "Target   (left/right to change)" } else { "Target" };
-    f.render_widget(Paragraph::new(Line::from(spans)).block(bordered(title, focused)), area);
-}
-
-fn draw_field(f: &mut Frame, area: Rect, title: &str, value: &str, focused: bool) {
-    let shown = if value.is_empty() {
-        Span::styled("paste a path here", Style::default().fg(Color::DarkGray))
-    } else {
-        Span::styled(value, Style::default().fg(Color::White))
-    };
-    let mut line = vec![shown];
-    if focused {
-        line.push(Span::styled("_", Style::default().fg(Color::Cyan)));
+    fn ctrl(app: &mut App, c: char) {
+        on_key(app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
     }
-    f.render_widget(Paragraph::new(Line::from(line)).block(bordered(title, focused)), area);
+
+    /// Tab walks the three regions in screen order and comes back round, and shift-tab walks it
+    /// backwards. Worth pinning because `next_focus` leans on `%` binding to the whole `if`
+    /// expression, which is easy to read wrong and would show up as a focus that skips a field.
+    #[test]
+    fn focus_cycles_both_ways_in_screen_order() {
+        let mut app = App::new();
+        assert!(app.focus == Focus::RuntimeDir, "the first field is the one nobody has yet");
+
+        press(&mut app, KeyCode::Tab);
+        assert!(app.focus == Focus::GameDir);
+        press(&mut app, KeyCode::Tab);
+        assert!(app.focus == Focus::Preset);
+        press(&mut app, KeyCode::Tab);
+        assert!(app.focus == Focus::RuntimeDir, "tab wrapped");
+
+        press(&mut app, KeyCode::BackTab);
+        assert!(app.focus == Focus::Preset);
+        press(&mut app, KeyCode::BackTab);
+        assert!(app.focus == Focus::GameDir);
+        press(&mut app, KeyCode::BackTab);
+        assert!(app.focus == Focus::RuntimeDir, "shift-tab wrapped the other way");
+    }
+
+    /// Left and right only mean anything on the target row, and they wrap -- including left from
+    /// the first entry, which is the one that underflows if the modulo is written carelessly.
+    #[test]
+    fn presets_wrap_and_only_move_when_the_target_row_has_focus() {
+        let mut app = App::new();
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.preset, 0, "arrows must not change the target while a path field is up");
+
+        app.focus = Focus::Preset;
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.preset, Preset::ALL.len() - 1, "left from the first wraps to the last");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.preset, 0, "and back");
+
+        for i in 0..Preset::ALL.len() {
+            assert_eq!(app.preset, i);
+            press(&mut app, KeyCode::Right);
+        }
+        assert_eq!(app.preset, 0, "every preset is reachable and the row is a ring");
+    }
+
+    /// Typing and the two editing keys go to whichever field has focus, and nowhere when the
+    /// target row does.
+    #[test]
+    fn typing_lands_in_the_focused_field_only() {
+        let mut app = App::new();
+        for c in "D:\\game".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.runtime_dir, "D:\\game");
+        assert_eq!(app.game_dir, "");
+
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.runtime_dir, "D:\\gam");
+        ctrl(&mut app, 'u');
+        assert_eq!(app.runtime_dir, "");
+
+        app.focus = Focus::Preset;
+        press(&mut app, KeyCode::Char('x'));
+        ctrl(&mut app, 'u');
+        assert_eq!(app.runtime_dir, "", "the target row has no field to type into");
+        assert_eq!(app.game_dir, "");
+    }
+
+    /// The three states of the first-run line, in the order someone walks through them.
+    #[test]
+    fn the_hint_leads_with_the_files_nobody_has_yet() {
+        let mut app = App::new();
+        assert!(app.hint().contains("#files"), "{}", app.hint());
+        app.runtime_dir = "D:\\runtime".into();
+        assert!(app.hint().contains("game or emulator"), "{}", app.hint());
+        app.game_dir = "D:\\game".into();
+        assert!(app.hint().contains("F5"), "{}", app.hint());
+    }
+
+    /// Esc and both quit chords actually set the flag the loop reads.
+    #[test]
+    fn every_advertised_way_out_works() {
+        for build in [
+            &(|a: &mut App| press(a, KeyCode::Esc)) as &dyn Fn(&mut App),
+            &|a: &mut App| ctrl(a, 'c'),
+            &|a: &mut App| ctrl(a, 'q'),
+        ] {
+            let mut app = App::new();
+            build(&mut app);
+            assert!(app.quit);
+        }
+    }
 }
 
-fn draw_note(f: &mut Frame, area: Rect, app: &App) {
-    let note = Paragraph::new(app.preset().note())
-        .style(Style::default().fg(Color::Yellow))
-        .wrap(Wrap { trim: true })
-        .block(bordered("About this target", false));
-    f.render_widget(note, area);
-}
-
-fn draw_log(f: &mut Frame, area: Rect, app: &App) {
-    let lines: Vec<Line> = match &app.report {
-        None => vec![Line::from(Span::styled(
-            "Nothing run yet. F5 installs, F8 uninstalls.",
-            Style::default().fg(Color::DarkGray),
-        ))],
-        Some(report) => report
-            .lines
-            .iter()
-            .map(|(level, text)| {
-                let (tag, colour) = match level {
-                    Level::Ok => ("  ok  ", Color::Green),
-                    Level::Warn => (" warn ", Color::Yellow),
-                    Level::Err => (" ERR  ", Color::Red),
-                    Level::Info => ("      ", Color::Gray),
-                };
-                Line::from(vec![
-                    Span::styled(tag, Style::default().fg(colour).add_modifier(Modifier::BOLD)),
-                    Span::styled(text.replace('\n', " "), Style::default().fg(colour)),
-                ])
-            })
-            .collect(),
-    };
-    // Show the tail: the end is where the verdict is, and a failure is always last.
-    let height = area.height.saturating_sub(2) as usize;
-    let start = lines.len().saturating_sub(height.max(1));
-    let view: Vec<Line> = lines[start..].to_vec();
-    f.render_widget(
-        Paragraph::new(view).wrap(Wrap { trim: true }).block(bordered("Log", false)),
-        area,
-    );
-}
-
-fn draw_status(f: &mut Frame, area: Rect, app: &App) {
-    let failed = app.report.as_ref().map(|r| r.failed).unwrap_or(false);
-    let colour = if failed { Color::Red } else if app.report.is_some() { Color::Green } else { Color::Gray };
-    f.render_widget(
-        Paragraph::new(app.status.as_str())
-            .style(Style::default().fg(colour).add_modifier(Modifier::BOLD))
-            .wrap(Wrap { trim: true })
-            .block(bordered("Status", false)),
-        area,
-    );
-}
-
-fn draw_keys(f: &mut Frame, area: Rect) {
-    let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let txt = Style::default().fg(Color::DarkGray);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  Tab", key),
-            Span::styled(" next field   ", txt),
-            Span::styled("Ctrl+V", key),
-            Span::styled(" paste   ", txt),
-            Span::styled("Ctrl+U", key),
-            Span::styled(" clear   ", txt),
-            Span::styled("F5", key),
-            Span::styled(" install   ", txt),
-            Span::styled("F8", key),
-            Span::styled(" uninstall   ", txt),
-            Span::styled("Esc", key),
-            Span::styled(" quit", txt),
-        ])),
-        area,
-    );
-}

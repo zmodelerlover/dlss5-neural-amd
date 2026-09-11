@@ -4,6 +4,8 @@
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::fs;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 /// The add-on, built into this executable. One file to hand out, and the installer can never
@@ -31,10 +33,12 @@ pub enum Preset {
     Rpcs3,
     Dx11,
     Dx12,
+    Vulkan,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 4] = [Preset::Pcsx2, Preset::Rpcs3, Preset::Dx11, Preset::Dx12];
+    pub const ALL: [Preset; 5] =
+        [Preset::Pcsx2, Preset::Rpcs3, Preset::Dx11, Preset::Dx12, Preset::Vulkan];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -42,6 +46,23 @@ impl Preset {
             Preset::Rpcs3 => "RPCS3",
             Preset::Dx11 => "D3D11 game",
             Preset::Dx12 => "D3D12 game",
+            Preset::Vulkan => "Vulkan game",
+        }
+    }
+
+    /// Vulkan is not a proxy DLL: ReShade loads as a global layer and the add-on sits beside the
+    /// executable all the same. Both the emulator on Vulkan and a native Vulkan game are checked
+    /// the same way, which is why this is a question and not four copies of one branch.
+    fn is_vulkan(self) -> bool {
+        matches!(self, Preset::Rpcs3 | Preset::Vulkan)
+    }
+
+    /// "Game" is wrong for an emulator, and the people most likely to get the folder wrong are
+    /// exactly the emulator users -- the files go beside the emulator, not beside the ROM.
+    pub fn folder_label(self) -> &'static str {
+        match self {
+            Preset::Pcsx2 | Preset::Rpcs3 => " Emulator folder ",
+            Preset::Dx11 | Preset::Dx12 | Preset::Vulkan => " Game folder ",
         }
     }
 
@@ -52,7 +73,7 @@ impl Preset {
         match self {
             Preset::Pcsx2 => Some("pcsx2-qt.exe"),
             Preset::Rpcs3 => Some("rpcs3.exe"),
-            Preset::Dx11 | Preset::Dx12 => None,
+            Preset::Dx11 | Preset::Dx12 | Preset::Vulkan => None,
         }
     }
 
@@ -76,12 +97,25 @@ impl Preset {
                 "The degraded case. On D3D12 an add-on is shown nothing but the swapchain, so the \
                  network gets colour and guesses at the rest. It works; expect less from it."
             }
+            Preset::Vulkan => {
+                "EXPERIMENTAL. ReShade on Vulkan is a global layer, not a proxy DLL: run its \
+                 installer against the game's own .exe and pick Vulkan, or nothing loads. The \
+                 game also has to import vkCreateDevice statically -- one that resolves Vulkan \
+                 through vkGetInstanceProcAddr cannot be hooked, and the add-on stands down \
+                 rather than guess. No depth on Vulkan either way: colour and estimated motion."
+            }
         }
     }
 }
 
 /// A ReShade proxy, by the name it has to be loaded under.
 const PROXIES: [&str; 4] = ["d3d11.dll", "dxgi.dll", "d3d12.dll", "opengl32.dll"];
+
+/// The sizes that go with the two hashes above. Hashing 147 MB on every keystroke is not an
+/// option, but comparing a length is free, and a wrong length is a wrong file -- which is the
+/// whole of what the pre-flight needs to say before anything is copied.
+const RUNTIME_SIZE: u64 = 7_248_384;
+const WEIGHTS_SIZE: u64 = 147_689_451;
 
 /// Files an older layout left behind. One copy of the runtime per pass, which did not fit in
 /// VRAM and has not been used for two releases.
@@ -103,7 +137,7 @@ pub enum Level {
 }
 
 impl Report {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Report { lines: Vec::new(), failed: false }
     }
     fn ok(&mut self, s: impl Into<String>) {
@@ -161,13 +195,14 @@ fn resolve_source(raw: &str) -> PathBuf {
 fn check_reshade(dir: &Path, preset: Preset, report: &mut Report) {
     let found: Vec<&str> = PROXIES.iter().copied().filter(|n| dir.join(n).is_file()).collect();
 
-    if preset == Preset::Rpcs3 {
+    if preset.is_vulkan() {
         if found.is_empty() {
-            report.info(
+            report.info(format!(
                 "No ReShade proxy DLL here, which is correct for Vulkan: ReShade loads as a \
-                 global layer instead. Make sure you ran its installer against rpcs3.exe and \
-                 picked Vulkan.",
-            );
+                 global layer instead. Make sure you ran its installer against {} and picked \
+                 Vulkan.",
+                preset.expected_exe().unwrap_or("the game's own .exe")
+            ));
         } else {
             report.warn(format!(
                 "Found {} here. On Vulkan ReShade loads as a global layer, and a proxy DLL as \
@@ -281,6 +316,185 @@ fn sweep_dead(dir: &Path, report: &mut Report) {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Pre-flight: everything that can be known before a single byte is written.
+//
+// All of it is cheap enough to redo on every keystroke -- metadata, one open(), one free-space
+// call -- so the screen can answer "will this work?" while the path is still being pasted,
+// instead of after 147 MB have been copied into a folder that was read-only.
+
+/// Can this folder be written to at all? Program Files without elevation is the usual answer.
+fn folder_is_writable(dir: &Path) -> bool {
+    let probe = dir.join(".dlss5-installer-write-probe");
+    match fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// A file that exists but cannot be opened for writing is held by something -- on Windows that is
+/// nearly always the game still running, which is the single most common way an install fails.
+fn is_locked(path: &Path) -> bool {
+    path.is_file() && fs::OpenOptions::new().write(true).open(path).is_err()
+}
+
+#[cfg(windows)]
+fn free_bytes(dir: &Path) -> Option<u64> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut free = 0u64;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut())
+    };
+    (ok != 0).then_some(free)
+}
+#[cfg(not(windows))]
+fn free_bytes(_dir: &Path) -> Option<u64> {
+    None
+}
+
+/// ReShade writes `DisabledAddons=` into its own ini the first time anyone unticks an add-on, and
+/// from then on it never loads it again and says nothing anywhere. It is the one failure in this
+/// project that looks exactly like a broken install, so it is worth a line of its own.
+fn check_disabled_addons(dir: &Path, report: &mut Report) {
+    let ini = dir.join("ReShade.ini");
+    let Ok(text) = fs::read_to_string(&ini) else { return };
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(list) = line.strip_prefix("DisabledAddons=") {
+            if list.contains(ADDON_NAME) || list.to_lowercase().contains("dlss5") {
+                report.err(
+                    "ReShade.ini has this add-on in DisabledAddons=. ReShade writes that line if \
+                     the add-on is ever unticked, and then it never loads it again, with no error \
+                     anywhere. Clear that line before blaming the install.",
+                );
+            } else if !list.is_empty() {
+                report.info(format!("ReShade.ini disables other add-ons: {list}"));
+            }
+        }
+    }
+}
+
+/// Same file, same bytes? Only the length is compared -- see `RUNTIME_SIZE`.
+fn size_of(path: &Path) -> Option<u64> {
+    fs::metadata(path).ok().map(|m| m.len())
+}
+
+/// What is known before F5, from whatever is filled in so far. Never writes anything except one
+/// zero-byte probe it removes again.
+pub fn preflight(game_dir: &str, runtime_dir: &str, preset: Preset) -> Report {
+    let mut report = Report::new();
+    let dir = resolve_source(game_dir);
+    let src = resolve_source(runtime_dir);
+
+    // --- the two files, which is where someone starts -------------------------------------
+    if src.as_os_str().is_empty() {
+        report.info("Waiting for field 1: the folder with the runtime and the weights.");
+    } else if !src.is_dir() {
+        report.err(format!("Field 1: {} is not a folder.", src.display()));
+    } else {
+        let mut all_there = true;
+        for (name, want) in [(RUNTIME_NAME, RUNTIME_SIZE), (WEIGHTS_NAME, WEIGHTS_SIZE)] {
+            match size_of(&src.join(name)) {
+                None => {
+                    report.err(format!("{name} is not in that folder."));
+                    all_there = false;
+                }
+                Some(got) if got != want => {
+                    report.err(format!(
+                        "{name} is {got} bytes, and this release expects {want}. That is a \
+                         different build, and the add-on refuses anything but the one it was \
+                         compiled against.",
+                    ));
+                    all_there = false;
+                }
+                Some(_) => {}
+            }
+        }
+        if all_there {
+            report.ok("Both files are there and the right size. F5 verifies the SHA-256 too.");
+        }
+    }
+
+    // --- the target ------------------------------------------------------------------------
+    if dir.as_os_str().is_empty() {
+        report.info(format!(
+            "Waiting for field 2: the {}.",
+            preset.folder_label().trim().to_lowercase()
+        ));
+        return report;
+    }
+    if !dir.is_dir() {
+        report.err(format!("Field 2: {} is not a folder.", dir.display()));
+        return report;
+    }
+
+    if !folder_is_writable(&dir) {
+        report.err(
+            "That folder cannot be written to. It is either read-only or somewhere that needs \
+             administrator rights -- run this installer as administrator, or move the game.",
+        );
+    }
+
+    // Anything already there and held open will fail the copy, so name the files rather than let
+    // fs::copy come back with "Acesso negado" halfway through.
+    let held: Vec<&str> = [ADDON_NAME, RUNTIME_NAME, WEIGHTS_NAME]
+        .into_iter()
+        .filter(|n| is_locked(&dir.join(n)))
+        .collect();
+    if !held.is_empty() {
+        report.err(format!(
+            "{} {} open by another program. The game or emulator is almost certainly still \
+             running -- close it and this line goes away.",
+            held.join(", "),
+            if held.len() == 1 { "is" } else { "are" }
+        ));
+    }
+
+    // --- room for the weights ---------------------------------------------------------------
+    let mut need = 0u64;
+    for (name, size) in
+        [(ADDON_NAME, ADDON.len() as u64), (RUNTIME_NAME, RUNTIME_SIZE), (WEIGHTS_NAME, WEIGHTS_SIZE)]
+    {
+        if size_of(&dir.join(name)) != Some(size) {
+            need += size;
+        }
+    }
+    if let Some(free) = free_bytes(&dir) {
+        if need > 0 && free < need {
+            report.err(format!(
+                "Not enough room: {} MB free, and this needs {} MB. The weights alone are {} MB.",
+                free / 1_048_576,
+                need / 1_048_576,
+                WEIGHTS_SIZE / 1_048_576
+            ));
+        }
+    }
+
+    check_exe(&dir, preset, &mut report);
+    check_reshade(&dir, preset, &mut report);
+    check_disabled_addons(&dir, &mut report);
+
+    let dead: Vec<String> =
+        dead_files().into_iter().filter(|n| dir.join(n).is_file()).collect();
+    if !dead.is_empty() {
+        report.info(format!(
+            "{} file(s) from the old per-pass layout are here and will be removed: {}",
+            dead.len(),
+            dead.join(", ")
+        ));
+    }
+
+    if !report.failed {
+        report.ok("Nothing in the way. F5 installs.");
+    }
+    report
+}
+
 pub fn install(game_dir: &str, runtime_dir: &str, preset: Preset) -> Report {
     let mut report = Report::new();
     let dir = resolve_source(game_dir);
@@ -334,6 +548,10 @@ pub fn install(game_dir: &str, runtime_dir: &str, preset: Preset) -> Report {
 pub fn uninstall(game_dir: &str, _preset: Preset) -> Report {
     let mut report = Report::new();
     let dir = resolve_source(game_dir);
+    if dir.as_os_str().is_empty() {
+        report.err("No game folder given.");
+        return report;
+    }
     if !dir.is_dir() {
         report.err(format!("{} is not a folder.", dir.display()));
         return report;
@@ -507,5 +725,175 @@ mod tests {
         let report = install(r"Z:\definitely\not\here", "", Preset::Dx11);
         assert!(report.failed);
         assert!(has_err(&report, "is not a folder"));
+    }
+
+    #[test]
+    fn preflight_asks_for_the_files_first_and_then_the_folder() {
+        let empty = preflight("", "", Preset::Dx11);
+        assert!(has_any(&empty, "Waiting for field 1"));
+        assert!(!empty.failed, "an empty form is not an error");
+
+        let game = temp("preflight-order");
+        let half = preflight(game.to_str().unwrap(), "", Preset::Dx11);
+        assert!(has_any(&half, "Waiting for field 1"));
+    }
+
+    #[test]
+    fn preflight_names_a_wrong_sized_runtime_without_hashing_it() {
+        let src = temp("preflight-wrong-size");
+        fs::write(src.join(RUNTIME_NAME), b"far too small").unwrap();
+        fs::write(src.join(WEIGHTS_NAME), vec![0u8; 32]).unwrap();
+
+        let report = preflight("", src.to_str().unwrap(), Preset::Dx11);
+        assert!(report.failed);
+        assert!(has_err(&report, "different build"), "{}", report.to_log("size"));
+    }
+
+    #[test]
+    fn preflight_spots_a_missing_file_in_the_runtime_folder() {
+        let src = temp("preflight-missing");
+        fs::write(src.join(RUNTIME_NAME), vec![0u8; RUNTIME_SIZE as usize]).unwrap();
+        let report = preflight("", src.to_str().unwrap(), Preset::Dx11);
+        assert!(has_err(&report, "dlssnr_on_amd_weights.bin is not in that folder"));
+    }
+
+    /// The failure nobody can diagnose from the game: ReShade quietly refusing to load the add-on
+    /// because its ini still carries a DisabledAddons line from an old untick.
+    #[test]
+    fn preflight_finds_the_disabled_addons_line() {
+        let game = temp("preflight-disabled");
+        fs::write(game.join("d3d11.dll"), b"reshade").unwrap();
+        fs::write(
+            game.join("ReShade.ini"),
+            b"[ADDON]\nDisabledAddons=dlss5 neural@dlss5-neural.addon64\n",
+        )
+        .unwrap();
+        let report = preflight(game.to_str().unwrap(), "", Preset::Dx11);
+        assert!(report.failed);
+        assert!(has_err(&report, "DisabledAddons"), "{}", report.to_log("ini"));
+
+        // An unrelated add-on being disabled is worth saying, but it is not a problem.
+        fs::write(game.join("ReShade.ini"), b"[ADDON]\nDisabledAddons=SomeOther.addon64\n").unwrap();
+        let clean = preflight(game.to_str().unwrap(), "", Preset::Dx11);
+        assert!(!clean.failed, "{}", clean.to_log("ini"));
+        assert!(has_any(&clean, "disables other add-ons"));
+    }
+
+    #[test]
+    fn preflight_reports_a_file_another_program_is_holding_open() {
+        let game = temp("preflight-locked");
+        fs::write(game.join(ADDON_NAME), b"in place").unwrap();
+        // An exclusive handle is what a running game looks like from out here.
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let held = fs::OpenOptions::new().write(true).share_mode(0).open(game.join(ADDON_NAME));
+        assert!(held.is_ok(), "could not take an exclusive handle to set the test up");
+
+        let report = preflight(game.to_str().unwrap(), "", Preset::Dx11);
+        assert!(report.failed);
+        assert!(has_err(&report, "still running"), "{}", report.to_log("locked"));
+
+        drop(held);
+        let after = preflight(game.to_str().unwrap(), "", Preset::Dx11);
+        assert!(!has_err(&after, "still running"), "closing it should clear the line");
+    }
+
+    #[test]
+    fn preflight_is_quiet_when_there_is_genuinely_nothing_wrong() {
+        let src = temp("preflight-clean-src");
+        fs::write(src.join(RUNTIME_NAME), vec![0u8; RUNTIME_SIZE as usize]).unwrap();
+        fs::write(src.join(WEIGHTS_NAME), vec![0u8; WEIGHTS_SIZE as usize]).unwrap();
+        let game = temp("preflight-clean-game");
+        fs::write(game.join("d3d11.dll"), b"reshade").unwrap();
+
+        let report = preflight(game.to_str().unwrap(), src.to_str().unwrap(), Preset::Dx11);
+        assert!(!report.failed, "{}", report.to_log("clean"));
+        assert!(has_any(&report, "Nothing in the way"));
+    }
+
+    #[test]
+    fn uninstall_with_no_folder_says_which_field_is_empty() {
+        let report = uninstall("", Preset::Dx11);
+        assert!(report.failed);
+        assert!(has_err(&report, "No game folder given"));
+    }
+
+    #[test]
+    fn every_preset_has_a_label_a_folder_word_and_a_note() {
+        for p in Preset::ALL {
+            assert!(!p.label().is_empty());
+            assert!(p.folder_label().contains("folder"), "{}", p.label());
+            assert!(p.note().len() > 40, "{} has no real note", p.label());
+        }
+        // Two entries carrying the same name is the kind of thing a copy-pasted arm produces, and
+        // on screen it just looks like a preset that will not select.
+        let mut labels: Vec<&str> = Preset::ALL.iter().map(|p| p.label()).collect();
+        labels.sort_unstable();
+        let count = labels.len();
+        labels.dedup();
+        assert_eq!(labels.len(), count, "two presets share a label");
+    }
+
+    #[test]
+    fn the_vulkan_presets_expect_a_layer_and_the_d3d_ones_expect_a_proxy_dll() {
+        let dir = temp("vulkan-clean");
+        for p in [Preset::Vulkan, Preset::Rpcs3] {
+            let report = install(dir.to_str().unwrap(), "", p);
+            assert!(has_any(&report, "global layer"), "{} said the wrong thing", p.label());
+            assert!(!has_any(&report, "No ReShade proxy DLL found"), "{}", p.label());
+        }
+        for p in [Preset::Dx11, Preset::Dx12] {
+            let report = install(dir.to_str().unwrap(), "", p);
+            assert!(has_any(&report, "No ReShade proxy DLL found"), "{}", p.label());
+        }
+        // With ReShade actually present the D3D route is happy and the Vulkan route objects.
+        fs::write(dir.join("d3d11.dll"), b"not really reshade").unwrap();
+        assert!(has_any(&install(dir.to_str().unwrap(), "", Preset::Dx11), "ReShade found"));
+        assert!(has_any(&install(dir.to_str().unwrap(), "", Preset::Vulkan), "two ReShade"));
+    }
+
+    /// The one thing made-up bytes can never check: that the two SHA-256 constants this binary
+    /// refuses everything else against are the hashes of the files people are actually given. If
+    /// a release bumps the runtime and nobody bumps the constant, every other test still passes
+    /// and every user gets "does not match the expected SHA-256".
+    ///
+    /// Needs a folder holding both files, named by `DLSS5_TEST_RUNTIME_DIR`. A clean clone has no
+    /// such folder, so without it this reports that it was skipped instead of failing.
+    #[test]
+    fn a_real_install_round_trip_against_the_shipped_hashes() {
+        let Ok(raw) = std::env::var("DLSS5_TEST_RUNTIME_DIR") else {
+            eprintln!("skipped: set DLSS5_TEST_RUNTIME_DIR to a folder holding the two files");
+            return;
+        };
+        let src = PathBuf::from(&raw);
+        assert!(src.join(RUNTIME_NAME).is_file(), "{RUNTIME_NAME} is not in {raw}");
+        assert!(src.join(WEIGHTS_NAME).is_file(), "{WEIGHTS_NAME} is not in {raw}");
+
+        let game = temp("real-round-trip");
+        fs::write(game.join("dxgi.dll"), b"stand-in for ReShade").unwrap();
+        // Tuning that has to survive, and junk from the old layout that has to not.
+        fs::write(game.join("dlss5-neural.ini"), b"StartOn=1\n").unwrap();
+        fs::write(game.join("dlssnr_amd_pass4.dll"), b"dead").unwrap();
+
+        let report = install(game.to_str().unwrap(), &raw, Preset::Dx11);
+        assert!(!report.failed, "install failed:\n{}", report.to_log("real files"));
+        for name in [ADDON_NAME, RUNTIME_NAME, WEIGHTS_NAME] {
+            assert!(game.join(name).is_file(), "{name} was not installed");
+        }
+        assert_eq!(sha256(&game.join(RUNTIME_NAME)).unwrap(), RUNTIME_SHA);
+        assert_eq!(sha256(&game.join(WEIGHTS_NAME)).unwrap(), WEIGHTS_SHA);
+        assert!(!game.join("dlssnr_amd_pass4.dll").exists(), "the old per-pass file survived");
+
+        // Running it twice is what a person does when they are not sure it worked.
+        let again = install(game.to_str().unwrap(), &raw, Preset::Dx11);
+        assert!(!again.failed);
+        assert!(has_any(&again, "already correct, left alone"));
+
+        let removed = uninstall(game.to_str().unwrap(), Preset::Dx11);
+        assert!(!removed.failed, "uninstall failed:\n{}", removed.to_log("real files"));
+        for name in [ADDON_NAME, RUNTIME_NAME, WEIGHTS_NAME] {
+            assert!(!game.join(name).exists(), "{name} was left behind");
+        }
+        assert!(game.join("dlss5-neural.ini").is_file(), "the user's tuning was deleted");
+        assert!(game.join("dxgi.dll").is_file(), "ReShade was touched, and it must not be");
     }
 }

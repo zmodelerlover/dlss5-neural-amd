@@ -14,6 +14,12 @@ ratatui = "0.29"
 crossterm = "0.28"
 sha2 = "0.10"
 
+[target.'cfg(windows)'.dependencies]
+# Only for one call: turning on virtual-terminal processing so colours actually appear.
+# A console launched from Explorer or Start-Process does not have it on by default, and
+# without it every escape sequence is printed as text or swallowed.
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security"] }
+
 [profile.release]
 opt-level = "z"
 lto = true

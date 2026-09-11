@@ -9,9 +9,15 @@ thing that ships is `dlss5-installer.exe`, attached to a release.
 
 ## What it does
 
-- **Presets**: PCSX2, RPCS3, D3D11 game, D3D12 game. The preset decides which executable it
-  expects to find, which ReShade arrangement is correct, and what warning to print. It never
-  refuses an unknown folder — there is no whitelist anywhere in this project.
+- **Presets**: PCSX2, RPCS3, D3D11 game, D3D12 game, Vulkan game. The preset decides which
+  executable it expects to find, which ReShade arrangement is correct, and what warning to print.
+  The two Vulkan routes — RPCS3 and a native Vulkan game — expect no proxy DLL at all, because
+  ReShade loads there as a global layer. It never refuses an unknown folder — there is no
+  whitelist anywhere in this project.
+- **Does not install ReShade**, and is not going to. It looks for `d3d11.dll` / `dxgi.dll` /
+  `d3d12.dll` beside the executable, says whether it found none, one, or more than one, and
+  leaves ReShade to ReShade's own installer. It has to be the build labelled "with full add-on
+  support".
 - **Installs** `dlss5-neural.addon64`, which is compiled into the executable, so the installer
   cannot hand out an add-on from a different release than the one it was built beside.
 - **Verifies** the runtime and the weights against their known SHA-256 *before* copying them, and
