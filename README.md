@@ -1,5 +1,7 @@
 # dlss5-neural-amd
 
+**THIS IS A PROOF-OF-CONCEPT, NOT EVEN CLOSE TO FINAL VERSION, FORK IT, SHARE IT, LETS GROW TOGETHER**
+
 ## v0.4.0
 
 **One package now.** There is no longer a separate Vulkan build to choose between. The Vulkan
