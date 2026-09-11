@@ -5,5 +5,5 @@
 // entry, and such a game has no entry to patch. Set this to 0 only to build a binary with the
 // Vulkan code physically absent, which is a diagnostic, not a shipped variant.
 #ifndef DLSS5_WITH_VULKAN
-#define DLSS5_WITH_VULKAN 0
+#define DLSS5_WITH_VULKAN 1
 #endif
