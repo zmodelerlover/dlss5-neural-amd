@@ -3261,7 +3261,14 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
         {
             ++logged;
             const resource_desc rd = dev->get_resource_desc(res);
-            Log("depth seen (%s): %ux%u format %u samples %u", d3d12 ? "D3D12" : "D3D11",
+            // Name the API rather than assuming it is the other one. This observation is
+            // API-agnostic and Vulkan reaches it too, where "D3D11" would be a plain lie in the
+            // one log a Vulkan problem is diagnosed from.
+            const char *api = dev->get_api() == device_api::d3d12   ? "D3D12"
+                              : dev->get_api() == device_api::d3d11 ? "D3D11"
+                              : dev->get_api() == device_api::vulkan ? "Vulkan"
+                                                                     : "other API";
+            Log("depth seen (%s): %ux%u format %u samples %u", api,
                 rd.texture.width, rd.texture.height, static_cast<unsigned>(rd.texture.format),
                 rd.texture.samples);
         }
