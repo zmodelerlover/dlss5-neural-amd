@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.4.1 — Native Vulkan game stability
+
+This fork hardens the experimental Vulkan route for native games, validated on Detroit: Become
+Human and DOOM Eternal with ReShade 6.8.0.2155 and an AMD Radeon RX 9070 XT.
+
+- Link the add-on with the static MSVC runtime (`/MT`). Detroit ships older `msvcp140.dll` and
+  `vcruntime140.dll` files beside its executable; a `/MD` build registered with ReShade but failed
+  during `DllMain`. The static build has no dependency on those private runtime copies.
+- Validate the Vulkan present queue and immediate command list before use. An unsupported async
+  queue now skips safely instead of dereferencing a null command-list pointer.
+- Preserve both `DISABLE_VK_LAYER_reshade_1` and `_2` while creating the private Vulkan discovery
+  instance. This supports the renamed kill switch needed by DOOM's launcher without recursively
+  entering ReShade.
+- Create the private D3D12 crossing texture in `COPY_DEST`, matching its first operation.
+- Recreate a D3D12 allocator/command-list pair after `Reset` or `Close` failure so one bad recording
+  cannot poison a work slot for the remainder of the process.
+- Fully retire swapchain-sized Vulkan state: wait for the host device, release imported images,
+  invalidate dimensions and readiness, and rebuild all crossings even when the new swapchain has
+  the same size and format.
+- Strengthen the Vulkan fast path so it also requires live imported images and D3D12 resources.
+
+Live validation after the fixes:
+
+| Host | Frames | Swapchain/toggle result | Skips | Result |
+|---|---:|---|---:|---|
+| Detroit: Become Human | 9,240 | repeated toggles and two full rebuilds | 0 | stable |
+| DOOM Eternal | 3,600 | repeated alt-tabs and about ten full rebuilds | 1 | stable |
+
+Both runs reported a non-zero, detail-correlated residual. Neither log contains command-list
+`Close`/`Reset` failures, device loss or a bridge stand-down after the fixes. Vulkan depth remains
+an explicit future task: the current route feeds colour and estimated motion.
+
 ## v0.4.0 — Vulkan, D3D12, and a trail that was not the network's fault
 
 Requires the pinned **v0.2.17** runtime; v0.2.14 is refused. `dlssnr_amd_pass2.dll` and

@@ -336,6 +336,8 @@ struct Route
     bool ready = false;
     bool loggedReady = false;
     bool loggedFirstFrame = false;
+    bool loggedQueue = false;
+    bool loggedUnsupportedQueue = false;
 
     Api api {};
     VkDevice device = nullptr;
@@ -361,6 +363,57 @@ struct Route
 
 Route g_route;
 
+// ReShade's stock Vulkan manifest uses the _1 kill switch. DOOM Eternal's launcher sets that
+// exact variable, so the compatible global manifest on this machine uses _2. Preserve both while
+// the add-on creates its private discovery instance, otherwise that instance recursively enters
+// ReShade again.
+std::wstring SaveEnvironmentVariable(const wchar_t *name, bool &present)
+{
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    present = required != 0;
+    if (!present)
+        return {};
+
+    std::wstring value(required, L'\0');
+    const DWORD copied = GetEnvironmentVariableW(name, value.data(), required);
+    value.resize(copied);
+    return value;
+}
+
+void RestoreEnvironmentVariable(const wchar_t *name, bool present, const std::wstring &value)
+{
+    SetEnvironmentVariableW(name, present ? value.c_str() : nullptr);
+}
+
+// The host VkDevice outlives a swapchain, but the imported images do not: they have the old
+// swapchain's size and are paired with D3D12 resources released by the common teardown. Make the
+// route visibly not ready before those resources go away, including when the replacement
+// swapchain happens to have exactly the same dimensions and format.
+void ReleaseSwapchainSized()
+{
+    Route &r = g_route;
+    r.ready = false;
+
+    if (r.device != nullptr && r.api.deviceWaitIdle != nullptr)
+    {
+        const int result = r.api.deviceWaitIdle(r.device);
+        if (result != 0)
+            Log("vulkan: vkDeviceWaitIdle during swapchain teardown returned %d.", result);
+    }
+    if (r.device != nullptr)
+    {
+        r.in.Release(r.api, r.device);
+        r.out.Release(r.api, r.device);
+    }
+
+    r.width = 0;
+    r.height = 0;
+    r.format = DXGI_FORMAT_UNKNOWN;
+    r.vkFormat = 0;
+    r.loggedReady = false;
+    r.loggedFirstFrame = false;
+}
+
 // Our own VkInstance, only ever used to reach a VkPhysicalDevice and ask it two questions: which
 // GPU is this (LUID, so the D3D12 device lands on the same one) and what memory types does it
 // have. Memory types are a property of the physical GPU and its driver, not of an instance, so
@@ -380,10 +433,18 @@ bool FindPhysicalDevice(Route &r)
     // vkCreateInstance -- so without this our private instance would re-enter ReShade's own
     // instance setup from inside its present. Its layer manifest publishes the variable that
     // turns it off, so use the documented switch rather than hoping the re-entry is harmless.
-    // Restored immediately: the host's next instance, if it makes one, must still get ReShade.
+    // Restored immediately: the host's next instance, if it makes one, must retain the exact
+    // environment it had before this callback. This matters on DOOM, where _1 is already set.
+    bool hadDisable1 = false, hadDisable2 = false;
+    const std::wstring disable1 =
+        SaveEnvironmentVariable(L"DISABLE_VK_LAYER_reshade_1", hadDisable1);
+    const std::wstring disable2 =
+        SaveEnvironmentVariable(L"DISABLE_VK_LAYER_reshade_2", hadDisable2);
     SetEnvironmentVariableW(L"DISABLE_VK_LAYER_reshade_1", L"1");
+    SetEnvironmentVariableW(L"DISABLE_VK_LAYER_reshade_2", L"1");
     const int made = r.api.createInstance(&ici, nullptr, &r.ownInstance);
-    SetEnvironmentVariableW(L"DISABLE_VK_LAYER_reshade_1", nullptr);
+    RestoreEnvironmentVariable(L"DISABLE_VK_LAYER_reshade_2", hadDisable2, disable2);
+    RestoreEnvironmentVariable(L"DISABLE_VK_LAYER_reshade_1", hadDisable1, disable1);
     if (made != 0 || r.ownInstance == nullptr)
     {
         Log("vulkan: could not create a private VkInstance to identify the GPU (VkResult %d).",
@@ -619,7 +680,8 @@ bool BuildCrossing(Route &r, Crossing &c, UINT w, UINT h, DXGI_FORMAT fmt, int v
 
 // Everything that only has to happen once, plus the resize path. Returns false with a reason
 // already logged.
-bool Ensure(Route &r, device *dev, command_queue *queue, UINT w, UINT h, DXGI_FORMAT fmt)
+bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate, UINT w, UINT h,
+            DXGI_FORMAT fmt)
 {
     if (r.failed)
         return false;
@@ -690,8 +752,16 @@ bool Ensure(Route &r, device *dev, command_queue *queue, UINT w, UINT h, DXGI_FO
         }
     }
 
-    if (r.ready && r.width == w && r.height == h && r.format == fmt)
+    const bool crossingsReady = r.in.image != nullptr && r.in.memory != nullptr &&
+                                r.in.on12 != nullptr && r.out.image != nullptr &&
+                                r.out.memory != nullptr && r.out.on12 != nullptr;
+    if (r.ready && r.width == w && r.height == h && r.format == fmt &&
+        crossingsReady && g.crossLocal != nullptr)
         return true;
+
+    if (r.ready && r.width == w && r.height == h && r.format == fmt)
+        Log("vulkan: route was marked ready after a swapchain teardown but one or more shared "
+            "resources are gone; rebuilding it.");
 
     const int vkFmt = VkFormatFor(fmt);
     if (vkFmt == 0)
@@ -703,8 +773,7 @@ bool Ensure(Route &r, device *dev, command_queue *queue, UINT w, UINT h, DXGI_FO
     }
 
     r.ready = false;
-    auto *cmd = reinterpret_cast<VkCommandBuffer>(
-        queue->get_immediate_command_list()->get_native());
+    auto *cmd = reinterpret_cast<VkCommandBuffer>(immediate->get_native());
     if (cmd == nullptr)
     {
         r.Stop("ReShade gave no immediate command buffer.");
@@ -722,7 +791,8 @@ bool Ensure(Route &r, device *dev, command_queue *queue, UINT w, UINT h, DXGI_FO
     // Our private copy, on our device, so the network never reads a shared resource directly --
     // same reason the D3D11 route keeps crossLocal.
     g.crossLocal.Reset();
-    if (!CreateTexture(w, h, fmt, g.crossLocal, "crossLocal"))
+    if (!CreateTexture(w, h, fmt, g.crossLocal, "crossLocal",
+                       D3D12_RESOURCE_STATE_COPY_DEST))
     {
         r.Stop("could not create the private copy of the frame.");
         return false;
@@ -750,6 +820,38 @@ void Present(command_queue *queue, swapchain *sc)
     devicehook::ReportOnce();
     device *dev = sc->get_device();
 
+    const command_queue_type queueType = queue->get_type();
+    if ((queueType & command_queue_type::graphics) == static_cast<command_queue_type>(0))
+    {
+        if (!r.loggedUnsupportedQueue)
+        {
+            r.loggedUnsupportedQueue = true;
+            Log("vulkan: present arrived on a non-graphics queue (flags 0x%X). ReShade does not "
+                "provide an immediate command list for this queue, so this frame is skipped. "
+                "For DOOM Eternal, set r_presentFromAsync to 0.",
+                static_cast<unsigned>(queueType));
+        }
+        return;
+    }
+
+    command_list *immediate = queue->get_immediate_command_list();
+    if (immediate == nullptr)
+    {
+        if (!r.loggedUnsupportedQueue)
+        {
+            r.loggedUnsupportedQueue = true;
+            Log("vulkan: the graphics present queue returned no immediate command list; this "
+                "frame is skipped instead of dereferencing a null pointer.");
+        }
+        return;
+    }
+    if (!r.loggedQueue)
+    {
+        r.loggedQueue = true;
+        Log("vulkan: present queue flags 0x%X; graphics immediate command list available.",
+            static_cast<unsigned>(queueType));
+    }
+
     const resource back = sc->get_current_back_buffer();
     if (back.handle == 0)
         return;
@@ -761,7 +863,7 @@ void Present(command_queue *queue, swapchain *sc)
     // textures and compose all agree on one concrete format. A typeless swapchain is legal on the
     // D3D12 side and impossible on the Vulkan one; carrying it further would mean the two sides of
     // the same memory disagreeing about what is in it.
-    if (!Ensure(r, dev, queue, bd.texture.width, bd.texture.height,
+    if (!Ensure(r, dev, queue, immediate, bd.texture.width, bd.texture.height,
                 ColourReadFormat(static_cast<DXGI_FORMAT>(bd.texture.format))))
         return;
 
@@ -820,7 +922,7 @@ void Present(command_queue *queue, swapchain *sc)
     // ReShade's barrier() moves the host's own image, because ReShade is what knows the layout
     // it is in; the copy itself is raw Vulkan on the same command buffer.
     {
-        command_list *list = queue->get_immediate_command_list();
+        command_list *list = immediate;
         auto *cmd = reinterpret_cast<VkCommandBuffer>(list->get_native());
         if (cmd == nullptr)
             return;
@@ -839,9 +941,16 @@ void Present(command_queue *queue, swapchain *sc)
         g.ringFence->SetEventOnCompletion(g.ringValue[slot], g.ringEvent);
         WaitForSingleObject(g.ringEvent, 2000);
     }
-    if (FAILED(g.alloc[slot]->Reset()) || FAILED(g.list[slot]->Reset(g.alloc[slot].Get(), nullptr)))
+    const HRESULT allocatorHr = g.alloc[slot]->Reset();
+    const HRESULT listHr = SUCCEEDED(allocatorHr)
+                               ? g.list[slot]->Reset(g.alloc[slot].Get(), nullptr)
+                               : allocatorHr;
+    if (FAILED(allocatorHr) || FAILED(listHr))
     {
-        Log("vulkan: command list reset failed.");
+        Log("vulkan: work slot %u reset failed (allocator 0x%08lX, list 0x%08lX); "
+            "recreating the pair.", slot, allocatorHr, listHr);
+        if (!RecreateWorkSlot(slot))
+            r.Stop("the D3D12 work slot could not be recovered.");
         return;
     }
     auto *cmd12 = g.list[slot].Get();
@@ -867,9 +976,15 @@ void Present(command_queue *queue, swapchain *sc)
         Barrier(cmd12, g.composed.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
-    if (FAILED(cmd12->Close()))
+    if (const HRESULT hr = cmd12->Close(); FAILED(hr))
     {
-        Log("vulkan: closing the command list failed.");
+        Log("vulkan: closing work slot %u failed (0x%08lX); discarding the unsubmitted job and "
+            "recreating the pair.", slot, hr);
+        g.lastJob = 0;
+        g.activePasses = 0;
+        g.historyValid.store(false);
+        if (!RecreateWorkSlot(slot))
+            r.Stop("the D3D12 work slot could not be recovered after Close failed.");
         return;
     }
     ID3D12CommandList *lists[] { cmd12 };
@@ -886,7 +1001,7 @@ void Present(command_queue *queue, swapchain *sc)
     // --- 3. and the finished image goes back over the host's -------------------------------
     if (fresh && !g.noBackBuffer.load())
     {
-        command_list *list = queue->get_immediate_command_list();
+        command_list *list = immediate;
         auto *cmd = reinterpret_cast<VkCommandBuffer>(list->get_native());
         if (cmd != nullptr)
         {

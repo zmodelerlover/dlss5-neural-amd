@@ -16,6 +16,8 @@
 # Build and run output
 build/
 builds/
+diagnostic-logs-backup/
+dlss5-runtime-v*/
 *.log
 *.ppm
 *.raw
