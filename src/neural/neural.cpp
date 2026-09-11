@@ -12,7 +12,10 @@
 #include <bcrypt.h>
 #include <wrl/client.h>
 
+#include "build_config.h"
+#if DLSS5_WITH_VULKAN
 #include "../vkshared/vk_raw.inc"
+#endif
 
 #include <windows.h>
 
@@ -26,6 +29,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -944,6 +948,7 @@ struct State
     std::atomic<float> tone { 1.0f };
     std::atomic<float> skin { 1.0f };
     std::atomic<int> passes { 1 };
+    std::atomic<bool> serialPasses { true };
     // 0 English, 1 Portugues do Brasil. English by default.
     std::atomic<int> language { 0 };
     // The engine's own option struct, mapped by decompiling its ini reader rather than guessed:
@@ -955,6 +960,8 @@ struct State
     std::atomic<int> autoMask { 1 };
     std::atomic<int> toneChannels { 0 };
     std::atomic<float> engineScale { 0.03125f };
+    // -1 follows the selected input encoding. Our FP16 transport is also used
+    // for SDR, so the runtime's format-based auto detection alone is incorrect.
     std::atomic<int> tonemap { -1 };
     // 0 follow the guides, 1 force off, 2 force on.
     std::atomic<int> temporalMode { 0 };
@@ -1022,6 +1029,8 @@ struct State
     std::atomic<bool> bicubic { true };
     std::atomic<int> debugView { 0 };
     std::atomic<bool> measureNow { false };
+    bool diagnostics = false;
+    bool capturePair = false;
     std::atomic<float> flowGate { 0.02f };
     std::atomic<float> flowRatio { 0.70f };
     UINT loadedPasses = 0;
@@ -1093,22 +1102,13 @@ struct State
     // becomes true in practice, and it is the state in which every wait in this file misbehaves.
     bool windowHidden = false;
     bool loggedHidden = false;
-    // One module, recorded once per pass. It used to be one loaded copy of the runtime per
-    // pass -- dlssnr_amd_pass1..10.dll -- on the assumption that a pass needs its own copy of
-    // the runtime's globals, because Windows hands back the same HMODULE for the same path.
-    // That assumption was never tested and it cost a full engine bring-up per pass: 147 MB of
-    // weights plus a set of activation buffers each, in VRAM, alongside the game's own working
-    // set. Two passes was enough to take the machine down. The globals that actually change per
-    // evaluation are the recorded command list and the job id, and the passes are sequential on
-    // one list, so recording the same module again overwrites exactly the right things.
-    // ponytail: if the runtime turns out to need an instance per pass, pass 2 is a no-op and
-    // 'measure, residual' says so -- which is a report, not a crash.
+    // Share the runtime and weights. Inline passes submit and finish both the GPU
+    // list and HIP job before changing tuning globals for the following pass.
+    // Temporal state remains shared; separate per-pass histories are future work.
     HMODULE runtime = nullptr;
     UINT lastJob = 0;
     UINT activePasses = 0;
-    // One-shot, the first frame that actually asks for more than one pass. Pass Count spent
-    // this whole project either hardcoded to 1 or forced back to 1, so no run has ever
-    // produced evidence that a second pass is recorded at all -- only that it was asked for.
+    // Log recording and parameter handoff once per process.
     bool loggedPassDetail = false;
     // Per-pass profiles, the same idea as the reference fork's "Per pass" tree: what each run of
     // the network over this frame is told, where it should differ from the values above.
@@ -1257,6 +1257,16 @@ struct State
 
 State g;
 
+int RuntimeTonemap()
+{
+    const int requested = g.tonemap.load();
+    // Encoding=0 is the UI's sRGB passthrough. The copy shader stores these SDR
+    // code values in FP16; that storage format does not turn them into HDR.
+    // Other encodings keep the runtime's auto behaviour. Explicit overrides
+    // remain available, including 1 to reproduce the old SDR auto result.
+    return requested == -1 && g.encoding.load() == 0 ? 0 : requested;
+}
+
 // Settings live in an ini next to the exe. Two reasons, both practical: nothing in the overlay
 // survived a restart, so every A/B test meant re-dialling half a dozen sliders by hand; and a
 // headless run had no way to reach them at all, which made a parameter sweep impossible to
@@ -1286,6 +1296,7 @@ void LoadSettings()
     g.language.store(std::clamp(static_cast<int>(num(L"Language", 0.0f)), 0, 1));
     g.passes.store(std::clamp(static_cast<int>(num(L"Passes", 1.0f)), 1,
                              static_cast<int>(State::kMaxPasses)));
+    g.serialPasses.store(flag(L"SerialPasses", true));
     g.intensity.store(num(L"Intensity", g.intensity.load()));
     g.residualLimit.store(std::max(0.0f, num(L"ResidualLimit", g.residualLimit.load())));
     g.residualFade.store(std::clamp(num(L"EdgeFade", 0.0f), 0.0f, 0.49f));
@@ -1343,6 +1354,7 @@ void LoadSettings()
     g.engineScale.store(num(L"EngineScale", 0.03125f));
     g.tonemap.store(static_cast<int>(num(L"Tonemap", -1.0f)));
     g.temporalMode.store(std::clamp(static_cast<int>(num(L"Temporal", 0.0f)), 0, 2));
+    g.diagnostics = flag(L"Diagnostics", false);
 
     Log("settings: scale %.2f passes %d intensity %.2f structure %.2f skin %.2f tone %.2f "
         "inline %d bicubic %d motion %d history %d gate %.3f ratio %.2f debug %d",
@@ -1740,11 +1752,39 @@ void DrainReadbacks(UINT nw, UINT nh)
             for (int spin = 0; spin < 2000 && f->GetCompletedValue() < 1; ++spin)
                 Sleep(1);
             void *a = nullptr, *b = nullptr;
-            D3D12_RANGE all { 0, 0 };
-            if (SUCCEEDED(g.readbackBase->Map(0, &all, &a)) &&
+            D3D12_RANGE all { 0, static_cast<SIZE_T>((nw * 8 + 255) & ~255u) * nh };
+            if (f->GetCompletedValue() >= 1 &&
+                SUCCEEDED(g.readbackBase->Map(0, &all, &a)) &&
                 SUCCEEDED(g.readbackNr->Map(0, &all, &b)))
             {
                 const UINT rowPitch = (nw * 8 + 255) & ~255u;
+                if (g.capturePair)
+                {
+                    g.capturePair = false;
+                    std::error_code ec;
+                    const auto dir = ExeDirectory() / L"dlss5-captures";
+                    std::filesystem::create_directories(dir, ec);
+                    const std::string prefix = "frame-" + std::to_string(g.frame) + "-" +
+                                               std::to_string(GetTickCount64());
+                    auto save = [&](const char *kind, const void *data) {
+                        std::ofstream file(dir / (prefix + kind + ".raw"), std::ios::binary);
+                        for (UINT y = 0; y < nh && file; ++y)
+                            file.write(static_cast<const char *>(data) +
+                                static_cast<size_t>(y) * rowPitch, static_cast<size_t>(nw) * 8);
+                        return file.good();
+                    };
+                    if (!ec && save("-input", a) && save("-runtime", b))
+                    {
+                        std::ofstream meta(dir / (prefix + ".txt"));
+                        meta << "width=" << nw << "\nheight=" << nh << "\nformat=RGBA16F_LE\n"
+                             << "encoding=" << g.encoding.load() << "\npasses=" << g.passes.load()
+                             << "\ntonemap=" << RuntimeTonemap() << "\ninline=" << g.inlineMode.load()
+                             << "\njob=" << g.lastJob << "\n";
+                        Log("capture pair saved: %ls / %s (input and runtime; not the raw neural tensor)",
+                            dir.c_str(), prefix.c_str());
+                    }
+                    else Log("capture pair could not be written to %ls", dir.c_str());
+                }
                 double sum = 0.0, peak = 0.0;
                 UINT64 n = 0;
                 for (UINT y = 0; y < nh; y += 4)
@@ -1837,9 +1877,9 @@ void DrainReadbacks(UINT nw, UINT nh)
                         "and past 0.100 means the correction follows the image's own detail, which "
                         "is the network working on structure.");
                 }
-                g.readbackBase->Unmap(0, nullptr);
-                g.readbackNr->Unmap(0, nullptr);
             }
+            if (a != nullptr) g.readbackBase->Unmap(0, nullptr);
+            if (b != nullptr) g.readbackNr->Unmap(0, nullptr);
         }
         g.readbackBase.Reset();
         g.readbackNr.Reset();
@@ -1848,8 +1888,10 @@ void DrainReadbacks(UINT nw, UINT nh)
 
 bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale);
 bool CreateTexture(UINT w, UINT h, DXGI_FORMAT f, ComPtr<ID3D12Resource> &out, const char *what);
-bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
-                   DXGI_FORMAT colourFmt, ID3D12Resource *outTarget, bool runNetwork, UINT wanted);
+using SubmitPassFn = std::function<bool()>;
+bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
+                   DXGI_FORMAT colourFmt, ID3D12Resource *outTarget, bool runNetwork, UINT wanted,
+                   const SubmitPassFn &submitPass = {});
 
 // One frame across the bridge: the game's back buffer goes over, the network runs on our device,
 // the finished image comes back. Both crossings are plain CopyResource -- a shared resource
@@ -2167,6 +2209,47 @@ void WaitForWorkQueue(UINT64 value)
     WaitFence(g.fence.Get(), value, g.completionEvent, "the network to finish");
 }
 
+// Both sides must finish before the next pass changes the module's tuning.
+// The GPU can finish via the timeout fallback while the HIP worker is still
+// reading the previous pass's globals, so the queue fence alone is insufficient.
+bool FinishSubmittedPass()
+{
+    if (g.completionEvent == nullptr)
+        g.completionEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (g.completionEvent == nullptr || g.fence == nullptr)
+        return false;
+    g.completion = ++g.serial;
+    if (FAILED(g.queue->Signal(g.fence.Get(), g.completion)) ||
+        !WaitFence(g.fence.Get(), g.completion, g.completionEvent, "the intermediate pass"))
+        return false;
+    const UINT64 deadline = GetTickCount64() + 5000;
+    while (static_cast<UINT>(InterlockedCompareExchange(
+        reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, 0x8d6f4)), 0, 0)) < g.lastJob)
+    {
+        if (GetTickCount64() >= deadline || DeviceLost())
+        {
+            Log("intermediate pass: job %u did not finish; refusing to overwrite its parameters",
+                g.lastJob);
+            return false;
+        }
+        Sleep(1);
+    }
+    return true;
+}
+
+bool SubmitPrivatePass(ID3D12GraphicsCommandList *cmd, ID3D12CommandAllocator *allocator)
+{
+    if (FAILED(cmd->Close()))
+        return false;
+    ID3D12CommandList *lists[] {cmd};
+    g.queue->ExecuteCommandLists(1, lists);
+    reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + 0x9170)(
+        g.queue.Get(), 1, lists);
+    if (!FinishSubmittedPass())
+        return false;
+    return SUCCEEDED(allocator->Reset()) && SUCCEEDED(cmd->Reset(allocator, nullptr));
+}
+
 void BridgePresent(device *dev, swapchain *sc)
 {
     if (DeviceLost())
@@ -2313,7 +2396,10 @@ void BridgePresent(device *dev, swapchain *sc)
     Barrier(cmd, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     const bool ok =
-        RecordNetwork(cmd, g.crossLocal.Get(), fmt, nullptr, runNetwork, g.loadedPasses);
+        RecordNetwork(cmd, g.crossLocal.Get(), fmt, nullptr, runNetwork, g.loadedPasses,
+            [&]() { return SubmitPrivatePass(cmd, g.alloc[i].Get()); });
+    if (!ok && g.failed)
+        return;
     Barrier(cmd, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
     if (ok)
@@ -2678,9 +2764,10 @@ bool InitEngine()
     At<uint8_t>(h, 0x8d9bc) = 1;
     At<uint8_t>(h, 0x8d9be) = 1;
     At<uint8_t>(h, 0x8d9bf) = 0;
-    // The engine's own default for Tonemap is -1, not 0. This used to force 0 at init without
-    // anyone choosing it; now it follows the setting, which defaults to the engine's -1.
-    At<int>(h, 0x8d9c0) = g.tonemap.load();
+    At<int>(h, 0x8d9c0) = RuntimeTonemap();
+    Log("input contract: encoding %d, tonemap requested %d -> runtime %d; FP16 is transport, "
+        "not a colour-space declaration. Restart after changing encoding or tonemap.",
+        g.encoding.load(), g.tonemap.load(), RuntimeTonemap());
 
     const std::string file = weights.string();
     if (g.hipSet(g.hipDevice) != 0 ||
@@ -3319,8 +3406,9 @@ PassTune TuningFor(UINT pass)
 // this out of OnPresent is what lets the same pipeline run on a device that is not the game's:
 // the D3D12 path passes the swapchain back buffer, the D3D11 bridge passes shared textures it
 // carries in and out. Nothing in here knows or cares which.
-bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
-                   DXGI_FORMAT colourFmt, ID3D12Resource *outTarget, bool runNetwork, UINT wanted)
+bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
+                   DXGI_FORMAT colourFmt, ID3D12Resource *outTarget, bool runNetwork, UINT wanted,
+                   const SubmitPassFn &submitPass)
 {
     const UINT w = g.outWidth, h = g.outHeight, nw = g.netWidth, nh = g.netHeight;
     const UINT inc = g.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -3817,7 +3905,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
         // is the only one left that means what the name says.
         At<int>(r, 0x8d9e4) = (g.toneChannels.load() & ~2) | 4;
         At<float>(r, 0x8d9dc) = g.engineScale.load();
-        At<int>(r, 0x8d9c0) = g.tonemap.load();
+        At<int>(r, 0x8d9c0) = RuntimeTonemap();
         At<uint8_t>(r, 0x8d6c0) = g.inlineMode.load() ? 1 : 0;
         At<uint8_t>(r, 0x8d9bf) = haveDepth ? 1 : 0;
         // 8d9b0 DepthInverted, pinned to the engine's own default. Both runtimes boot this at
@@ -3872,8 +3960,12 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
             break;
         }
         g.lastJob = jobAfter;
-        if (auto *abortWord = At<volatile LONG *>(r, 0x8d808))
-            InterlockedExchange(abortWord, 0);
+        // v0.2.17: 0x8d808 and 0x8d80c are two watchdog job counters, NOT a
+        // host pointer to an abort word. Its watchdog (0x16462/0x16468) writes
+        // a job id to each DWORD when a timeout occurs. Interpreting the pair
+        // as a pointer then writing through it crashes on the next recording
+        // (reproduced at frame 28 in framecheck). The runtime owns resetting
+        // the real GPU abort flag through hipMemcpyAsync; leave it to do so.
         ++accepted;
 
         // Reported, not enforced. Whether the engine bumps the job id once per recording or once
@@ -3886,25 +3978,29 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
                                                : "DID NOT MOVE -- this pass may be a no-op",
                 At<ID3D12CommandList *>(r, 0x8d908) == cmd ? "ours" : "not ours");
 
-        // The next pass has to read what this one wrote. Every pass records into this same
-        // command list and nothing orders them against each other, so the second pass could
-        // capture netColour before the first pass's write had landed -- and then write that
-        // untouched image back. netColour would end the frame identical to netBase, and the
-        // correction would be exactly zero, which is precisely what Passes>1 measured:
-        // residual 0.000000 against 0.021 with a single pass. The passes are sequential by
-        // intent, so make the pipeline agree.
-        //
-        // Note this barrier has never executed on a working run: Pass Count was forced back to 1
-        // on the default timing until this session, so `i + 1 < wanted` was never true. If a
-        // Passes=2 run loses the device, this is the first thing to suspect -- a UAV barrier is
-        // only valid on a resource the caller left in UNORDERED_ACCESS, and what state the engine
-        // leaves netColour in is its own business, not something read out of it from here.
+        // Inline submission orders both the image dependency and the CPU tuning.
+        // The legacy batch path below only orders resource accesses on the GPU.
         if (i + 1 < wanted)
         {
-            D3D12_RESOURCE_BARRIER between {};
-            between.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            between.UAV.pResource = g.netColour.Get();
-            cmd->ResourceBarrier(1, &between);
+            if (g.serialPasses.load() && g.inlineMode.load())
+            {
+                // The worker reads tuning from module globals when it runs, not
+                // when RecordFn records a job. Finish this pass before the next
+                // one overwrites them. A UAV barrier only orders GPU accesses.
+                if (!submitPass || !submitPass())
+                {
+                    g.failed = true;
+                    Log("could not finish pass %u before changing its parameters", i + 1);
+                    return false;
+                }
+            }
+            else
+            {
+                D3D12_RESOURCE_BARRIER between {};
+                between.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                between.UAV.pResource = g.netColour.Get();
+                cmd->ResourceBarrier(1, &between);
+            }
         }
     }
     g.activePasses = accepted;
@@ -3936,6 +4032,10 @@ bool RecordNetwork(ID3D12GraphicsCommandList *cmd, ID3D12Resource *colourSrc,
     if (wanted > 1 && !g.loggedPassDetail)
     {
         g.loggedPassDetail = true;
+        Log("multipass parameter handoff: %s",
+            g.serialPasses.load() && g.inlineMode.load()
+                ? "each inline pass completes before the next tuning is written"
+                : "legacy batch (worker may read the last pass's tuning for every pass)");
         Log("pass count: %u asked for, %u accepted. Compare the 'measure, residual' line against "
             "a run at 1 -- an extra pass that records but changes nothing reads as the same "
             "residual, and an extra pass that is a no-op reads as the same residual too. The "
@@ -4083,13 +4183,33 @@ bool BringUpEngines(UINT &)
     return InitPipeline() && InitEngine();
 }
 
+#if DLSS5_WITH_VULKAN
 #include "vk_route.inc"
+#endif
 
 void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, uint32_t,
                const rect *)
 {
     const Profile &profile = ProfileForThisProcess();
     std::lock_guard guard(g.lock);
+    // Opt-in diagnostic controls, only on the foreground game's swapchain.
+    // No per-frame file polling and no UI interaction needed for matched captures.
+    if (g.diagnostics)
+    {
+        static bool reloadDown = false, captureDown = false;
+        const bool foreground = sc != nullptr && sc->get_hwnd() == GetForegroundWindow();
+        const bool ctrl = foreground && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool reload = ctrl && (GetAsyncKeyState(VK_HOME) & 0x8000) != 0;
+        const bool capture = ctrl && (GetAsyncKeyState(VK_NEXT) & 0x8000) != 0;
+        if (reload && !reloadDown) { LoadSettings(); Log("Ctrl+Home: diagnostic settings reloaded"); }
+        if (capture && !captureDown)
+        {
+            g.capturePair = true; g.measured = false; g.measureTries = 0;
+            g.measureNow.store(true);
+            Log("Ctrl+PageDown: matched input/runtime capture requested");
+        }
+        reloadDown = reload; captureDown = capture;
+    }
     if (ToggleRequested())
     {
         const bool on = !g.enabled.load();
@@ -4147,6 +4267,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             "is carried into the new frame.");
     }
 
+#if DLSS5_WITH_VULKAN
     // Vulkan. The host -- RPCS3 is the one this was built for -- never makes a D3D12 call, so
     // the network cannot run on its device. Same answer as D3D11: a second D3D12 device of our
     // own, and shared textures between the two. The crossing runs the other way round, because
@@ -4164,6 +4285,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         vkroute::Present(queue, sc);
         return;
     }
+#endif
 
     if (dev->get_api() == device_api::d3d11)
     {
@@ -4238,8 +4360,8 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         if (!g.loggedWrongApi)
         {
             g.loggedWrongApi = true;
-            Log("a runtime in this process is not D3D12, D3D11 or Vulkan; ignored. OpenGL is the "
-                "one that lands here, and it has no route.");
+            Log("unsupported graphics API %u; Vulkan transport in this build: %d",
+                static_cast<unsigned>(dev->get_api()), DLSS5_WITH_VULKAN);
         }
         return;
     }
@@ -4326,8 +4448,22 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         resource_usage a = resource_usage::present, b = resource_usage::shader_resource;
         cmd_list->barrier(1, &backRes, &a, &b);
     }
-    if (!RecordNetwork(cmd, backbuffer, bd.Format, nullptr, runNetwork, wanted))
+    if (!RecordNetwork(cmd, backbuffer, bd.Format, nullptr, runNetwork, wanted, [&]() {
+        ID3D12CommandList *submitted[] {cmd};
+        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + 0x9170)(
+            g.queue.Get(), 1, submitted);
+        queue->flush_immediate_command_list();
+        if (!FinishSubmittedPass())
+            return false;
+        cmd_list = queue->get_immediate_command_list();
+        if (cmd_list == nullptr)
+            return false;
+        cmd = reinterpret_cast<ID3D12GraphicsCommandList *>(cmd_list->get_native());
+        return cmd != nullptr;
+    }))
     {
+        if (g.failed)
+            return;
         resource_usage a = resource_usage::shader_resource, b = resource_usage::present;
         cmd_list->barrier(1, &backRes, &a, &b);
         queue->flush_immediate_command_list();
@@ -4499,21 +4635,21 @@ void OnOverlay(effect_runtime *)
             g.encoding.store(enc);
             Log("menu: encoding %d", enc);
         }
-        Help("What the frame is converted to before the network sees it, and back afterwards.\n\n"
-             "The network was trained on linear light. Handing it sRGB values and calling them "
-             "linear is the wrong domain, and the symptom is exactly the one reported: blown "
-             "colour that reads as a filter, with the sliders only moving exposure. Linear is "
-             "what the NVIDIA route feeds it.\n\n"
-             "sRGB does no conversion at all -- and while it is selected Diffuse White does "
-             "nothing, because the scale is forced to 1.0.",
+        Help("Conversion applied before the runtime and reversed during composition.\n\n"
+             "Use sRGB for an SDR frame: it passes the code values through unchanged, and "
+             "automatic Tonemap stays off even though the transport texture is FP16. "
+             "Diffuse White has no effect in this mode. Linear and scRGB-nl are experimental "
+             "conversion paths, not evidence of the model's training domain.\n\n"
+             "Restart the game after changing Encoding or Tonemap; the runtime caches its "
+             "input conversion when it creates staging resources.",
 
-             "Para que o quadro é convertido antes da rede ver, e de volta depois.\n\n"
-             "A rede foi treinada em luz linear. Entregar valores sRGB e chamar de linear é o "
-             "domínio errado, e o sintoma é exatamente o relatado: cor estourada com cara de "
-             "filtro, e os sliders só mexendo na exposição. Linear é o que a rota da NVIDIA "
-             "alimenta.\n\n"
-             "sRGB não converte nada -- e enquanto ele estiver selecionado o Branco Difuso não "
-             "faz nada, porque a escala é forçada em 1.0.");
+             "Conversão aplicada antes do runtime e revertida na composição.\n\n"
+             "Use sRGB para um quadro SDR: os valores passam sem conversão, e o Tonemap "
+             "automático fica desligado mesmo com transporte em FP16. Branco Difuso não "
+             "tem efeito nesse modo. Linear e scRGB-nl são conversões experimentais; não "
+             "comprovam o domínio em que o modelo foi treinado.\n\n"
+             "Reinicie o jogo após alterar Codificação ou Tonemap; o runtime guarda a "
+             "conversão ao criar os recursos de entrada.");
         Tag(kMeasured);
 
         ImGui::BeginDisabled(g.encoding.load() == 0);
@@ -4778,21 +4914,14 @@ void OnOverlay(effect_runtime *)
             g.inlineMode.store(timing == 0);
             Log("menu: mode %s", timing == 0 ? "inline" : "async");
         }
-        Help("Same frame: the game blocks on the GPU until the network is done, so what you see "
-             "is this frame's own correction. It is the honest one -- and it is the one that "
-             "turns any slowdown into a stall, and a long enough stall into a driver reset.\n\n"
-             "Async: the network runs on its own timeline and the correction shown is a frame or "
-             "two old. Nothing blocks, and an evaluation that overruns costs a skipped frame "
-             "instead of a hang. This is the mode for anything expensive -- Resolution Scale "
-             "above 0.50, or more than one pass.",
-
-             "Mesmo quadro: o jogo trava na GPU até a rede terminar, então o que você vê é a "
-             "correção do próprio quadro. É a honesta -- e é a que transforma qualquer lentidão "
-             "em travamento, e um travamento longo o bastante em reset de driver.\n\n"
-             "Assíncrono: a rede roda na linha do tempo dela e a correção mostrada é de um ou "
-             "dois quadros atrás. Nada trava, e uma avaliação que estoura custa um quadro pulado "
-             "em vez de um congelamento. É o modo para qualquer coisa cara -- Escala de "
-             "Resolução acima de 0.50, ou mais de um passe.");
+        Help("Same frame waits for the current neural result. More passes increase frame time. "
+             "This preview preserves each pass's parameters in this mode.\n\n"
+             "Async uses an older correction. It retains the legacy pass handoff and can show "
+             "stale detail; use Same frame when comparing per-pass settings.",
+             "Mesmo quadro espera o resultado neural atual. Mais passes aumentam o tempo de quadro. "
+             "Esta preview preserva os parâmetros de cada passe neste modo.\n\n"
+             "Assíncrono usa uma correção anterior. Mantém a execução antiga dos passes e pode "
+             "mostrar detalhes atrasados; use Mesmo quadro para comparar ajustes por passe.");
         Tag(kMeasured);
 
         float v = g.scale.load();
@@ -4800,19 +4929,12 @@ void OnOverlay(effect_runtime *)
             ImGui::SliderFloat(T("Resolution Scale", "Escala de Resolução"), &v, 0.25f, 2.0f,
                                "%.2f", 0))
             g.scale.store(v);
-        Help("What fraction of the screen the network runs at. Cost grows with the square: 0.50 "
-             "measures about 16 ms on an RX 9070 XT, which is already a whole frame at 60 Hz.\n\n"
-             "This is the control that decides whether textures can change at all. Below 1.00 the "
-             "network never receives a full-resolution pixel, so the finest thing it can act on "
-             "is two screen pixels wide, and what comes back is colour, tone and large-scale "
-             "shading. That is the whole reason the effect reads as a colour filter.",
-
-             "Em que fração da tela a rede roda. O custo cresce com o quadrado: 0.50 mede uns 16 "
-             "ms numa RX 9070 XT, o que já é um quadro inteiro a 60 Hz.\n\n"
-             "Este é o controle que decide se textura pode mudar. Abaixo de 1.00 a rede nunca "
-             "recebe um pixel em resolução cheia, então a coisa mais fina em que ela consegue "
-             "agir tem dois pixels de tela de largura, e o que volta é cor, tom e sombreamento "
-             "de larga escala. É essa a razão inteira de o efeito parecer um filtro de cor.");
+        Help("Network width and height relative to the game frame. 0.50 uses a quarter of the pixels; "
+             "1.00 uses the full frame. Lower scales reduce fine detail and inference cost. "
+             "Materials can still change below 1.00. Measure frame time at the chosen resolution.",
+             "Largura e altura da rede em relação ao quadro do jogo. 0.50 usa um quarto dos pixels; "
+             "1.00 usa o quadro inteiro. Escalas menores reduzem detalhe fino e custo da inferência. "
+             "Materiais ainda podem mudar abaixo de 1.00. Meça o tempo de quadro na resolução escolhida.");
         Tag(kMeasured);
         if (g.outWidth != 0)
         {
@@ -4826,35 +4948,10 @@ void OnOverlay(effect_runtime *)
                                             "(pediu %ux%u -- ainda não aplicado)"), wantW, wantH);
             }
         }
-        if (v < 1.0f)
-            Note(kWarn, T("At this scale textures cannot change. Detail only appears at 1.00, "
-                          "which is four times the cost of 0.50 -- switch Timing to Async first.",
-                          "Nesta escala textura não pode mudar. Detalhe só aparece em 1.00, que "
-                          "custa quatro vezes 0.50 -- troque o Momento para Assíncrono antes."));
-        if (v > 1.0f && g.inlineMode.load())
-            Note(kDanger, T("Can reset the display driver. Above 1.00 one evaluation takes "
-                            "hundreds of milliseconds and Same-frame timing blocks the game for "
-                            "all of it. Switch Timing to Async.",
-                            "Pode resetar o driver de vídeo. Acima de 1.00 uma avaliação leva "
-                            "centenas de milissegundos e o modo Mesmo quadro trava o jogo por "
-                            "tudo isso. Troque o Momento para Assíncrono."));
-        else if (v > 0.50f && g.inlineMode.load())
-            Note(kWarn, T("0.50 already fills a 60 Hz frame. Past it, evaluations stop fitting "
-                          "and you get skipped frames, which is what the flicker is.",
-                          "0.50 já preenche um quadro de 60 Hz. Passando disso, as avaliações "
-                          "param de caber e você tem quadros pulados, que é o que o piscar é."));
+        if (v > 1.0f)
+            Note(kWarn, T("Supersampling the neural input increases GPU time and memory use.",
+                          "Supersampling da entrada neural aumenta o tempo de GPU e o uso de memória."));
 
-        // Pass Count is no longer locked to async. The lock was put in on the theory that the
-        // stall reached the driver timeout, and that theory did not survive the arithmetic: two
-        // evaluations at 0.50 are about 32 ms against a 2 s timeout. What actually took the
-        // machine down was almost certainly a second full engine in VRAM, and that is gone --
-        // one module is now recorded N times. So this follows the same rule Resolution Scale
-        // already does: let it move, colour it, say what it costs.
-        //
-        // Until this session WantedPasses still forced the count back to 1 whenever inline was
-        // on -- and inline is the default. The slider moved, saved to the ini, and did nothing
-        // on a default install. That force is gone; this is the fix for "Pass Count does not
-        // work".
         int passes = g.passes.load();
         const bool passDanger = g.inlineMode.load() && passes > 1 && sc > 1.0f;
         if (Risk r(passDanger ? kDanger : kWarn, passes > 1);
@@ -4864,77 +4961,22 @@ void OnOverlay(effect_runtime *)
             g.passes.store(passes);
             Log("menu: pass count %d", passes);
         }
-        Help("Runs the network over its own output, N times per frame, anchored on the picture it "
-             "was first shown -- so compose receives the whole chain's correction, not the last "
-             "pass's difference from the one before it.\n\n"
-             "It used to be worthless, and the reason was the composition, not the count: the "
-             "correction was added per channel, so N passes was N times the difference and a "
-             "clipped channel came back as a hue rotation. That is why more passes read as more "
-             "saturation and, at 3, as a mess. Set Composition to Ratio under Image and the count "
-             "is bounded instead of compounding.\n\n"
-             "The other half is inside the network: pass 2 is editing pass 1's work, so telling "
-             "it to do the same amount again is telling it to sharpen its own sharpening. Per "
-             "pass, below, is where that is turned down.\n\n"
-             "It used to load a separate copy of the runtime per pass, which put a second full "
-             "engine -- 147 MB of weights plus activation buffers -- in VRAM next to the game's "
-             "own working set. Two passes was enough to take the machine down. It now records "
-             "one engine N times, so the cost is time, not memory.\n\n"
-             "With Same-frame timing the game waits for every pass in turn, so 2 passes is "
-             "double the stall. That is a framerate cost, not a crash -- except at Resolution "
-             "Scale above 1.00, where a single pass is already hundreds of milliseconds.\n\n"
-             "On an RTX the cost is exactly the count. Cyberpunk at 3840x1600 in the reference "
-             "fork's own logs is 5.29 ms of model time at one pass and 10.50 ms at two -- "
-             "1.985x -- and their ini says the same thing in words: 2 and 3 'cost almost exactly "
-             "2x and 3x the model time'. Nothing amortises between passes.\n\n"
-             "The only reading ever taken of it was Passes=3 giving a residual of exactly zero. "
-             "Raise it to measure, not to play: run a scene at 1 and at 2 and compare the "
-             "'measure, residual' line in the log.",
-
-             "Roda a rede sobre a própria saída, N vezes por quadro, ancorado na imagem que ela "
-             "viu primeiro -- então a composição recebe a correção da cadeia inteira, não a "
-             "diferença do último passe para o anterior.\n\n"
-             "Antes não servia para nada, e o motivo era a composição, não a contagem: a correção "
-             "era somada canal por canal, então N passes era N vezes a diferença e canal cortado "
-             "voltava como rotação de matiz. É por isso que mais passes apareciam como mais "
-             "saturação e, em 3, como sujeira. Ponha a Composição em Razão na aba Imagem e a "
-             "contagem passa a ser limitada em vez de acumular.\n\n"
-             "A outra metade é dentro da rede: o passe 2 está editando o trabalho do passe 1, "
-             "então mandar ele fazer a mesma quantidade de novo é mandar ele afiar a própria "
-             "afiação. Por passe, abaixo, é onde isso se abaixa.\n\n"
-             "Antes carregava uma cópia separada do runtime por passe, o que punha um segundo "
-             "motor inteiro -- 147 MB de pesos mais buffers de ativação -- na VRAM ao lado do "
-             "working set do jogo. Dois passes bastavam para derrubar a máquina. Agora grava um "
-             "motor só N vezes, então o custo é tempo, não memória.\n\n"
-             "No modo Mesmo quadro o jogo espera cada passe por vez, então 2 passes é o dobro do "
-             "travamento. Isso é custo de fps, não crash -- exceto com Escala de Resolução acima "
-             "de 1.00, onde um passe sozinho já leva centenas de milissegundos.\n\n"
-             "Numa RTX o custo é exatamente a contagem. Cyberpunk em 3840x1600 nos logs do "
-             "próprio fork de referência dá 5.29 ms de rede em um passe e 10.50 ms em dois -- "
-             "1.985x -- e a ini deles diz o mesmo por escrito: 2 e 3 'custam quase exatamente 2x "
-             "e 3x o tempo do modelo'. Nada é amortizado entre passes.\n\n"
-             "A única leitura já tirada disto foi Passes=3 dando resíduo exatamente zero. "
-             "Aumente para medir, não para jogar: rode uma cena em 1 e em 2 e compare a linha "
-             "'measure, residual' no log.");
-        Tag(kTraced);
-        if (passDanger)
-            Note(kDanger, T("More than one pass at this Resolution Scale, on Same-frame timing, "
-                            "is the combination that reaches the driver timeout. Switch Timing "
-                            "to Async or lower the scale.",
-                            "Mais de um passe nesta Escala de Resolução, no modo Mesmo quadro, é "
-                            "a combinação que alcança o timeout do driver. Troque o Momento para "
-                            "Assíncrono ou baixe a escala."));
-        else if (passes > 1)
-            Note(kWarn, T("Unmeasured, and until this build the count was forced back to 1 on "
-                          "Same-frame timing -- so no run has ever shown a second pass being "
-                          "recorded. The log now prints one 'pass N of M' line per pass with the "
-                          "job id before and after: an id that does not move is a pass that did "
-                          "nothing. Read that first, then compare 'measure, residual' at 1 and 2.",
-                          "Não medido, e até esta build a contagem era forçada de volta para 1 no "
-                          "modo Mesmo quadro -- então nenhuma execução mostrou um segundo passe "
-                          "sendo gravado. O log agora imprime uma linha 'pass N of M' por passe "
-                          "com o job id antes e depois: um id que não anda é um passe que não fez "
-                          "nada. Leia isso primeiro, depois compare o 'measure, residual' em 1 e "
-                          "em 2."));
+        Help("Runs the network over its own output one to three times. The final correction is "
+             "measured against the original input. Later passes default to zero Local Tone; "
+             "use Per pass or Taper to reduce Structure.\n\n"
+             "More passes can strengthen material changes, grain and halos. GPU cost grows roughly "
+             "with the pass count. Two and three inline passes were exercised on a saved NFS frame; "
+             "quality in motion still needs validation.",
+             "Roda a rede sobre a própria saída de uma a três vezes. A correção final é medida "
+             "contra a entrada original. Os passes seguintes usam Tom Local zero por padrão; "
+             "use Por passe ou Diminuir passes seguintes para reduzir Estrutura.\n\n"
+             "Mais passes podem intensificar mudanças de material, granulado e halos. O custo de GPU "
+             "cresce aproximadamente com a contagem. Dois e três passes inline foram executados "
+             "num quadro salvo do NFS; a qualidade em movimento ainda precisa de validação.");
+        Tag(kMeasured);
+        if (passes > 1)
+            Note(kWarn, T("Each extra pass costs another inference. Compare detail and frame time.",
+                          "Cada passe extra custa outra inferência. Compare detalhe e tempo de quadro."));
 
         if (passes > 1)
         {
@@ -4944,33 +4986,12 @@ void OnOverlay(effect_runtime *)
                 g.passTaper.store(taper);
                 Log("menu: pass taper %s", taper ? "on" : "off");
             }
-            Help("Halves Structure for each pass after the first: full on pass 1, half on pass 2, "
-                 "a quarter on pass 3. Off by default.\n\n"
-                 "Local Tone is already first-pass-only whatever this is set to, because that is "
-                 "what the reference fork does and it is the one per-pass asymmetry that is "
-                 "upstream's own decision rather than ours.\n\n"
-                 "This is the unmeasured part. One pass returns a mean correction of 0.021; two "
-                 "passes returns 0.072, which is not twice, it is three and a half times -- the "
-                 "chain compounds because each pass edits the last one's work. Halving structure "
-                 "is a plausible answer to that and nothing here has shown it is the right one, "
-                 "so it is offered and not taken.\n\n"
-                 "Skin is never tapered: -1 is the engine's own default and it means \"follow "
-                 "local structure\", so it is a mode, not a strength.\n\n"
-                 "Any pass with its own settings below ignores this.",
-
-                 "Corta pela metade a Estrutura a cada passe depois do primeiro: cheio no passe 1, "
-                 "metade no 2, um quarto no 3. Desligado por padrão.\n\n"
-                 "O Tom Local já é só do primeiro passe, esteja isto como estiver, porque é o que "
-                 "o fork de referência faz e é a única assimetria por passe que é decisão deles e "
-                 "não nossa.\n\n"
-                 "Esta é a parte não medida. Um passe devolve correção média 0.021; dois passes "
-                 "devolvem 0.072, que não é o dobro, é três vezes e meia -- a cadeia acumula "
-                 "porque cada passe edita o trabalho do anterior. Cortar a estrutura pela metade é "
-                 "uma resposta plausível para isso e nada aqui mostrou que é a certa, então fica "
-                 "oferecida e não tomada.\n\n"
-                 "Pele nunca é diminuída: -1 é o padrão do próprio motor e significa \"seguir a "
-                 "estrutura local\", então é um modo, não uma força.\n\n"
-                 "Qualquer passe com ajustes próprios abaixo ignora isto.");
+            Help("Halves Structure on each later pass: 1.0, 0.5, 0.25. Local Tone already defaults "
+                 "to zero after pass 1. Skin keeps its selected mode. Explicit per-pass overrides "
+                 "take precedence. This can reduce accumulated grain and outlines; compare in your scene.",
+                 "Reduz Estrutura pela metade a cada passe: 1.0, 0.5, 0.25. Tom Local já usa zero "
+                 "depois do primeiro passe. Pele mantém o modo escolhido. Ajustes explícitos por passe "
+                 "têm prioridade. Pode reduzir granulado e contornos acumulados; compare na sua cena.");
             Tag(kTraced);
         }
 
@@ -5432,15 +5453,16 @@ void OnOverlay(effect_runtime *)
         int tone = g.tonemap.load();
         if (ImGui::SliderInt(T("Tonemap", "Tonemap"), &tone, -1, 3, "%d", 0))
             g.tonemap.store(tone);
-        Help("Tonemap, at 8d9c0. The engine's own default is -1, meaning let it decide. This "
-             "add-on used to force 0 at init, which nobody chose and which was never measured "
-             "against anything. It now follows this control, and this control defaults to the "
-             "engine's own -1.",
+        Help("-1: automatic for the selected encoding. With sRGB, sends 0 (off); other "
+             "encodings keep the runtime's automatic detection. 0..3: explicit runtime "
+             "override. 1 reproduces the old automatic behaviour on an SDR FP16 input.\n\n"
+             "Restart the game after changing this setting.",
 
-             "Tonemap, em 8d9c0. O padrão do próprio motor é -1, ou seja, deixa ele decidir. "
-             "Este add-on forçava 0 na inicialização, o que ninguém escolheu e nunca foi medido "
-             "contra nada. Agora segue este controle, e este controle vem com o -1 do motor.");
-        Tag(kUnknown);
+             "-1: automático pela codificação escolhida. Em sRGB, envia 0 (desligado); "
+             "as outras codificações mantêm a detecção do runtime. 0..3: valor explícito "
+             "para o runtime. 1 reproduz o automático antigo na entrada SDR em FP16.\n\n"
+             "Reinicie o jogo após alterar esta opção.");
+        Tag(kMeasured);
 
         int ch = g.toneChannels.load();
         if (ImGui::SliderInt(T("Tone Channels", "Canais de Tom"), &ch, 0, 3, "%d", 0))
@@ -5689,7 +5711,11 @@ void OnOverlay(effect_runtime *)
 
 extern "C" __declspec(dllexport) const char *NAME = "dlss5 neural";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "Runs the DLSS-NR network over the presented frame. D3D12, AMD GPU with HIP 7.";
+    "Runs DLSS-NR on AMD with HIP 7. D3D11/D3D12"
+#if DLSS5_WITH_VULKAN
+    " and experimental Vulkan"
+#endif
+    ". SDR and serialized inline multipass preview.";
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {
@@ -5702,6 +5728,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             const auto log = ExeDirectory() / L"dlss5-neural.log";
             g_log = _wfopen(log.c_str(), L"w");
             Log("dlss5 neural: %s", ProfileForThisProcess().note);
+            Log("preview 2026-09-10: SDR input contract, serialized inline passes; Vulkan %d",
+                DLSS5_WITH_VULKAN);
             LoadSettings();
         }
         // Kept even though it has never fired on D3D12: measured, PCSX2 on D3D12 delivers zero
@@ -5726,15 +5754,19 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         if (g.events & 16)
             reshade::register_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
         Log("events subscribed: mask %d", g.events);
+#if DLSS5_WITH_VULKAN
         // Has to happen here and not at the first present: the host's VkDevice is created when a
         // game boots, and by the time a frame is presented it is far too late to change what that
         // device was created with. Patches one import-table entry and does nothing at all in a
         // process that has no static vkCreateDevice import, which is every D3D11 and D3D12 target.
         if (!g.noBridge.load())
             vkroute::devicehook::Install();
+#endif
         break;
     case DLL_PROCESS_DETACH:
+#if DLSS5_WITH_VULKAN
         vkroute::devicehook::Remove();
+#endif
         if (g.events & 16)
             reshade::unregister_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
         reshade::unregister_addon(module);

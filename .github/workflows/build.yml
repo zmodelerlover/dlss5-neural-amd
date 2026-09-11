@@ -21,7 +21,21 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$t failed" }
           }
 
+      - name: Build isolated GPU fixture
+        shell: pwsh
+        run: .\build.ps1 -Target framecheck -Exe
+
+      - name: Check composition and guide selection
+        shell: pwsh
+        run: |
+          python tools/compose_check.py
+          if ($LASTEXITCODE -ne 0) { throw "composition check failed" }
+          python tools/guide_switch_check.py
+          if ($LASTEXITCODE -ne 0) { throw "guide check failed" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: addons
-          path: build/*.addon64
+          path: |
+            build/*.addon64
+            build/dlss5-framecheck.exe

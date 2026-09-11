@@ -1,5 +1,19 @@
 # dlss5-neural-amd
 
+## Current preview — 2026-09-10
+
+Preview builds are published in [dlss5-neural-amd-preview](https://github.com/zmodelerlover/dlss5-neural-amd-preview/releases).
+`master` builds the normal D3D11/D3D12 add-on. `vulkan` adds the experimental Vulkan transport.
+Choose one package; both contain an add-on named `dlss5-neural.addon64`.
+
+Both variants now use the pinned **v0.2.17** runtime, correct automatic tonemapping for SDR input,
+remove an invalid watchdog-pointer write, and submit inline passes separately so each inference
+consumes its own parameters. **FSR upscaling is not implemented.**
+
+Read [the preview notes](docs/preview-2026-09-10.md) for settings, runtime hashes, diagnostics and
+validation limits. The latest serialized multipass build was tested on saved NFS frames outside
+the game; it has not yet been retested live on the D3D12 or Vulkan presentation paths.
+
 ReShade add-on that runs the DLSS-NR network on AMD cards.
 
 Every tool for DLSS 5 (renodx-dlss, DLSS5-Feeder, DLSS5-Swapper) calls NVIDIA's
@@ -53,7 +67,7 @@ PCSX2, no audio. Click a thumbnail, or use the plain links if the thumbnails do 
 | | |
 |---|---|
 | **GPU** | AMD **RDNA3 or RDNA4** with the **HIP 7** runtime, i.e. `amdhip64_7.dll` on the search path. HIP 6 will not do. A current Adrenalin driver ships it. Does nothing on NVIDIA or Intel. |
-| **Renderer** | **Direct3D 11** (recommended) or **Direct3D 12**. On Vulkan or OpenGL the add-on loads and then sits there. Vulkan is being worked on -- `src/vkprobe` and `src/vkbridge` show the transport it needs is possible on AMD -- but nothing ships yet. |
+| **Renderer** | Normal preview: **Direct3D 11 / Direct3D 12**. Vulkan preview: those APIs plus **experimental Vulkan**. OpenGL has no route. |
 | **ReShade** | The **add-on** build, 6.x. The plain one will not load add-ons. Tested on 6.8.0. |
 | **Disk** | About 150 MB for the network weights. |
 
@@ -66,13 +80,13 @@ PCSX2, no audio. Click a thumbnail, or use the plain links if the thumbnails do 
 The same three, whichever case you are in. They go next to the game's or the emulator's `.exe`.
 
 **1. `dlss5-neural.addon64`** — from
-[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest). Nothing to build;
+[Preview releases](https://github.com/zmodelerlover/dlss5-neural-amd-preview/releases). Nothing to build;
 that file is compiled from this repository.
 
 **2. `dlssnr_amd_pass1.dll` (7 MB) and `dlssnr_on_amd_weights.bin` (141 MB)** — from the `files`
 channel on the **[discord](https://discord.gg/wYhvS3JSHM)**. They are **not in this repo and
 never will be**: the weights are NVIDIA-derived and the runtime comes from a third-party project
-that declares no license.
+with its own distribution terms.
 
 The runtime is **DLSS-NR-on-AMD v0.2.17**, rebuilt without the spin cap, so no patching. If you
 would rather build it yourself than trust a file from a chat channel, see
@@ -166,13 +180,13 @@ The defaults are fine to start with. The status line says whether it is really r
 | What you see | What it is |
 |---|---|
 | Add-on isn't in the Add-ons tab at all | `ReShade.ini` has `DisabledAddons=dlss5 neural@dlss5-neural.addon64` under `[ADDON]`. ReShade writes that line if you ever untick the add-on, and then it never loads again, with no error anywhere. Clear it. |
-| Status says the API is wrong | The game is on Vulkan or OpenGL. It needs D3D11 or D3D12. Check the per-game override too, not just the global setting: right-click the game in the list, Properties, Graphics. |
+| Status says the API is wrong | Normal builds accept D3D11/D3D12; use the Vulkan package for Vulkan. OpenGL has no route. Check per-game renderer overrides. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 isn't installed. HIP 6 doesn't count. |
 | `hash mismatch; refused` | Wrong `dlssnr_amd_pass1.dll`. Compare against `tools/SHA256SUMS.txt`. The refusal is deliberate — the alternative is a hang. |
 | Game dies with `887A0005` / device removed | `DXGI_ERROR_DEVICE_REMOVED`, from a Windows TDR. See [the engine ini](#the-engine-ini). |
-| It runs but "only shifts the colours a bit" | Usually Resolution Scale, see the next row. If that isn't it, try **Encoding**: the network was trained on linear light, so handing it sRGB values and calling them linear is the wrong domain, and the symptom is exactly this. Linear with Diffuse White at 100 matches what the NVIDIA route feeds it. |
-| Colour and tone change, but **textures look identical** | Resolution Scale. At the default 0.50 the network is handed a half-resolution image, so the finest thing it can see is two screen pixels wide — it cannot put detail into a texture it was never shown, and the only correction it can make is colour, tone and large-scale shading. Textures change at **1.00** and not before. That is four times the cost, so set **Timing** to *Async* first; the correction then lags a few frames instead of stalling the game. |
-| Pass Count above 1 changes nothing, or costs a lot | Expected. It has never measured better, and the only reading ever taken of it was `Passes=3` giving a residual of exactly zero. It is an instrument, not a quality setting. It no longer needs extra `pass2..10.dll` files — delete any you have. |
+| It runs but "only shifts the colours a bit" | For an SDR game try Encoding=0 and Tonemap=-1, then restart. Auto now leaves SDR tonemapping off even in FP16 transport. Compare the runtime output with final composition. |
+| Colour and tone change, but **textures look identical** | Try network scale 0.75 or 1.00 and compare the same scene. Smaller inputs reduce fine detail but can still change materials. Larger inputs cost more GPU time. |
+| Pass Count above 1 changes nothing, or costs a lot | Use Same frame timing: this preview preserves separate pass parameters. Extra passes cost extra inference and can amplify grain. Try Taper or lower later-pass Structure. |
 | `imgui.h` or `reshade.hpp` not found when building | You deleted `external/`. It's in the repo now; `git checkout external` puts it back. |
 
 ### If you're reporting a problem
@@ -205,27 +219,20 @@ turning it back down clears it.
 | **Red** | This value can take the display driver down. The game dies on `DXGI_ERROR_DEVICE_REMOVED` and the desktop goes with it, with nothing in any log pointing back here. |
 | **Amber** | Past what has been measured on this machine. Not known to break, not known to work either. Change one thing at a time and watch the skip rate under Status. |
 
-**Timing** is the one to understand first. *Same frame* blocks the game on the GPU until the
-network finishes, so you see this frame's own correction — honest, and the mode that turns any
-slowdown into a stall. *Async* shows a correction a frame or two old, but nothing blocks and an
-overrun costs a skipped frame instead of a hang. Anything expensive wants Async.
+**Timing:** Same frame waits for the current result and serializes per-pass parameter handoff.
+Async uses an older correction and retains the legacy handoff; it is not the validation path for
+per-pass settings in this preview.
 
-**Resolution Scale** decides whether textures can change at all. Below 1.00 the network never
-sees a full-resolution pixel, so the most it can do is colour, tone and large-scale shading —
-which is why the effect reads as a colour filter. 1.00 costs four times what 0.50 does.
+**Resolution Scale** sets network width and height relative to the frame. 0.50 uses one quarter
+of the pixels; 1.00 uses the full frame. Smaller scales lose fine information but can still change
+materials. Cost depends on dimensions and scene; pixel count is not a precise timing prediction.
 
-**Pass Count** is an instrument, not a quality setting. It has never measured better, and the
-only reading ever taken of it was `Passes=3` giving a residual of exactly zero. Raise it to
-compare two `measure, residual` lines, not to play. Until this release it was also forced back
-to 1 on *Same frame* timing, which is the default -- so on a default install the slider moved
-and did nothing. It is honoured now, and the log prints one `pass N of M` line per pass with the
-engine's job id before and after.
+**Pass Count** runs one to three evaluations over successive results. Two and three inline passes
+were tested on a fixed NFS frame. Extra passes can strengthen the effect and amplify grain or halos.
+Later passes default to zero Local Tone; Taper or per-pass Structure can moderate their effect.
 
-**Residual Limit** and **Edge Fade** are for the corners. The network works in tiles, and the
-tiles at the frame border have no neighbour on one side, so what comes back there is
-extrapolated rather than seen -- which shows up as specks and crawling colour, worst where two
-borders meet. Limit caps how far the correction may push one pixel; Edge Fade rolls it off over
-a band at the border, and a corner is inside two bands at once. Both are off by default.
+**Residual Limit** bounds the transferred correction and defaults to 0.25. **Edge Fade** reduces
+the correction at the image border and defaults to zero.
 
 **The tag beside each control** says how far it is actually known: `MEASURED` means a residual
 reading moved when it changed, `TRACED` means the write reaches a consumer but nothing here has
@@ -256,16 +263,16 @@ having written down, because an offset that is written but never read looks iden
 outside, and this table is what separates the two.
 
 ```
-0x76E10 int   DepthInverted   default 1
-0x76E1C bool  Enabled           0x76E1D bool Temporal
-0x76E1E bool  UseFsrInputs      0x76E1F bool UseDepth
-0x76E20 int   Tonemap         default -1
-0x76E30 float LocalTone       default 0.0     -> Local Tone Strength
-0x76E34 float LocalStructure  default 1.0     -> Structure Intensity
-0x76E38 float SkinStructure   default -1.0    -> Skin Structure Strength
-0x76E3C float Scale           default 0.03125 -> Engine Scale
-0x76E40 int   UseAutoMask     default 1       -> Character Mask
-0x76E44 int   ToneChannels    default 0       -> Tone Channels
+0x8D9B0 int   DepthInverted   default 1
+0x8D9BC bool  Enabled           0x8D9BD bool Temporal
+0x8D9BE bool  UseFsrInputs      0x8D9BF bool UseDepth
+0x8D9C0 int   Tonemap         default -1
+0x8D9D0 float LocalTone       default 0.0     -> Local Tone Strength
+0x8D9D4 float LocalStructure  default 1.0     -> Structure Intensity
+0x8D9D8 float SkinStructure   default -1.0    -> Skin Structure Strength
+0x8D9DC float Scale           default 0.03125 -> Engine Scale
+0x8D9E0 int   UseAutoMask     default 1       -> Character Mask
+0x8D9E4 int   ToneChannels    default 0       -> Tone Channels
 ```
 
 Its full ini surface is `Enabled` `Temporal` `UseFsrInputs` `UseDepth` `Tonemap` `Interop`
@@ -285,7 +292,7 @@ add-on inverted the engine's own default on every run. `UseAutoMask` was never w
 ## Building it yourself (optional)
 
 **Skip this unless you want to change the code.** The `.addon64` in
-[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases/latest) is built from this
+[Preview releases](https://github.com/zmodelerlover/dlss5-neural-amd-preview/releases) is built from this
 repository and is the same file you would produce here.
 
 **What to install first.** One thing: Microsoft's C++ compiler. You do not need the full Visual

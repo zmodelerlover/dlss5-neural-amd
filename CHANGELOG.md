@@ -1,6 +1,22 @@
 # Changelog
 
-## Unreleased
+## Preview 2026-09-10 — SDR and serialized inline passes
+
+- Update both normal and Vulkan previews to the pinned v0.2.17 runtime.
+- Treat Encoding=0 as SDR when resolving automatic tonemapping, including FP16 transport.
+- Remove an invalid pointer write at 0x8d808: this location contains watchdog job counters.
+  The write crashed the isolated full-resolution run after its first timeout.
+- Submit and finish intermediate inline passes before changing shared runtime parameters.
+  Wait for both the GPU queue and HIP worker. Async retains the legacy batch path.
+- Add optional matched input/runtime captures and an isolated GPU framecheck executable.
+- Verify per-pass Tone survives serial submission and reproduces exactly across processes.
+- Refresh scale/pass documentation and distinguish the normal and Vulkan build configurations.
+- FSR 2/3/4 integration remains research; no upscaler was added in this preview.
+
+Validation and remaining limitations: [preview notes](docs/preview-2026-09-10.md).
+Earlier entries below describe previous investigations, including hypotheses superseded by this run.
+
+## Earlier unreleased work
 
 ### Pass Count, and why it was worthless
 

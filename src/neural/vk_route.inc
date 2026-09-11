@@ -849,7 +849,10 @@ void Present(command_queue *queue, swapchain *sc)
     Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     const bool ok = RecordNetwork(cmd12, g.crossLocal.Get(), r.format, nullptr, runNetwork,
-                                  g.loadedPasses);
+                                  g.loadedPasses,
+                                  [&]() { return SubmitPrivatePass(cmd12, g.alloc[slot].Get()); });
+    if (!ok && g.failed)
+        return;
     Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
     if (ok)

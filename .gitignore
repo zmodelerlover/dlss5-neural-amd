@@ -1,5 +1,5 @@
 # Network binaries stay out: the weights are NVIDIA-derived and the runtime comes from a
-# third-party project with no declared license. Whoever clones brings their own.
+# third-party project with its own distribution terms. Whoever clones brings their own.
 # (See README, "Getting the runtime and the weights".)
 #
 # Third-party HEADERS are the opposite: they are vendored in external/reshade/ so a fresh
