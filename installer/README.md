@@ -34,6 +34,17 @@ The runtime and the weights are **not** embedded and never will be: the weights 
 NVIDIA-derived and the runtime is a third-party build. The user points at the folder they
 unzipped them into.
 
+## Native Vulkan notes
+
+The Vulkan preset supports both emulators and native games, but it only installs this project's
+three files. Install ReShade's full add-on build for the target executable separately and select
+Vulkan so the executable is registered in `C:\ProgramData\ReShade\ReShadeApps.ini`. Do not leave a
+ReShade proxy DLL beside the executable at the same time.
+
+The v0.4.1 add-on validates that presentation uses a graphics-capable queue and rebuilds its
+cross-API resources after a swapchain change. DOOM Eternal users may need to set
+`r_presentFromAsync "0"`; the default async-only presentation route cannot record the bridge copy.
+
 ## Building
 
 ```powershell

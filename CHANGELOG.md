@@ -2,7 +2,7 @@
 
 ## v0.4.1 — Native Vulkan game stability
 
-This fork hardens the experimental Vulkan route for native games, validated on Detroit: Become
+This release hardens the experimental Vulkan route for native games, validated on Detroit: Become
 Human and DOOM Eternal with ReShade 6.8.0.2155 and an AMD Radeon RX 9070 XT.
 
 - Link the add-on with the static MSVC runtime (`/MT`). Detroit ships older `msvcp140.dll` and
