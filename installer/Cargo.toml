@@ -1,6 +1,6 @@
 [package]
 name = "dlss5-installer"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Terminal installer for the dlss5-neural-amd ReShade add-on"
 license = "MIT"
