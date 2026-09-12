@@ -81,6 +81,7 @@ $env:INCLUDE = @(
     (Join-Path $SdkPath "Include\$SdkVersion\shared")
     (Join-Path $SdkPath "Include\$SdkVersion\winrt")
     (Join-Path $root 'external\reshade')
+    (Join-Path $root 'external\minhook\include')
 ) -join ';'
 
 $env:LIB = @(
@@ -95,6 +96,16 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 $src = Join-Path $root "src\$Target\$Target.cpp"
 if (-not (Test-Path $src)) { throw "source not found: $src" }
+$sources = @($src)
+if ($Target -eq 'neural') {
+    $minHook = Join-Path $root 'external\minhook\src'
+    $sources += @(
+        (Join-Path $minHook 'buffer.c')
+        (Join-Path $minHook 'hook.c')
+        (Join-Path $minHook 'trampoline.c')
+        (Join-Path $minHook 'hde\hde64.c')
+    )
+}
 
 $dll = Join-Path $out $(if ($Exe) { "dlss5-$Target.exe" } else { "dlss5-$Target.addon64" })
 
@@ -106,7 +117,7 @@ try {
     # to build the add-on and can make DllMain fail after ReShade has registered the module.
     & $cl /nologo /utf-8 /std:c++20 /EHsc /O2 /MT /W3 /DNDEBUG /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS `
           /DNOMINMAX /DWIN32_LEAN_AND_MEAN `
-          /Fo"$out\" $(if (-not $Exe) { '/LD' }) $src /link $(if (-not $Exe) { '/DLL' }) /OUT:"$dll" `
+          /Fo"$out\" $(if (-not $Exe) { '/LD' }) $sources /link $(if (-not $Exe) { '/DLL' }) /OUT:"$dll" `
           user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib
     if ($LASTEXITCODE -ne 0) { throw "compilation failed ($LASTEXITCODE)" }
 } finally { Pop-Location }

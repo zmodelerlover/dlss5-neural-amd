@@ -14,6 +14,7 @@
 
 #include "build_config.h"
 #if DLSS5_WITH_VULKAN
+#include <MinHook.h>
 #include "../vkshared/vk_raw.inc"
 #endif
 
@@ -72,6 +73,9 @@ constexpr Profile kTargets[] = {
 
     { L"NFS16.exe", Tier::C, 1.0f,
       "NFS 2015" },
+
+    { L"RDR2.exe", Tier::C, 1.0f,
+      "Red Dead Redemption 2" },
 
     { nullptr, Tier::C, 1.0f,
       "uncatalogued target (runs the same as a listed one)" },
@@ -3124,10 +3128,16 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     {
         if (HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr))
         {
-            if (SUCCEEDED(g.fence->SetEventOnCompletion(g.completion, done)))
-                WaitForSingleObject(done, 1000);
+            const bool idle = WaitFence(g.fence.Get(), g.completion, done,
+                                        "the old raster before changing resolution");
             CloseHandle(done);
+            if (!idle)
+            {
+                g.reason = "the GPU did not release the old raster before its resolution changed";
+                return false;
+            }
         }
+        else return false;
     }
 
     // That fence covers our own queue. It says nothing about a network job the engine still has
@@ -3136,12 +3146,36 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     // a real geometry change, which is rare, so a blocking wait here costs nothing in practice.
     if (g.engineReady && g.runtime != nullptr)
     {
-        const UINT64 deadline = GetTickCount64() + 500;
+        const UINT64 deadline = GetTickCount64() + 5000;
         while (static_cast<UINT>(InterlockedCompareExchange(
                    reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, 0x8d6f4)), 0, 0)) <
                    g.lastJob &&
-               GetTickCount64() < deadline)
+                   GetTickCount64() < deadline)
             Sleep(1);
+        if (static_cast<UINT>(InterlockedCompareExchange(
+                reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, 0x8d6f4)), 0, 0)) < g.lastJob)
+        {
+            Log("raster: runtime job %u did not become idle in 5 s; keeping its textures alive "
+                "instead of releasing memory that the GPU may still own.", g.lastJob);
+            g.reason = "the neural runtime did not become idle for a resolution change";
+            return false;
+        }
+    }
+
+    // The bridge owns three reusable command lists. A completed list may still retain driver-side
+    // bookkeeping for every resource recorded into it until Reset, which makes rapid resolution
+    // changes look like a VRAM leak even after the corresponding ComPtr is released. The UI now
+    // commits one scale after an edit instead of one per mouse movement; retire all three lists
+    // at that single boundary so the old raster has no command-list lifetime left either.
+    if (netChanged && g.workDevice != nullptr)
+    {
+        for (UINT i = 0; i < State::kRing; ++i)
+        {
+            if (RecreateWorkSlot(i))
+                continue;
+            Log("raster: could not retire work slot %u before changing resolution.", i);
+            return false;
+        }
     }
 
     const DXGI_FORMAT composeFormat = ColourReadFormat(outFormat);
@@ -5292,11 +5326,34 @@ void OnOverlay(effect_runtime *)
              "mostrar detalhes atrasados; use Mesmo quadro para comparar ajustes por passe.");
         Tag(kMeasured);
 
-        float v = g.scale.load();
+        // Keep the value being dragged separate from the value consumed by the render thread.
+        // SliderFloat changes on every mouse movement; publishing each intermediate float made
+        // EnsureResources build a complete network raster every frame, while the runtime and
+        // driver kept the retired allocations resident. Commit once, when the edit ends.
+        static float editingScale = g.scale.load();
+        static bool editingScaleActive = false;
+        if (!editingScaleActive)
+            editingScale = g.scale.load();
+        float v = editingScale;
         if (Risk r(v > 1.0f && g.inlineMode.load() ? kDanger : kWarn, v > 0.50f);
             ImGui::SliderFloat(T("Resolution Scale", "Escala de Resolução"), &v, 0.25f, 2.0f,
                                "%.2f", 0))
-            g.scale.store(v);
+            editingScale = v;
+        if (ImGui::IsItemActive())
+            editingScaleActive = true;
+        if (ImGui::IsItemDeactivated())
+        {
+            const float before = g.scale.load();
+            if (editingScaleActive && editingScale != before)
+            {
+                g.scale.store(editingScale);
+                g.historyValid.store(false);
+                Log("menu: resolution scale %.2f -> %.2f; applying once after the edit ended",
+                    static_cast<double>(before), static_cast<double>(editingScale));
+            }
+            editingScaleActive = false;
+        }
+        v = editingScale;
         Help("Network width and height relative to the game frame. 0.50 uses a quarter of the pixels; "
              "1.00 uses the full frame. Lower scales reduce fine detail and inference cost. "
              "Materials can still change below 1.00. Measure frame time at the chosen resolution.",
@@ -6145,7 +6202,7 @@ extern "C" __declspec(dllexport) const char *DESCRIPTION =
 #endif
     ". SDR and serialized inline multipass preview.";
 
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
 {
     switch (reason)
     {
@@ -6196,7 +6253,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         break;
     case DLL_PROCESS_DETACH:
 #if DLSS5_WITH_VULKAN
-        vkroute::devicehook::Remove();
+        // At process termination Windows is already tearing every module down. MinHook removal
+        // suspends threads, which is useful for an explicit unload but unsafe under the loader
+        // lock while the process is exiting.
+        if (reserved == nullptr)
+            vkroute::devicehook::Remove();
 #endif
         if (g.events & 16)
             reshade::unregister_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
