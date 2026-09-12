@@ -7,14 +7,11 @@
 // host's VkDevice as VkImage. That is not a preference, it is the only way round that works, and
 // it is what every working DLSS 5 Vulkan add-on does.
 //
-// Two things make this far smaller than the reference implementations:
+// Two things keep this smaller than the reference implementations:
 //
-//   * They hook vulkan-1!vkCreateDevice to append the interop extensions, because a host never
-//     asks for them and after the device exists it is too late. We do not have to: ReShade is
-//     itself a Vulkan layer and its own vkCreateDevice already enables VK_KHR_external_memory,
-//     _win32, external_semaphore, dedicated_allocation and timeline_semaphore -- the strings are
-//     in ReShade64.dll. If that ever stops being true the symptom is exact and is checked for
-//     below: vkImportSemaphoreWin32HandleKHR resolves to null.
+//   * The common path swaps a single import-table pointer. Hosts that resolve Vulkan dynamically
+//     need the inline fallback below, since the interop extensions must be appended before the
+//     device exists and ReShade does not add them itself.
 //   * They own the submission. We record into ReShade's own immediate command buffer and let
 //     ReShade submit it, so there is no command pool, no queue family to match, and no second
 //     submission racing the host's.
@@ -42,13 +39,12 @@ using namespace vkraw;
 // route's first run stood down at `vkImportSemaphoreWin32HandleKHR is missing`, which is the exact
 // symptom the note above predicted -- so the simplification does not hold and plan B is needed.
 //
-// The reference implementations reach for MinHook and trampoline vulkan-1!vkCreateDevice. This
-// does not have to: RPCS3 imports vkCreateDevice **by name, statically**, so the address it calls
-// lives in its own import address table and swapping one pointer there is the whole hook. No code
-// is patched, nothing is disassembled, and undoing it is writing the old pointer back.
-//
-// A host that resolves Vulkan dynamically has no such entry and nothing is patched, which is
-// reported rather than assumed -- on such a host the route stands down exactly as it does now.
+// Prefer swapping the executable's vkCreateDevice import: RPCS3, Detroit and DOOM use that simple
+// path, which patches no code. RDR2 instead loads Vulkan with LoadLibrary/GetProcAddress and keeps
+// the returned function pointers outside its import table. For that class of host the fallback
+// trampolines vulkan-1!vkCreateDevice itself, so pointers cached before this add-on loaded are
+// covered too. The fallback is installed on a worker after DllMain releases the loader lock;
+// MinHook briefly suspends threads while enabling a trampoline and must never do that in DllMain.
 namespace devicehook
 {
 
@@ -62,11 +58,24 @@ const char *const kWanted[] = {
     "VK_KHR_timeline_semaphore",
 };
 
+enum class InstallKind : uint8_t
+{
+    none,
+    staticIat,
+    inlinePending,
+    inlineHook,
+    failed,
+};
+
 PFN_vkCreateDevice g_original = nullptr;
 void **g_slot = nullptr;
-bool g_installed = false;
-bool g_ran = false;
+void *g_inlineTarget = nullptr;
+std::atomic<InstallKind> g_installKind { InstallKind::none };
+std::atomic_bool g_ran { false };
+std::atomic_bool g_reportReady { false };
+std::atomic_bool g_stopping { false };
 char g_report[512] = "the host never created a Vulkan device through the patched entry";
+char g_installReport[512] = "vulkan: no device hook was installed";
 
 // VkPhysicalDeviceVulkan12Features, when the host chains one, carries timelineSemaphore itself and
 // the two must not both be present. Its layout is fixed by the spec: sType, four bytes of padding,
@@ -83,7 +92,7 @@ constexpr size_t kTimelineSemaphoreOffset = 16 + 37 * 4;
 int __stdcall CreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *info, const void *alloc,
                            VkDevice *out)
 {
-    g_ran = true;
+    g_ran.store(true, std::memory_order_relaxed);
     if (g_original == nullptr || info == nullptr)
         return -1;
 
@@ -187,6 +196,7 @@ int __stdcall CreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *info,
                       !wantTimeline      ? "not needed"
                       : patchedInPlace   ? "set on the host's own Vulkan 1.2 features"
                                          : "chained");
+        g_reportReady.store(true, std::memory_order_release);
         return result;
     }
 
@@ -196,26 +206,27 @@ int __stdcall CreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *info,
                   "vulkan: the host's device REFUSED the added extensions (VkResult %d). Retrying "
                   "with the host's own request untouched -- the game will run and this route will "
                   "not.", result);
-    return g_original(gpu, info, alloc, out);
+    result = g_original(gpu, info, alloc, out);
+    g_reportReady.store(true, std::memory_order_release);
+    return result;
 }
 
-// Swap one pointer in the executable's import address table.
-void Install()
+// Swap one pointer in the executable's import address table. This remains the preferred route:
+// it is tiny, reversible, and has no effect outside that one call site.
+bool InstallStaticImport()
 {
-    if (g_installed)
-        return;
     auto *base = reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr));
     if (base == nullptr)
-        return;
+        return false;
     const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
     if (dos->e_magic != IMAGE_DOS_SIGNATURE)
-        return;
+        return false;
     const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE)
-        return;
+        return false;
     const auto &dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (dir.VirtualAddress == 0)
-        return;
+        return false;
 
     for (auto *desc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR *>(base + dir.VirtualAddress);
          desc->Name != 0; ++desc)
@@ -239,28 +250,134 @@ void Install()
             DWORD old = 0;
             if (!VirtualProtect(&addrs->u1.Function, sizeof(addrs->u1.Function),
                                 PAGE_READWRITE, &old))
-                return;
+                return false;
             g_original = reinterpret_cast<PFN_vkCreateDevice>(addrs->u1.Function);
             g_slot = reinterpret_cast<void **>(&addrs->u1.Function);
             *g_slot = reinterpret_cast<void *>(&CreateDevice);
             VirtualProtect(&addrs->u1.Function, sizeof(addrs->u1.Function), old, &old);
-            g_installed = true;
-            return;
+            g_installKind.store(InstallKind::staticIat, std::memory_order_release);
+            return true;
         }
     }
+    return false;
+}
+
+// Dynamic Vulkan loaders can cache vkCreateDevice before the add-on exists, so patching
+// GetProcAddress or vkGetInstanceProcAddr would still miss them. Hook the final function entry
+// instead. This runs after DllMain: enabling MinHook suspends process threads very briefly.
+DWORD WINAPI InstallInline(void *moduleReference)
+{
+    HMODULE self = static_cast<HMODULE>(moduleReference);
+    HMODULE vulkan = GetModuleHandleW(L"vulkan-1.dll");
+    void *target = vulkan != nullptr
+        ? reinterpret_cast<void *>(GetProcAddress(vulkan, "vkCreateDevice"))
+        : nullptr;
+    if (target == nullptr || g_stopping.load(std::memory_order_acquire))
+    {
+        std::snprintf(g_installReport, sizeof(g_installReport),
+                      "vulkan: dynamic loader detected, but vulkan-1!vkCreateDevice could not be "
+                      "resolved before device creation.");
+        g_installKind.store(InstallKind::failed, std::memory_order_release);
+        FreeLibraryAndExitThread(self, 0);
+    }
+
+    MH_STATUS status = MH_Initialize();
+    if (status != MH_OK)
+    {
+        std::snprintf(g_installReport, sizeof(g_installReport),
+                      "vulkan: dynamic vkCreateDevice hook initialization failed: %s.",
+                      MH_StatusToString(status));
+        g_installKind.store(InstallKind::failed, std::memory_order_release);
+        FreeLibraryAndExitThread(self, 0);
+    }
+
+    status = MH_CreateHook(target, reinterpret_cast<void *>(&CreateDevice),
+                           reinterpret_cast<void **>(&g_original));
+    if (status != MH_OK)
+    {
+        std::snprintf(g_installReport, sizeof(g_installReport),
+                      "vulkan: dynamic vkCreateDevice trampoline creation failed: %s.",
+                      MH_StatusToString(status));
+        MH_Uninitialize();
+        g_installKind.store(InstallKind::failed, std::memory_order_release);
+        FreeLibraryAndExitThread(self, 0);
+    }
+
+    status = MH_EnableHook(target);
+    if (status != MH_OK)
+    {
+        std::snprintf(g_installReport, sizeof(g_installReport),
+                      "vulkan: dynamic vkCreateDevice trampoline enable failed: %s.",
+                      MH_StatusToString(status));
+        MH_RemoveHook(target);
+        MH_Uninitialize();
+        g_original = nullptr;
+        g_installKind.store(InstallKind::failed, std::memory_order_release);
+        FreeLibraryAndExitThread(self, 0);
+    }
+
+    g_inlineTarget = target;
+    std::snprintf(g_installReport, sizeof(g_installReport),
+                  "vulkan: dynamic loader detected; installed an inline vkCreateDevice hook "
+                  "before the host created its device.");
+    g_installKind.store(InstallKind::inlineHook, std::memory_order_release);
+    FreeLibraryAndExitThread(self, 0);
+}
+
+void Install()
+{
+    if (g_installKind.load(std::memory_order_acquire) != InstallKind::none)
+        return;
+    if (InstallStaticImport())
+        return;
+
+    // Hold our own module reference until the worker returns, so an explicit ReShade unload
+    // cannot invalidate its code while it waits for the loader lock held by this DllMain.
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                            reinterpret_cast<LPCWSTR>(&g_installKind), &self))
+    {
+        std::snprintf(g_installReport, sizeof(g_installReport),
+                      "vulkan: dynamic loader detected, but the add-on could not retain itself "
+                      "while installing the vkCreateDevice hook.");
+        g_installKind.store(InstallKind::failed, std::memory_order_release);
+        return;
+    }
+
+    g_installKind.store(InstallKind::inlinePending, std::memory_order_release);
+    HANDLE worker = CreateThread(nullptr, 0, InstallInline, self, 0, nullptr);
+    if (worker == nullptr)
+    {
+        std::snprintf(g_installReport, sizeof(g_installReport),
+                      "vulkan: dynamic loader detected, but the vkCreateDevice hook worker could "
+                      "not be started (Win32 error %lu).", GetLastError());
+        g_installKind.store(InstallKind::failed, std::memory_order_release);
+        FreeLibrary(self);
+        return;
+    }
+    CloseHandle(worker);
 }
 
 void Remove()
 {
-    if (!g_installed || g_slot == nullptr)
-        return;
-    DWORD old = 0;
-    if (VirtualProtect(g_slot, sizeof(void *), PAGE_READWRITE, &old))
+    g_stopping.store(true, std::memory_order_release);
+    const InstallKind kind = g_installKind.load(std::memory_order_acquire);
+    if (kind == InstallKind::staticIat && g_slot != nullptr)
     {
-        *g_slot = reinterpret_cast<void *>(g_original);
-        VirtualProtect(g_slot, sizeof(void *), old, &old);
+        DWORD old = 0;
+        if (VirtualProtect(g_slot, sizeof(void *), PAGE_READWRITE, &old))
+        {
+            *g_slot = reinterpret_cast<void *>(g_original);
+            VirtualProtect(g_slot, sizeof(void *), old, &old);
+        }
     }
-    g_installed = false;
+    else if (kind == InstallKind::inlineHook && g_inlineTarget != nullptr)
+    {
+        MH_DisableHook(g_inlineTarget);
+        MH_RemoveHook(g_inlineTarget);
+        MH_Uninitialize();
+    }
+    g_installKind.store(InstallKind::none, std::memory_order_release);
 }
 
 // Said once, on the first Vulkan present: DllMain runs before the log file exists.
@@ -270,16 +387,24 @@ void ReportOnce()
     if (said)
         return;
     said = true;
-    if (!g_installed)
+    const InstallKind kind = g_installKind.load(std::memory_order_acquire);
+    if (kind == InstallKind::none || kind == InstallKind::inlinePending ||
+        kind == InstallKind::failed)
     {
-        Log("vulkan: this host does not import vkCreateDevice by name, so the interop extensions "
-            "could not be added to its device. If the route stands down on missing entry points, "
-            "that is why.");
+        Log("%s", kind == InstallKind::inlinePending
+                      ? "vulkan: the dynamic vkCreateDevice hook had not finished before the "
+                        "host created its device."
+                      : g_installReport);
         return;
     }
-    Log("%s", g_ran ? g_report
-                    : "vulkan: vkCreateDevice was patched but the host had already created its "
-                      "device before this add-on loaded, so nothing was added to it.");
+    if (kind == InstallKind::inlineHook)
+        Log("%s", g_installReport);
+    if (g_ran.load(std::memory_order_acquire) &&
+        g_reportReady.load(std::memory_order_acquire))
+        Log("%s", g_report);
+    else
+        Log("vulkan: vkCreateDevice was patched but the host had already created its device "
+            "before this add-on loaded, so nothing was added to it.");
 }
 
 }  // namespace devicehook
