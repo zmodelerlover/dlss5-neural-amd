@@ -97,7 +97,8 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 $src = Join-Path $root "src\$Target\$Target.cpp"
 if (-not (Test-Path $src)) { throw "source not found: $src" }
 $sources = @($src)
-if ($Target -eq 'neural') {
+# framecheck includes neural.cpp directly so it has the same Vulkan hook references as the add-on.
+if ($Target -in @('neural', 'framecheck')) {
     $minHook = Join-Path $root 'external\minhook\src'
     $sources += @(
         (Join-Path $minHook 'buffer.c')
