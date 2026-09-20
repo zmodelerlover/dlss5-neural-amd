@@ -48,7 +48,7 @@ The native x86/x64 build and protocol checks run in GitHub Actions. Live ReShade
 - Status: connected/enabled/engine status, successful processed/skipped requests, dimensions, loaded/active passes, actual guide state, frontend candidates, protocol and transport mode.
 - Save Settings; Reload Settings; original warning/tag legend.
 
-Timing always shows Same frame (inline). Async is disabled with an x86-specific note, and host startup/reload force `g.inlineMode=true`, logging any Inline=0 override. Encoding and Tonemap retain restart warnings. Stage/Events/NoBridge/NoBackBuffer remain read-only INI diagnostics; no unsafe engine reinitialization is added. Transport-only keeps result=4 and disables engine widgets; control synchronization does not load HIP.
+Timing is a live control and selects the presentation mode: Same frame, or pipelined, which is the default. It reads and writes the frontend's own `Async` flag and saves it to `dlss5-neural.ini`; see the note on it below, which is the whole of what it does. It is a separate thing from inline composition, which is not a control on this route: host startup/reload force `g.inlineMode=true`, logging any Inline=0 override. Encoding and Tonemap retain restart warnings. Stage/Events/NoBridge/NoBackBuffer remain read-only INI diagnostics; no unsafe engine reinitialization is added. Transport-only keeps result=4 and disables engine widgets; control synchronization does not load HIP.
 
 Incoming finite values clamp to widget ranges; non-finite values reject the whole update. Settings/revision and command checks live in `control_state.h`; exact field/range mapping is in `settings_fields.inc`. Initial host snapshot does not normalize or write the existing INI merely because the UI opened.
 

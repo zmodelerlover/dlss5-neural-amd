@@ -76,7 +76,13 @@ The main controls:
   of the pixels. Smaller is faster and loses fine detail.
 - **Pass Count** — one to three evaluations. More passes strengthen the effect and can add grain.
 - **Residual Limit** — caps how much the image is changed. Default 0.25.
-- **Timing** — Same frame waits for the result. Async is older and is not the tested path.
+- **Timing** — this control means different things on the two routes, and the defaults are
+  opposite. On a 64-bit game it chooses when the network's answer is composed: Same frame
+  waits for it, and Async is older and is not the tested path. On a 32-bit game it chooses
+  presentation: pipelined is the default, because it measured 16% to 41% faster in three
+  games and costs one frame of lag and nothing else. Both write `Async` to
+  `dlss5-neural.ini`, so a value copied from one route's ini means the other thing in the
+  other's.
 
 The defaults are a reasonable starting point.
 
