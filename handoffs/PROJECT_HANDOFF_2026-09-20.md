@@ -8,7 +8,7 @@ work that have since shipped.
 
 | | |
 |---|---|
-| Branch | `master` at the OpenGL commit. The branch beside it is `origin/opengl`, not `opengl_study`: it points at that same commit, is zero commits either way from `master`, and should go |
+| Branch | `master` at the OpenGL commit, and nothing beside it. The branch this handoff first called `opengl_study` was really `origin/opengl`, zero commits either way from `master`; it was deleted on 2026-09-20 |
 | Tag | `v0.6.0`, with `dlss5-neural.addon64` and `SHA256SUMS.txt` on the release |
 | Runtime | unchanged: pinned **DLSS-NR-on-AMD v0.3.0**, patched by `tools/patch_runtime.py` to `70af3f…` |
 | Payload | `addon` bumped to **0.6.0** (`c037a69f…`) on the dataset the installer reads |
