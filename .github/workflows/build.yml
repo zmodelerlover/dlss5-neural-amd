@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build all three add-ons
+      - name: Build every add-on
         shell: pwsh
         run: |
           foreach ($t in 'neural', 'probe', 'session') {
@@ -21,9 +21,27 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$t failed" }
           }
 
+      - name: Build the OpenGL diagnostics
+        shell: pwsh
+        run: |
+          .\build.ps1 -Target glinfo
+          if ($LASTEXITCODE -ne 0) { throw 'glinfo failed' }
+          .\build.ps1 -Target glprobe -Exe
+          if ($LASTEXITCODE -ne 0) { throw 'glprobe failed' }
+
       - name: Build isolated GPU fixture
         shell: pwsh
         run: .\build.ps1 -Target framecheck -Exe
+
+      # The add-on must reach OpenGL through GetProcAddress and never through its import
+      # table: a static opengl32 import loads OpenGL into every D3D11 and D3D12 game this is
+      # placed in, which is what one unwanted import already did to NFS 2015. Here it is read
+      # off the binary that was just built, which the Linux job below cannot do.
+      - name: The add-on does not import opengl32
+        shell: pwsh
+        run: |
+          python tools/opengl_import_check.py build/dlss5-neural.addon64
+          if ($LASTEXITCODE -ne 0) { throw 'opengl import check failed' }
 
       - name: Check composition and guide selection
         shell: pwsh
@@ -39,6 +57,7 @@ jobs:
           path: |
             build/*.addon64
             build/dlss5-framecheck.exe
+            build/dlss5-glprobe.exe
 
   x86-bridge:
     runs-on: windows-latest
@@ -75,3 +94,8 @@ jobs:
       # two code reviews before it crashed the 32-bit bridge in every game.
       - name: No source file writes a runtime offset of its own
         run: python3 tools/runtime_offsets_check.py
+
+      # The source half of the windows job's import check, and it needs no toolchain: no bare
+      # gl call, no pragma naming the library, and no opengl32.lib on the shared link line.
+      - name: No source reaches OpenGL by linking to it
+        run: python3 tools/opengl_import_check.py

@@ -4,6 +4,21 @@ This is the operational handoff for the work performed with the user on `dlss5-n
 It is intended to let another developer or AI resume without reconstructing the long debugging
 history from chat. Read this file first, then the repository README, changelog and x86 documents.
 
+## 0. Errata, 2026-09-20
+
+Four things below were true when this was written and are not true now. The rest of the
+document stands, and `handoffs/PROJECT_HANDOFF_2026-09-20.md` is the current state.
+
+| Where | It says | It is |
+|---|---|---|
+| §1, §2 | work is on `x86_testing`, uncommitted | all of it shipped: v0.5.0, then v0.5.3 for the pipelining. `master` is the state; that branch is gone |
+| §3.1 | the pinned runtime is v0.2.17 | **v0.3.0** since v0.5.1. Every offset was re-derived against it, and v0.2.17 is now refused by hash |
+| §3.3 | "Async mode is disabled on x86; same-frame inline behavior is the validated path" | pipelined presentation is the **default** on the bridge and the Timing control switches it live. §11 measured it at +16% to +41%. Inline composition, which is a different thing, is still forced on |
+| §7 | `installer/` is a directory of this repository | it was removed in v0.5.1, as §11 says further down. Installing is AMD-NR ReShade Installer, in its own repository |
+
+One more route exists that this document does not mention at all: **OpenGL**, shipped in v0.6.0.
+`docs/opengl-route.md` is its record.
+
 ## 1. Read this before changing anything
 
 - Work is on **`x86_testing`**, branched from `master` and not yet merged. An earlier branch of the

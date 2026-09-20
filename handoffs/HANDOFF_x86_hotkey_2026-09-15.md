@@ -1,5 +1,14 @@
 # Handoff — o rebind de hotkey do bridge x86, e o formato que parava o host
 
+> **Histórico. Tudo aqui foi entregue na v0.5.1**, em 15/09/2026 — as três causas do rebind, a
+> leitura por `effect_runtime::is_key_down`, a escrita pelo shadow, a remoção do BOM do ini e o
+> transporte de `X8R8G8B8` como `B8G8R8A8_UNORM`. Veja a entrada v0.5.1 no `CHANGELOG.md`.
+>
+> O que a §9 lista como pendente não é pendência: a branch `v0.5.1` e o worktree `D:\dlss5-hotkey`
+> não existem mais, e a dúvida sobre o botão Save foi superada pela v0.5.2, em que cada controle
+> escreve no ini assim que assenta. O valor deste arquivo é a §10 e o método das §§2-7: como cada
+> causa foi medida em vez de adivinhada.
+
 Branch `v0.5.1`, worktree `D:\dlss5-hotkey`, saindo de `origin/master` (`425ed4d`).
 **Nada commitado, nada empurrado.** 15/09/2026.
 

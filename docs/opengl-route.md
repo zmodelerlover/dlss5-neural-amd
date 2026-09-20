@@ -390,11 +390,12 @@ In the order the value falls out:
 3. **Start-up cost under SDL.** `DllMain` runs seven times in an SDL host. Nothing there is
    expensive enough to have shown up yet, but the log truncation is already visible and the
    engine bring-up would not survive the same treatment gracefully.
-4. **CI and a contract test.** `.github/workflows/build.yml` builds `neural`, `probe`, `session`
-   and `framecheck`; `glinfo` and `glprobe` are not in it. Worth more than either: a test that
-   asserts the add-on does **not** statically import `opengl32.dll`. That import is the trap the
-   NFS 2015 comment in `neural.cpp` documents, and this route resolves the DLL by hand to avoid
-   it -- a careless `#pragma comment(lib, "opengl32")` would undo that silently.
+4. ~~**CI and a contract test.**~~ Done on 2026-09-20. `.github/workflows/build.yml` builds
+   `glinfo` and `glprobe` too, and `tools/opengl_import_check.py` holds the line the route depends
+   on: no source calls a `gl`/`wgl` entry point by name, no `#pragma comment(lib, "opengl32")`, no
+   `opengl32.lib` on the link line every target shares, and the built add-on imports
+   `opengl32.dll` neither statically nor through the delay-load table. That import is the trap the
+   NFS 2015 comment in `neural.cpp` documents, and it used to be one careless pragma away.
 5. **A second host.** Everything here is one game on one driver. Xonotic (DarkPlaces, 64-bit, free)
    is the obvious next one, and a 3.3 core host would exercise the non-DSA path in anger.
 
@@ -407,3 +408,4 @@ In the order the value falls out:
 | `src/neural/neural.cpp` | the branch in `OnPresent`, the teardown hook, `SelfIssued` |
 | `src/glprobe/glprobe.cpp` | the offline driver probe (`-Target glprobe -Exe`) |
 | `src/glinfo/glinfo.cpp` | the in-game ReShade probe (`-Target glinfo`) |
+| `tools/opengl_import_check.py` | the contract test: nothing links to OpenGL, in source or in the built add-on |

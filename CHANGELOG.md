@@ -46,6 +46,54 @@ Not in this release: depth or motion from the game on OpenGL (the depth is reach
 and needs a shader pass to become usable), and any route at all for a 32-bit OpenGL game -- the
 32-bit pair covers D3D8, D3D9 and D3D11.
 
+## v0.5.3 - 2026-09-17 - Pipelined presentation for the 32-bit bridge
+
+Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights as v0.5.2, so an upgrade is the
+32-bit pair and nothing else. The 64-bit add-on's behaviour is unchanged by this release.
+
+- **The bridge posts the frame and composes the previous present's answer**, instead of sitting in
+  the IPC round trip waiting for this one. The helper works while the game builds its next frame.
+  Measured as an A/B on that flag alone, with the ini compared before and after so nothing else
+  differed: GTA IV **43.8 -> 61.6 FPS (+41%)** on classic D3D9 staging, Resident Evil 5 **46.6 ->
+  62.2 FPS (+33%)** by the game's own benchmark, Half-Life 2 **77.0 -> 89.3 FPS (+16%)** on the
+  D3D9Ex shared path. No dropped frames and no faults in any of them.
+- **It is the default on the 32-bit bridge**, as `Async=1` under `[dlss5]` in `dlss5-neural.ini`.
+  `Async=0` restores same-frame presentation exactly -- the same code path, minus two clock reads.
+  The startup line reports `present=pipelined` or `present=same-frame` so a log says which it was.
+  Note the key means something else on the 64-bit add-on, where `Async` is the older inline
+  composition and same-frame is still the tested path.
+- **The cost is one frame of latency and nothing else.** It does not smear: `DownloadD3D9Frame`
+  replaces the back buffer whole, so what reaches the screen is frame N-1 finished and
+  self-consistent rather than a mix of two. Three games were checked in both modes with no
+  difference seen. What pipelining removes is `min(game, network)`, less whatever the game's own
+  GPU work already overlapped, and all three land between 66% and 97% of that ceiling.
+- **The Timing control switches the mode while the game runs.** It used to be disabled on this
+  route, with `Async` changeable only by editing the ini before launch. It now reads and writes the
+  frontend's own flag, so the panel cannot drift from what the bridge is doing, and nothing has to
+  reach the helper because `Async` never crosses the protocol. Switching costs at most one frame in
+  either direction: turning it off collects the answer in flight and drops it, turning it on leaves
+  the first present with no previous answer to compose. The choice is written one key at a time,
+  because rewriting the whole ini from the frontend would drop everything the helper owns.
+- **Arm the stage probe from the ini with `Timing=1`.** `DLSS5_X86BRIDGE_TIMING=1` still works
+  where it already worked, but a game that re-launches itself through its own launcher, GTA IV
+  among them, loads the add-on into a process that inherits no environment from whoever started it
+  and reported `probe=off` however you launched it. A timing window that spans a mode switch is
+  discarded rather than averaged, and both probe lines now name the mode and the effect state they
+  were measured in.
+- Subscribe `destroy_device` and settle the `IDirect3DDevice9` reference-count warning ReShade
+  prints at exit. It is cosmetic and no add-on can prevent it: measured with an unconditional log
+  line at the top of the handler, ReShade never delivers the event when a game leaves through
+  `ExitProcess`, and it prints the warning about two seconds before it unloads the add-on. The
+  handler stays because it is correct for a game that does shut its renderer down.
+- **Promoting a classic D3D9 device to D3D9Ex was measured and dropped**, with
+  `tools/d3d9ex-probe.cpp` on this hardware. A plain D3D9 device refuses `CreateTexture` with a
+  shared handle, so the fast path is unreachable without promotion; a D3D9Ex device refuses
+  `D3DPOOL_MANAGED`, which is what a legacy D3D9 or translated D3D8 game creates nearly all of its
+  textures in. Promotion therefore means a per-resource translation layer -- what dgVoodoo and DXVK
+  are, and this project removed its dgVoodoo dependency deliberately. The classic path's fixed
+  transport cost stands: roughly 5.5 to 6 ms a frame at 1920x1080, which no Resolution Scale
+  setting reaches.
+
 ## v0.5.2 - 2026-09-15 - The overlay saves itself
 
 Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights as v0.5.1, so an upgrade is the
