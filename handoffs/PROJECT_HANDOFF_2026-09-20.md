@@ -8,7 +8,7 @@ work that have since shipped.
 
 | | |
 |---|---|
-| Branch | `master` at the OpenGL commit; `opengl_study` points at the same commit and can be deleted |
+| Branch | `master` at the OpenGL commit. The branch beside it is `origin/opengl`, not `opengl_study`: it points at that same commit, is zero commits either way from `master`, and should go |
 | Tag | `v0.6.0`, with `dlss5-neural.addon64` and `SHA256SUMS.txt` on the release |
 | Runtime | unchanged: pinned **DLSS-NR-on-AMD v0.3.0**, patched by `tools/patch_runtime.py` to `70af3f…` |
 | Payload | `addon` bumped to **0.6.0** (`c037a69f…`) on the dataset the installer reads |
@@ -100,10 +100,11 @@ obvious next one, and a 3.3 core host would exercise the non-DSA path in anger.
    it runs seven times and the engine bring-up would not survive the same treatment gracefully.
 4. **A 32-bit OpenGL frontend**, if a target ever justifies it. The 32-bit pair covers D3D8, D3D9
    and D3D11.
-5. **CI.** `.github/workflows/build.yml` builds `neural`, `probe`, `session` and `framecheck`;
-   `glinfo` and `glprobe` are not in it. A contract test asserting the add-on does **not**
-   statically import `opengl32.dll` would be worth more than either — that import is the trap the
-   NFS 2015 comment in `neural.cpp` documents, and the route resolves the DLL by hand to avoid it.
+5. ~~**CI.**~~ Done on 2026-09-20. `.github/workflows/build.yml` now builds `glinfo` and `glprobe`
+   as well, and `tools/opengl_import_check.py` is the contract test this asked for: no source calls
+   a `gl`/`wgl` entry point by name, nothing names `opengl32.lib`, and the built add-on imports
+   `opengl32.dll` neither statically nor through the delay-load table. The Windows job reads it off
+   the binary it just built; the Linux job runs the source half, which needs no toolchain.
 
 ## 7. Published artefacts, for anyone verifying
 
