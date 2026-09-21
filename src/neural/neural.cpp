@@ -1642,7 +1642,10 @@ bool EnsureNeuralIni()
          "\r\n"
          "; --- Neural Rendering Model ---------------------------------------------------\r\n"
          "; 0 = Model A, 1 = Model B, 2 = Model C, the same three DLSSNR.Style selects on\r\n"
-         "; NVIDIA. One set of weights: a model is a short vector of colour coefficients\r\n"
+         "; NVIDIA. Deep Fried Chicken names the same three Default, Natural and Cinematic,\r\n"
+         "; in that order, so Natural is 1 and Cinematic is 2. Its NR Preset is a different\r\n"
+         "; field and picks weights, not colour.\r\n"
+         "; One set of weights: a model is a short vector of colour coefficients\r\n"
          "; applied to the finished frame. Model A is the neutral vector, so 0 is exactly\r\n"
          "; what every release so far has drawn. B darkens by 0.1 stop, flattens contrast\r\n"
          "; a quarter off its S-curve and takes a tenth of the saturation; C only takes\r\n"
@@ -5938,9 +5941,13 @@ void OnOverlay(effect_runtime *runtime)
         // three restarts, and on a host whose swapchain is in a child window Ctrl+Home cannot
         // reload the file at all. Here it is one click and the frame changes under you.
         int style = g.style.load();
+        // Both namings, because both are in circulation for the same three values of the same
+        // NGX field: RenoDX calls them Model A/B/C, Deep Fried Chicken calls them Default,
+        // Natural and Cinematic. A guide written against one and an overlay showing the other
+        // is a person changing the wrong control.
         if (ImGui::Combo(T("Neural Rendering Model", "Modelo de Renderização Neural"), &style,
-                         T("Model A (default)\0Model B\0Model C\0",
-                           "Modelo A (padrão)\0Modelo B\0Modelo C\0")))
+                         T("Model A - Default\0Model B - Natural\0Model C - Cinematic\0",
+                           "Modelo A - Default\0Modelo B - Natural\0Modelo C - Cinematic\0")))
         {
             g.style.store(std::clamp(style, 0, 2));
             Log("menu: style %d", style);
@@ -5948,6 +5955,10 @@ void OnOverlay(effect_runtime *runtime)
         Help("The same three models DLSSNR.Style selects on NVIDIA. They are not three "
              "networks -- there is one set of weights, and a model is a short vector of colour "
              "coefficients applied to the finished frame.\n\n"
+             "Two names for each, both in use for the same value: RenoDX writes Model A, B and "
+             "C; Deep Fried Chicken writes Default, Natural and Cinematic. Natural is Model B "
+             "and Cinematic is Model C. Its NR Preset control is a different field -- that one "
+             "picks a set of weights, and the shipping DLL carries only one.\n\n"
              "Model A is the neutral vector and is what every release so far has drawn, so it "
              "changes nothing. Model B darkens by 0.1 stop, flattens contrast a quarter of the "
              "way off its S-curve, and removes a tenth of the saturation. Model C only removes "
@@ -5961,6 +5972,11 @@ void OnOverlay(effect_runtime *runtime)
              "Os mesmos tres modelos que DLSSNR.Style seleciona na NVIDIA. Nao sao tres redes "
              "-- ha um unico conjunto de pesos, e um modelo e um vetor curto de coeficientes de "
              "cor aplicado ao quadro pronto.\n\n"
+             "Dois nomes para cada um, os dois em uso para o mesmo valor: o RenoDX escreve "
+             "Model A, B e C; o Deep Fried Chicken escreve Default, Natural e Cinematic. "
+             "Natural e o Modelo B e Cinematic e o Modelo C. O controle NR Preset dele e outro "
+             "campo -- aquele escolhe um conjunto de pesos, e a DLL que a NVIDIA publica tem "
+             "so um.\n\n"
              "O Modelo A e o vetor neutro e e o que toda release desenhou ate agora, entao nao "
              "muda nada. O Modelo B escurece 0,1 stop, achata o contraste um quarto do caminho "
              "para fora da curva S, e tira um decimo da saturacao. O Modelo C so tira 15 por "

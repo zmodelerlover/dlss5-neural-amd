@@ -27,12 +27,36 @@ DLSSNR: preset %d is not available in this DLL build; falling back to shipping d
 DLSSNR: CG2RFindWeightByPreset(%d) returned null; using descriptor [0] '%s' as last-resort fallback
 ```
 
-**There is no "Natural", "Cinematic" or any other named look in this DLL.** A search of `.text`
-and `.rdata` for those words returns nothing; the only names it carries are the weight tags above.
-RenoDX, which is where most people meet this field, labels the three values exactly as this
-project does -- its string is *"Selects Neural Rendering Model A, Model B, or Model C through the
-prerelease DLSSNR.Style field."* Friendly names elsewhere are a downstream UI's own, and do not
-correspond to anything the runtime distinguishes.
+### "Natural" and "Cinematic" are these same three, renamed
+
+The DLL itself carries no named looks -- a search of `.text` and `.rdata` for those words returns
+nothing, and the only names in it are the weight tags above. The names come from the consumers,
+and there are two conventions for one field:
+
+| value | RenoDX | Deep Fried Chicken |
+|---|---|---|
+| 0 | Model A | Default |
+| 1 | Model B | **Natural** |
+| 2 | Model C | **Cinematic** |
+
+RenoDX's string is *"Selects Neural Rendering Model A, Model B, or Model C through the prerelease
+DLSSNR.Style field."* Deep Fried Chicken's panel writes `NRStyle`, a three-entry combo; DLSS5-Feeder
+mirrors that panel one-for-one and has the list verbatim from the add-on's string table
+(`src/dlss5-feed32.cpp`):
+
+```c
+static const char *const kNRStyleItems[] = { "Default", "Natural", "Cinematic" };
+...
+{ "NRStyle", "NR Style", NR_COMBO, 0.0f, 0.0f, 2.0f, nullptr, kNRStyleItems, 3,
+  "Default keeps the add-on's own choice; Natural and Cinematic force it." },
+```
+
+Combo index is the field value, so Natural is `DLSSNR.Style = 1` and Cinematic is `2`. Nothing is
+different about them; the two projects picked different labels for the same descriptors.
+
+Beside it, Deep Fried Chicken has a separate `NRPreset` -- `{ "Default", "Preset #1", "Preset #2",
+"Preset #3" }` -- and *that* is the weight hint. Confusing the two is easy: one changes colour and
+costs nothing, the other would change the network and has only one option to change it to.
 
 The practical consequence: Model A/B/C is a grading choice and reproducing it needs no weights,
 which is why it is in the compose shader. A *preset* would be a different network, and there is
