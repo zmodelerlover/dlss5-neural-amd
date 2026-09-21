@@ -89,6 +89,40 @@ The defaults are a reasonable starting point.
 Each control carries a tag saying how well it is understood: `MEASURED`, `TRACED`, `UNKNOWN` or
 `INERT`. The legend is at the bottom of the panel.
 
+## Better motion vectors (optional)
+
+The network takes four inputs: colour, depth, motion and exposure. Colour is always there. On a
+game that renders a velocity buffer, D3D11 hands the real one over. Everywhere else — every
+emulator, every game without one — the add-on has to *estimate* motion by comparing two frames,
+and what it can afford next to the network is two levels of block matching with a search radius
+of four.
+
+A dedicated optical-flow shader is not on that budget. `shaders/DLSS5_Neural_Feed.fx` lets the
+add-on read one instead, and passes ReShade's depth buffer along with it.
+
+1. Install a motion-vector shader. **iMMERSE Launchpad** is the default and runs an eight-level
+   pyramid with a filter between every level: <https://martysmods.com>. VORT, LumeniteFX Kernel
+   and anything writing `texMotionVectors` also work — pick one with the `DLSS5N_MV_PROVIDER`
+   preprocessor definition on the effect.
+2. Copy `DLSS5_Neural_Feed.fx` into your ReShade shaders folder.
+3. In ReShade's **Home** tab, tick both techniques, with the provider's **above**
+   `DLSS 5 Neural Feed`.
+
+Nothing of any provider is bundled here, and the effect includes no third-party files. It
+declares the provider's output texture exactly as the provider does, which is how ReShade binds
+the same one.
+
+The add-on's **Guides** section reports what it ended up with, per frame, and the line is the
+whole story: a game's own vectors beat the effect, the effect beats the estimator, and the
+estimator beats nothing. Turn the whole thing off with the checkbox there or `FeedEffect=0`.
+
+Optical flow is a guess, and it guesses confidently wrong wherever the picture changes without
+moving — a flickering light, a flame, a reflection. The effect reprojects every vector into the
+previous frame and checks it against depth, against the previous frame's vector, and against the
+hypothesis that nothing moved at all; one that fails is zeroed, which tells the network the
+surface is static. That is what stops history being warped in from somewhere it never was. The
+tests and their thresholds are in the effect's own settings.
+
 ## Troubleshooting
 
 | What you see | What it means |
@@ -130,8 +164,9 @@ are already in `external/`.
 
 ## Limits
 
-- D3D11 is the only route where the game's own depth and motion vectors reach the network. On D3D12
-  and Vulkan the add-on only receives the final image.
+- D3D11 is the only route where the game's own depth and motion vectors reach the network, and the
+  only one where the companion effect above can stand in for them. On D3D12 and Vulkan the add-on
+  only receives the final image.
 - FSR upscaling is not implemented and is not planned.
 - On 32-bit D3D9 without D3D9Ex, each frame crosses system memory twice. That costs a few
   milliseconds per frame regardless of the Resolution Scale.
