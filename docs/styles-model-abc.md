@@ -1,0 +1,204 @@
+# Model A / B / C: what the style vector actually does
+
+`DLSSNR.Style` is an NGX parameter, not an ini key. It selects Neural Rendering Model A, B or C.
+RenoDX exposes it and it visibly changes the image on NVIDIA hardware.
+
+Two earlier passes concluded the feature was out of reach, and a third one here nearly repeated
+that conclusion from the DLL's C++ alone. It was wrong. Disassembling the CUDA kernel shows the
+style vector is **colour grading on the output RGB** -- not network conditioning -- and that Models
+B and C are three scalar knobs our own composition stage can apply. No HIP backend is involved.
+
+Reference binary: `nvngx_dlssnr.dll`, 165 840 496 bytes,
+sha256 `e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e`, image base `0x180000000`.
+
+## The table, read from the image
+
+`sub_18001D7C0` picks a descriptor; `sub_18001D5F0` applies it:
+
+```c
+float t = opts[57];                  // LocalToneStrength, clamped to [0,1]
+uint mask = *(uint *)desc;
+if (mask & 0x0001) opts[73] = (desc[1] - 0.0f) * t + 0.0f;
+if (mask & 0x0002) opts[74] = (desc[2] - 1.0f) * t + 1.0f;   // the only neutral that is not 0
+...
+if (mask & 0x2000) opts[86] = (desc[14] - 0.0f) * t + 0.0f;
+```
+
+Eight slots of 68 bytes at `record+100`, `record` = `0x1800B0D80`, count at `record+36` = 3,
+Model A's fallback descriptor at `record+40`:
+
+| | descriptor | mask | overrides |
+|---|---|---|---|
+| Model A | `record+40` | `0x00` | nothing. Neutral vector `{0, 1.0, 0 x12}`, and a zero mask writes no slot. |
+| Model B | `record+108` | `0x34` | `opts[75] = -0.10`, `opts[77] = -0.25`, `opts[78] = -0.10` |
+| Model C | `record+176` | `0x20` | `opts[78] = -0.15` |
+
+Six of eight slots are `valid = 0`. Three models, two entries, because Model A is the absence of an
+entry. One set of weights, not three: 156 `block*` tensor names, each appearing once.
+
+## Where the fourteen floats go
+
+`sub_18001C920` copies them contiguously into a `NGXCubinParameterStruct<CG2RPostProcessParams>`:
+
+```c
+v63 = *(_OWORD *)((char *)a4 + 292);                        // opts[73..76]
+*(_OWORD *)((char *)&v106[39] + 4) = v63;                   // -> params +316
+*(_OWORD *)((char *)&v106[41] + 4) = *(_OWORD *)(a4 + 308); // -> params +332
+*(_OWORD *)((char *)&v106[43] + 4) = *(_OWORD *)(a4 + 324); // -> params +348
+HIDWORD(v106[45]) = *((_DWORD *)a4 + 85);                   // -> params +364
+LODWORD(v106[46]) = *((_DWORD *)a4 + 86);                   // -> params +368
+```
+
+56 bytes at struct offsets 316..371 of a 376-byte (`0x178`) parameter block.
+
+`sub_1800176E0` tests that vector against neutral, and its answer is one of four conditions that
+decide whether the pass is recorded at all:
+
+```c
+bool sub_1800176E0(float *a1) {
+  return fabs(a1[73] - 0.0f) > 1e-5f || fabs(a1[74] - 1.0f) > 1e-5f || ... ;
+}
+...
+result = sub_1800176E0(a4);
+if ( !v17 && !v18 && !(_BYTE)result && !v13 ) return result;   // nothing recorded
+```
+
+At Model A the vector is neutral, so as far as style is concerned there is nothing to run.
+
+## Reading the kernel
+
+The kernels are not greppable in the DLL because each fatbin entry is **zstd-compressed** -- which
+is why the first look found "no readable kernels" and nearly closed the question. Decompressed,
+they are named. `tools/carve_dlssnr_kernels.py` does the extraction.
+
+```
+python tools/carve_dlssnr_kernels.py nvngx_dlssnr.dll out/
+nvdisasm -c out/cg2r_post_process_kernel_sm120.cubin
+```
+
+The parameter layout is authoritative from the cubin's own metadata, not inferred:
+
+```
+EIATTR_PARAM_CBANK -> cbank base 0x380, size 0x178
+ordinal 0, offset 0, size 376        # the struct, passed by value
+```
+
+So struct byte *N* is `c[0x0][0x380 + N]`, which puts the style vector at `0x4bc .. 0x4f0`:
+
+| slot | struct | SASS constant |
+|---|---|---|
+| `opts[73]` | +316 | `c[0x0][0x4bc]` |
+| `opts[74]` | +320 | `c[0x0][0x4c0]` |
+| `opts[75]` | +324 | `c[0x0][0x4c4]` |
+| `opts[76]` | +328 | `c[0x0][0x4c8]` |
+| `opts[77]` | +332 | `c[0x0][0x4cc]` |
+| `opts[78]` | +336 | `c[0x0][0x4d0]` |
+| ... | ... | ... |
+| `opts[86]` | +368 | `c[0x0][0x4f0]` |
+
+All fourteen are read (`LDCU.64` at `0x4c8` covers `[76]`+`[77]`; `LDCU.128` at `0x4e0` covers
+`[82]`..`[85]`).
+
+## What the kernel does with them
+
+A colour-grading chain on the final RGB triple. Each operation is the identity at its neutral
+value, which is why Model A is indistinguishable from the pass not running.
+
+**`opts[73]` / `opts[74]` -- black and white point (levels):**
+
+```
+LDCU    UR5, c[0x0][0x4bc]        ; opts[73]
+FADD    R0, R2, -UR5              ; rgb - black
+LDCU    UR4, c[0x0][0x4c0]        ; opts[74]
+UFADD   UR4, -UR5, UR4            ; white - black
+UFADD   UR4, UR4, 1.0e-10         ; divide-by-zero guard
+MUFU.RCP R9, UR4
+FFMA.SAT R5, R0, R9, RZ           ; saturate((rgb - black) / (white - black))
+```
+
+Neutral `{0, 1}` gives `(x - 0) / 1` = x.
+
+**`opts[75]` -- exposure, in stops:**
+
+```
+LDCU     UR4, c[0x0][0x4c4]
+MUFU.EX2 R3, UR4                  ; exp2(opts[75])
+FFMA.SAT R5, R3, R5, RZ           ; rgb *= exp2(opts[75])
+```
+
+Neutral 0 gives `exp2(0)` = 1.
+
+**`opts[77]` -- contrast, as a blend toward a smoothstep S-curve:**
+
+```
+FADD  R6, R5, R5
+FMUL  R4, R5, R5
+FADD  R6, -R6, 3
+FFMA  R4, R4, R6, -R5             ; x*x*(3 - 2x) - x  =  smoothstep(x) - x
+FFMA  R0, R4, UR5, R5             ; x + opts[77] * (smoothstep(x) - x)
+```
+
+Neutral 0 leaves x. Negative values pull *away* from the S-curve, i.e. flatten contrast.
+
+**`opts[78]` -- saturation, inside an HSV round trip:**
+
+```
+LDCU     UR4, c[0x0][0x4d0]
+UFADD    UR4, UR4, 1              ; 1 + opts[78]
+FFMA.SAT R11, R0, UR4, RZ         ; S *= (1 + opts[78])
+```
+
+Surrounded by the `+-1/3` hue-sector constants and `0.16666667` of an RGB<->HSV conversion.
+Neutral 0 gives `x1`.
+
+**Others, identified but not needed for B/C:** `opts[80]` is a lerp of each channel against a
+grey (`FFMA R4, R4, |UR6|, R5` over channel differences, gated on `|k| >= 1e-6`); `opts[81]` takes
+`(max+min)*0.5` across the channels -- HSL lightness -- and branches on the sign of the
+coefficient. `opts[76]`, `opts[79]`, `opts[82..86]` are read but their roles were not pinned down,
+because Models B and C leave all of them neutral.
+
+## What this means for us
+
+Model B and Model C, relative to Model A, are exactly three operations on the output image:
+
+| slot | operation | Model B | Model C |
+|---|---|---|---|
+| `opts[75]` | `rgb *= exp2(k)` | `-0.10` -> x0.9330 (-0.1 EV) | -- |
+| `opts[77]` | `x + k * (smoothstep(x) - x)` | `-0.25` -> 25% softer contrast | -- |
+| `opts[78]` | HSV `S *= (1 + k)` | `-0.10` -> x0.90 | `-0.15` -> x0.85 |
+
+Both are scaled by `LocalToneStrength` in `[0,1]`, applied as `(desc - neutral) * t + neutral`.
+
+None of this touches the network, the weights, or the backend. It is the kind of operation our
+compose stage already performs, on data we already hold. The earlier conclusion -- that styles
+needed the HIP route and a reimplemented pass -- does not hold: it was reasoning from the C++
+parameter plumbing without reading the kernel the parameters were going to.
+
+### What this does not establish
+
+- **The input domain and the exact position in the chain.** The operations run on values already
+  saturated to `[0,1]` after a `TEX` fetch, and the full ordering (levels, then the `opts[80]`
+  grey lerp, then `opts[81]` lightness, then exposure, contrast, saturation) was read off one
+  path through the kernel. Reproducing B and C *approximately* is easy; reproducing them
+  *bit-exactly* needs the encoding and the order confirmed against the other branches.
+- **That our pipeline's output is the same signal.** NVIDIA applies this to its own post-process
+  output. Ours is a composed image. The knobs transfer; the tuning may not.
+- **That it is worth shipping.** Three colour operations are not a different network, and calling
+  them "Model B" carries an implication about the image that only a comparison can settle. That
+  comparison is now cheap -- `tools/ab.ps1` measures it.
+
+### The earlier scope decision needs revisiting
+
+"Cosmetic presets in compose pretending to be a style" was ruled out when the work was scoped, and
+that was right under the belief that a real style was network conditioning we could not reach.
+That premise is now false. Applying `exp2(-0.10)`, a `-0.25` smoothstep blend and a `x0.90`
+saturation is not a cosmetic imitation -- it is the operation, with the constants read out of
+NVIDIA's own kernel. Whether to ship it under NVIDIA's model names is a separate question, and
+the user's call.
+
+## Still closed: the danielblnc runtime
+
+Unchanged and for a harder reason: its kernels are precompiled GCN code objects whose
+appearance-path parameter structs are 32 bytes total against 56 bytes of style vector, with no
+source. That route cannot carry the vector. It does not need to -- the operations above sit after
+the network, on our side of it.
