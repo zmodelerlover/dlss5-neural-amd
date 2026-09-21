@@ -1341,12 +1341,27 @@ struct State
     ComPtr<ID3D12Resource> netResidual;
     ComPtr<ID3D12Resource> netMotion;
     ComPtr<ID3D12Resource> lumaA, lumaB, flowSmall, flowCoarse;
-    ComPtr<ID3D12Resource> history;
+    // One history per pass, not one for the chain. A pass's history has to be the output of
+    // *that* pass on the previous frame: the denoiser blends its input against the reprojected
+    // history, and pass 2's input is pass 1's output, which is a different image from the one
+    // the chain ended on. Handing every pass the chain's final output means pass 1 and pass 2
+    // are both given a reference that matches neither of their inputs, the temporal term never
+    // agrees with the spatial one, and the accumulation does not converge -- measured in game
+    // as lighting noise that history removes at one pass and stops removing at two.
+    //
+    // The reference fork reaches the same arrangement from the other end: each of its passes
+    // holds its own NGX feature, and an NGX feature carries its own history.
+    ComPtr<ID3D12Resource> history[kMaxPasses];
     std::atomic<bool> useHistory { true };
+    // Bit i is set when history[i] holds pass i's output from the previous frame. A bitmask
+    // rather than a flag because the passes fill in one at a time: on the first frame of a
+    // three-pass chain, pass 1 has a history and passes 2 and 3 do not, and handing a pass a
+    // texture that was never written is the stale-reference problem this whole comment is about.
+    //
     // Cleared by the overlay's History checkbox and read and set by present. The overlay only
     // takes g.lock for its Status section at the bottom, and the checkbox is above that, so the
     // two threads share no lock here. Atomic, like the switches beside it.
-    std::atomic<bool> historyValid { false };
+    std::atomic<uint32_t> historyValid { 0 };
     bool loggedHistory = false;
     UINT flowWidth = 0, flowHeight = 0;
     std::atomic<bool> useMotion { true };
@@ -2175,9 +2190,15 @@ void DrainReadbacks(UINT nw, UINT nh)
                 g.probeMotionMean.store(static_cast<float>(mag / (2.0 * n)));
                 g.probeMotionMax.store(static_cast<float>(biggest));
                 g.probeStillPct.store(static_cast<int>(100 * zero / n));
-                Log("guide probe, motion %ux%u: %llu%% exactly still, mean |d| %.3f px, max %.3f px"
-                    "%s", nw, nh, static_cast<unsigned long long>(100 * zero / n), mag / (2.0 * n),
-                    biggest,
+                // Naming the source is the difference between a number and a comparison: two
+                // readings of "8% still" mean nothing unless it is known which of the three
+                // things producing the field was running for each.
+                Log("guide probe, motion %ux%u (%s): %llu%% exactly still, mean |d| %.3f px, "
+                    "max %.3f px%s", nw, nh,
+                    g.guideMotion.external  ? "from the effect"
+                    : g.gameMotionActive    ? "the game's own"
+                                            : "estimated",
+                    static_cast<unsigned long long>(100 * zero / n), mag / (2.0 * n), biggest,
                     zero == n ? "  <-- ALL ZERO. Either nothing is moving, or the guide picked a "
                                 "buffer the engine does not write velocity into."
                               : "");
@@ -2766,7 +2787,20 @@ void AdoptFeedEffect()
                           (provider ? 32 : 0);
     if (signature == g.feedSignature)
         return;
+    const bool first = g.feedSignature < 0;
     g.feedSignature = signature;
+    // Re-arm the guide probe whenever the motion source changes hands. The probe is the only
+    // instrument that says what is actually in the field, and it latched itself off after one
+    // reading -- a reading taken in the first seconds, while ReShade was still compiling, so it
+    // always measured the estimator and never the provider that replaced it. Toggling the
+    // provider's technique is exactly the A/B this is for, and it has to be measurable more
+    // than once. Not on the first call: the probe is already armed then, and re-arming would
+    // only push the reading further out.
+    if (!first)
+    {
+        g.probeGuides.store(true);
+        g.nextGuideProbe = g.frame + 120;
+    }
     std::snprintf(g.feedStatus, sizeof(g.feedStatus),
                   "DLSS5_Neural_Feed.fx: %s; motion %s, depth %s",
                   g.effects == nullptr      ? "no effect runtime yet"
@@ -3156,7 +3190,7 @@ void BridgePresent(device *dev, swapchain *sc)
         Log("bridge: closing the command list failed (0x%08lX); rebuilding.", hr);
         g.lastJob = 0;
         g.activePasses = 0;
-        g.historyValid.store(false);
+        g.historyValid.store(0);
         if (!RecreateWorkSlot(i))
             g.bridgeFailed = true;
         return;
@@ -3781,11 +3815,21 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
          !CreateTexture(fw, fh, DXGI_FORMAT_R16_FLOAT, g.lumaA, "lumaA") ||
          !CreateTexture(fw, fh, DXGI_FORMAT_R16_FLOAT, g.lumaB, "lumaB") ||
          !CreateTexture(fw, fh, DXGI_FORMAT_R16G16_FLOAT, g.flowSmall, "flowSmall") ||
-         !CreateTexture(fw, fh, DXGI_FORMAT_R16G16_FLOAT, g.flowCoarse, "flowCoarse") ||
-         !CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.history, "history")))
+         !CreateTexture(fw, fh, DXGI_FORMAT_R16G16_FLOAT, g.flowCoarse, "flowCoarse")))
         return false;
+    // One per pass. Built for every slot rather than for the current pass count, because the
+    // count is a live control: allocating on demand would put a texture creation in the middle
+    // of a frame the first time somebody moves the slider. Three at 1306x662 RGBA16F is 10 MB.
     if (netChanged)
-        g.historyValid.store(false);
+        for (UINT i = 0; i < State::kMaxPasses; ++i)
+        {
+            char name[16];
+            std::snprintf(name, sizeof(name), "history%u", i + 1);
+            if (!CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.history[i], name))
+                return false;
+        }
+    if (netChanged)
+        g.historyValid.store(0);
     if (netChanged)
     {
         g.flowWidth = fw;
@@ -4877,14 +4921,21 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         //
         // Off by default because these are hardcoded offsets into one specific build: a wrong
         // pointer here does not fail, it hangs the game.
-        const bool wantHistory = g.useHistory.load() && g.historyValid.load() && g.history != nullptr;
+        // This pass's own previous output, not the chain's. See the declaration of history[].
+        const UINT slot = std::min(i, State::kMaxPasses - 1);
+        const bool wantHistory = g.useHistory.load() &&
+                                 (g.historyValid.load() & (1u << slot)) != 0 &&
+                                 g.history[slot] != nullptr;
         At<uint8_t>(r, rt::kHistoryOn) = wantHistory ? 1 : 0;
-        At<void *>(r, rt::kHistory) = wantHistory ? static_cast<void *>(g.history.Get()) : nullptr;
+        At<void *>(r, rt::kHistory) =
+            wantHistory ? static_cast<void *>(g.history[slot].Get()) : nullptr;
         if (wantHistory && !g.loggedHistory)
         {
             g.loggedHistory = true;
-            Log("history: handing the engine last frame's output at %ux%u. Watch the engine log: "
-                "it says history off in the engine log when it is ignoring this.", g.netWidth, g.netHeight);
+            Log("history: handing each pass its own previous output at %ux%u -- pass %u reads "
+                "what pass %u wrote last frame, not what the chain ended on. Watch the engine "
+                "log: it says history off there when it is ignoring this.",
+                g.netWidth, g.netHeight, slot + 1, slot + 1);
         }
         // 97b1d is Temporal, not "motion is valid" -- the engine's own ini reader reads the
         // key "Temporal" into this byte. The old name was a guess and it made the session-2
@@ -4978,6 +5029,25 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // -- v0.2.17 did it with hipMemcpyAsync, v0.3.0 stores straight through
         // its own host pointer; either way, leave it to do so.
         ++accepted;
+
+        // Keep what this pass produced as this pass's history for the next frame. Recorded on
+        // the same list, straight after the pass, so on the GPU it reads what the pass wrote and
+        // lands before the next pass overwrites netColour. Doing it once after the loop -- which
+        // is what this used to do -- could only ever capture the last pass, so every earlier
+        // pass was handed a reference belonging to a different stage of the chain.
+        if (g.useHistory.load() && g.history[slot] != nullptr)
+        {
+            Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE);
+            Barrier(cmd, g.history[slot].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+            cmd->CopyResource(g.history[slot].Get(), g.netColour.Get());
+            Barrier(cmd, g.history[slot].Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            g.historyValid.fetch_or(1u << slot);
+        }
 
         // Reported, not enforced. Whether the engine bumps the job id once per recording or once
         // per submission is not established, so acting on this would risk breaking out of the
@@ -5160,22 +5230,9 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-    // Keep this frame's network output as next frame's history. Done here, after compose has
-    // read it, so nothing races over the texture.
-    if (g.useHistory.load() && g.history != nullptr && g.activePasses != 0)
-    {
-        Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_SOURCE);
-        Barrier(cmd, g.history.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_DEST);
-        cmd->CopyResource(g.history.Get(), g.netColour.Get());
-        Barrier(cmd, g.history.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        g.historyValid.store(true);
-    }
-    else
+    // Each pass took its own copy as it finished, so there is nothing to capture here any more.
+    // What is left is the invalidation, which is still a whole-chain decision.
+    if (!(g.useHistory.load() && g.activePasses != 0))
     {
         // The chain did not run this frame -- skipped because the previous evaluation was still
         // pending, or refused by the engine -- so the history texture still holds the frame
@@ -5188,7 +5245,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // cutscenes, alt-tab, anything that stalls the queue -- which is where it gets reported.
         // Invalidating costs the denoiser one frame of accumulation; not invalidating costs a
         // smear that has no way to decay.
-        g.historyValid.store(false);
+        g.historyValid.store(0);
     }
 
     return true;
@@ -5400,7 +5457,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             g.enabled.store(false);
             // Whenever it is switched back on, that first frame must not be handed a history
             // from before the alt-tab, however many minutes ago that was.
-            g.historyValid.store(false);
+            g.historyValid.store(0);
             Log("alt-tab: effect switched off, because Disable On Alt-Tab is on. It stays off; "
                 "press %s in the game to bring it back.", HotkeyName().c_str());
             return;
@@ -5428,7 +5485,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         // the motion vectors handed with it describe a single frame of movement. Feeding that to
         // a temporal denoiser is asking it to smear a stale frame across the new one, which is
         // the ghosting people see for a second or two after alt-tabbing back. Start clean.
-        g.historyValid.store(false);
+        g.historyValid.store(0);
         // And the job clock with it. jobRunning is a latch: set when a job is submitted, read on
         // the next present that finds the job finished. Across a pause -- minimised, disabled,
         // alt-tabbed -- no present runs, so the next one measures the whole pause and calls it a
@@ -6304,7 +6361,7 @@ void OnOverlay(effect_runtime *runtime)
                 if (editingScale != before)
                 {
                     g.scale.store(editingScale);
-                    g.historyValid.store(false);
+                    g.historyValid.store(0);
                     Log("menu: resolution scale %.2f -> %.2f; applying once after the edit ended%s",
                         static_cast<double>(before), static_cast<double>(editingScale),
                         cap > 0.0f ? " (the automatic cap is lifted)" : "");
@@ -6605,7 +6662,7 @@ void OnOverlay(effect_runtime *runtime)
         if (Risk r(kWarn, hist); ImGui::Checkbox(T("History", "Histórico"), &hist))
         {
             g.useHistory.store(hist);
-            g.historyValid.store(false);
+            g.historyValid.store(0);
             Log("menu: history %s", hist ? "on" : "off");
         }
         Help("Hands the engine last frame's output to carry forward.\n\n"
