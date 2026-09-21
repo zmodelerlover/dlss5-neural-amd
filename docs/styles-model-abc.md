@@ -140,22 +140,48 @@ FFMA  R0, R4, UR5, R5             ; x + opts[77] * (smoothstep(x) - x)
 
 Neutral 0 leaves x. Negative values pull *away* from the S-curve, i.e. flatten contrast.
 
-**`opts[78]` -- saturation, inside an HSV round trip:**
+**`opts[78]` -- saturation, inside an HSL round trip:**
 
 ```
+FADD     R9, R13, R14             ; max + min
+FMUL     R2, R9, 0.5              ; L = (max + min) / 2
+FSETP.GT P1, PT, R2, 0.5          ; which half of the lightness range
+FADD     R15, R13, -R14           ; d = max - min
+@P1  FADD R0, -R13, 2 ; FADD R3, -R14, R0 ; MUFU.RCP R3, R3   ; 1 / (2 - max - min)
+@!P1 MUFU.RCP R6, R9                                          ; 1 / (max + min)
+@P1  FMUL R0, R15, R3 ; @!P1 FMUL R0, R15, R6                 ; S
 LDCU     UR4, c[0x0][0x4d0]
 UFADD    UR4, UR4, 1              ; 1 + opts[78]
-FFMA.SAT R11, R0, UR4, RZ         ; S *= (1 + opts[78])
+FFMA.SAT R11, R0, UR4, RZ         ; S' = saturate(S * (1 + opts[78]))
+...
+FSETP.GEU P0, PT, R2, 0.5
+@!P0 FADD R3, R11, 1  ; FMUL R0, R2, R3      ; q = L * (1 + S')
+@P0  FADD R5, R2, R11 ; FFMA R0, -R2, R11, R5 ; q = L + S' - L*S'
+FADD     R3, R2, R2
+FADD     R11, R3, -R0             ; p = 2L - q
 ```
 
-Surrounded by the `+-1/3` hue-sector constants and `0.16666667` of an RGB<->HSV conversion.
-Neutral 0 gives `x1`.
+**HSL, not HSV.** The lightness is `(max+min)/2` and the saturation denominator switches between
+`max+min` and `2-max-min` on which side of `0.5` that lightness falls -- both of which are HSL's,
+and neither of which appears in HSV, where `V = max` and `S = d/max` with no branch at all. The
+rebuild through `q`/`p` and the `+-1/3`, `0.16666667` hue-sector constants is the standard
+HSL->RGB, which shares those constants with HSV->RGB and was what made the first reading say HSV.
+
+The difference is not academic. HSV desaturation holds the brightest channel still and lifts the
+others towards it; HSL pulls both ends towards `L`, so a bright saturated colour also gives up
+some of its peak. That is exactly the kind of colour Models B and C are aimed at. This add-on
+implemented the HSV reading until the block above was decoded, and `tools/style_check.py` agreed
+with it -- because the check was written from the same premise and only ever proved the closed
+form matched itself.
+
+Neutral 0 gives `x1` either way.
 
 **Others, identified but not needed for B/C:** `opts[80]` is a lerp of each channel against a
-grey (`FFMA R4, R4, |UR6|, R5` over channel differences, gated on `|k| >= 1e-6`); `opts[81]` takes
-`(max+min)*0.5` across the channels -- HSL lightness -- and branches on the sign of the
-coefficient. `opts[76]`, `opts[79]`, `opts[82..86]` are read but their roles were not pinned down,
-because Models B and C leave all of them neutral.
+grey (`FFMA R4, R4, |UR6|, R5` over channel differences, gated on `|k| >= 1e-6`); `opts[81]`
+(`c[0x0][0x4dc]`) takes its own `(max+min)*0.5` and branches on the sign of the coefficient -- a
+second, separate lightness operation, and one that runs *before* exposure rather than beside the
+saturation block above. `opts[76]`, `opts[79]`, `opts[82..86]` are read but their roles were not
+pinned down, because Models B and C leave all of them neutral.
 
 ## What this means for us
 
@@ -165,7 +191,13 @@ Model B and Model C, relative to Model A, are exactly three operations on the ou
 |---|---|---|---|
 | `opts[75]` | `rgb *= exp2(k)` | `-0.10` -> x0.9330 (-0.1 EV) | -- |
 | `opts[77]` | `x + k * (smoothstep(x) - x)` | `-0.25` -> 25% softer contrast | -- |
-| `opts[78]` | HSV `S *= (1 + k)` | `-0.10` -> x0.90 | `-0.15` -> x0.85 |
+| `opts[78]` | HSL `S *= (1 + k)`, hue and lightness held | `-0.10` -> x0.90 | `-0.15` -> x0.85 |
+
+The compose shader writes the third as its closed form, `c_i' = L + (S'/S)(c_i - L)`: holding
+hue and lightness while the saturation scales moves every channel along the line through `L`,
+because `d = 2*S*min(L, 1-L)` on both sides of the branch, so the hue sectors cancel exactly and
+a literal round trip would only add its own rounding. `tools/style_check.py` checks that closed
+form against `colorsys.rgb_to_hls` rather than asserting it.
 
 Both are scaled by `LocalToneStrength` in `[0,1]`, applied as `(desc - neutral) * t + neutral`.
 
@@ -177,10 +209,14 @@ parameter plumbing without reading the kernel the parameters were going to.
 ### What this does not establish
 
 - **The input domain and the exact position in the chain.** The operations run on values already
-  saturated to `[0,1]` after a `TEX` fetch, and the full ordering (levels, then the `opts[80]`
-  grey lerp, then `opts[81]` lightness, then exposure, contrast, saturation) was read off one
-  path through the kernel. Reproducing B and C *approximately* is easy; reproducing them
-  *bit-exactly* needs the encoding and the order confirmed against the other branches.
+  saturated to `[0,1]` after a `TEX` fetch. The order of the three slots B and C use is settled --
+  by the order the kernel loads them, `0x4c4` exposure, then `0x4c8`/`0x4cc` contrast, then
+  `0x4d0` saturation, and the compose shader runs them in that order with the same intermediate
+  `saturate` the kernel's `FADD.FTZ.SAT` performs after contrast. The kernel's second copy of the
+  chain, from `0x4eb0`, loads the same constants in the same order, so that is both branches and
+  not one path. What is not settled is the placement of the slots B and C leave neutral: the
+  `opts[80]` grey lerp and the `opts[81]` lightness both run *before* exposure, which matters the
+  moment a fourth slot is ever given a value.
 - **That our pipeline's output is the same signal.** NVIDIA applies this to its own post-process
   output. Ours is a composed image. The knobs transfer; the tuning may not.
 - **That it is worth shipping.** Three colour operations are not a different network, and calling

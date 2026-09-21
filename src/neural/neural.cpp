@@ -358,17 +358,35 @@ float3 NeuralStyle(float3 c)
  c = saturate(c * exp2(gExp));
  // opts[77]: contrast, as a blend towards a smoothstep S-curve. The kernel builds x*x*(3-2x)
  // and adds k times the difference, so a negative coefficient flattens rather than steepens.
- c = c + gCon * (c * c * (3.0 - 2.0 * c) - c);
- // opts[78]: saturation, as a multiply on HSV's S with hue and value held. Written here in the
- // closed form of that round trip -- for fixed H and V, c_i = V - S*(V - c_i) -- because the
- // hue sectors cancel out exactly and a literal RGB->HSV->RGB would only add its own rounding.
+ // The clamp is the kernel's own FADD.FTZ.SAT on the result, not a tidy-up: it is what the
+ // saturation step below is handed, and a positive coefficient can overshoot [0,1] here.
+ c = saturate(c + gCon * (c * c * (3.0 - 2.0 * c) - c));
+ // opts[78]: saturation, as a multiply on HSL's S -- not HSV's. The kernel decomposes to HSL:
+ // L = (max+min)/2, and S = d/(max+min) at or below the midpoint, d/(2-max-min) above it
+ // (SASS 3ca0-3db0: FADD max+min, FMUL 0.5, then the two reciprocals under FSETP L > 0.5).
+ // It scales S, then rebuilds through q = L<0.5 ? L(1+S) : L+S-L*S and p = 2L-q, which is
+ // textbook HSL->RGB.
+ //
+ // Written here in the closed form of that round trip. Holding H and L while S scales moves
+ // every channel along the line through L, because d = 2*S*min(L, 1-L) on both sides, so the
+ // rebuilt channel is c_i' = L + (S'/S)(c_i - L) and the hue sectors cancel exactly.
+ //
  // The saturate on S is the kernel's, and it is why this is not just a lerp: a coefficient
  // above zero can drive S past 1, and there it has to stop.
- float V = max(c.r, max(c.g, c.b));
- float mn = min(c.r, min(c.g, c.b));
- if (V > 1e-6) {
-  float S = (V - mn) / V;
-  if (S > 1e-6) c = V - (saturate(S * (1.0 + gSat)) / S) * (V - c);
+ //
+ // HSV would anchor on max instead of L, which holds the brightest channel still and only
+ // lifts the others. HSL pulls both ends towards L, so a bright saturated colour also loses
+ // some of its peak. That is a visible difference on exactly the colours Models B and C are
+ // there to touch, and it was HSV here until the kernel was read for it.
+ float M = max(c.r, max(c.g, c.b));
+ float m = min(c.r, min(c.g, c.b));
+ float d = M - m;
+ // The kernel's own guard is `max > min`: a grey has no hue to preserve and no saturation to
+ // scale, and it is the only case where the reciprocal below would not exist.
+ if (d > 1e-6) {
+  float L = (M + m) * 0.5;
+  float S = d / ((L > 0.5) ? (2.0 - M - m) : (M + m));
+  c = L + (saturate(S * (1.0 + gSat)) / S) * (c - L);
  }
  return saturate(c);
 }

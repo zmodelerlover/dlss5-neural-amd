@@ -5,15 +5,21 @@ that is subtly not what NVIDIA draws, which is worse, because it looks fine.
 
   1. The coefficients. They are transcribed from the descriptor table in nvngx_dlssnr.dll and a
      typo in a sign or a digit is invisible.
-  2. The saturation step. The kernel does a full RGB->HSV->RGB round trip; the shader uses the
+  2. The saturation step. The kernel does a full RGB->HSL->RGB round trip; the shader uses the
      closed form of it. That is a derivation, not a transcription, so it is checked here against
      an actual round trip rather than asserted.
+
+     HSL, not HSV. This check used to run against colorsys.rgb_to_hsv and passed, because the
+     shader had been written from the same wrong reading: it proved the closed form matched its
+     own premise and said nothing about the kernel. The SASS settles it -- L = (max+min)*0.5 at
+     3ca0/3cb0, S over (max+min) or (2-max-min) under a test on L at 3cd0-3db0, and the rebuild
+     through q = L<0.5 ? L(1+S) : L+S-L*S with p = 2L-q at 3fa0-4080. The two differ on bright
+     saturated colours, which are the ones Models B and C exist to touch.
 
     python tools/style_check.py
 """
 
 import colorsys
-import math
 
 
 def coefficients(style, strength=1.0):
@@ -33,20 +39,24 @@ def sat(x):
 def style_rgb(c, gexp, gcon, gsat):
     """Mirror of NeuralStyle() in kComposeShader."""
     c = [sat(v * (2.0 ** gexp)) for v in c]
-    c = [v + gcon * (v * v * (3.0 - 2.0 * v) - v) for v in c]
-    V, mn = max(c), min(c)
-    if V > 1e-6:
-        S = (V - mn) / V
-        if S > 1e-6:
-            f = sat(S * (1.0 + gsat)) / S
-            c = [V - f * (V - v) for v in c]
+    c = [sat(v + gcon * (v * v * (3.0 - 2.0 * v) - v)) for v in c]
+    hi, lo = max(c), min(c)
+    d = hi - lo
+    if d > 1e-6:
+        light = (hi + lo) * 0.5
+        s = d / ((2.0 - hi - lo) if light > 0.5 else (hi + lo))
+        f = sat(s * (1.0 + gsat)) / s
+        c = [light + f * (v - light) for v in c]
     return [sat(v) for v in c]
 
 
 def saturation_roundtrip(c, gsat):
-    """What the kernel literally does: to HSV, scale S, back to RGB."""
-    h, s, v = colorsys.rgb_to_hsv(*c)
-    return list(colorsys.hsv_to_rgb(h, sat(s * (1.0 + gsat)), v))
+    """What the kernel literally does: to HSL, scale S, back to RGB.
+
+    colorsys spells it HLS; the middle component is the lightness.
+    """
+    h, light, s = colorsys.rgb_to_hls(*c)
+    return list(colorsys.hls_to_rgb(h, light, sat(s * (1.0 + gsat))))
 
 
 def demo():
@@ -73,19 +83,28 @@ def demo():
         assert max(abs(a - b) for a, b in zip(out, c)) < 1e-9, (c, out)
 
     # --- the derivation -----------------------------------------------------------------------
-    # The closed form has to agree with a real HSV round trip, on colours of every shape: grey
-    # (S = 0, the degenerate case the shader guards), fully saturated, and ordinary.
+    # The closed form has to agree with a real HSL round trip, on colours of every shape: grey
+    # (d = 0, the degenerate case the shader guards), fully saturated, ordinary, and on both
+    # sides of the L = 0.5 branch, since the two halves use different denominators.
     for c in ([0.2, 0.5, 0.9], [0.9, 0.1, 0.4], [0.5, 0.5, 0.5], [1.0, 0.0, 0.0],
-              [0.0, 0.0, 0.0], [0.3, 0.3, 0.7], [0.05, 0.9, 0.35]):
+              [0.0, 0.0, 0.0], [0.3, 0.3, 0.7], [0.05, 0.9, 0.35],
+              # L well above the branch, L well below it, and L exactly on it.
+              [1.0, 0.9, 0.8], [0.12, 0.04, 0.02], [0.9, 0.5, 0.1]):
         for k in (-0.15, -0.10, -0.5, 0.0, 0.25):
             mine = style_rgb(c, 0.0, 0.0, k)
             theirs = [sat(v) for v in saturation_roundtrip(c, k)]
             assert max(abs(a - b) for a, b in zip(mine, theirs)) < 1e-6, (c, k, mine, theirs)
 
-    # A coefficient above zero can push S past 1, and there it has to stop rather than invert
-    # the colour past the grey axis.
-    out = style_rgb([0.4, 0.5, 1.0], 0.0, 0.0, 10.0)
-    assert min(out) >= -1e-9 and abs(min(out)) < 1e-6, out
+    # A coefficient above zero can push S past 1, and there it has to stop rather than carry on
+    # pulling the channels apart until they leave the cube. S = 1 puts the ends exactly on 0 and
+    # 1, so this is the boundary case and not a clamp hiding an overshoot.
+    out = style_rgb([0.3, 0.5, 0.7], 0.0, 0.0, 10.0)
+    assert -1e-9 <= min(out) < 1e-6 and 1.0 - 1e-6 < max(out) <= 1.0 + 1e-9, out
+    assert max(abs(a - b) for a, b in zip(out, saturation_roundtrip([0.3, 0.5, 0.7], 10.0))) < 1e-6
+    # A colour already at S = 1 in HSL has nowhere to go, and must come back untouched. Under
+    # HSV the same colour still had room, which is one of the places the two readings part.
+    already = [0.4, 0.5, 1.0]
+    assert max(abs(a - b) for a, b in zip(style_rgb(already, 0.0, 0.0, 10.0), already)) < 1e-6
 
     # --- direction of each knob ---------------------------------------------------------------
     gexp, gcon, gsat = coefficients(1)
@@ -114,7 +133,7 @@ def demo():
 
     print("style_check: the B/C coefficients match the descriptor table, every knob is the "
           "identity at neutral,")
-    print("             and the closed-form saturation agrees with a real HSV round trip.")
+    print("             and the closed-form saturation agrees with a real HSL round trip.")
 
 
 if __name__ == "__main__":
