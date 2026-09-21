@@ -11,6 +11,33 @@ B and C are three scalar knobs our own composition stage can apply. No HIP backe
 Reference binary: `nvngx_dlssnr.dll`, 165 840 496 bytes,
 sha256 `e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e`, image base `0x180000000`.
 
+## Two parameters, not one: Style is not Preset
+
+The DLL takes both, and they are unrelated:
+
+| parameter | what it selects | strings in the DLL |
+|---|---|---|
+| `DLSSNR.Style` | the fourteen-float grading vector below -- Model A, B or C | the descriptor table at `0x1800B0D80` |
+| `DLSSNR.Hint.Render.Preset` | **a set of weights**, through `CG2RFindWeightByPreset` | one entry: `CC_SILVER_AARDWOLD`, `WEIGHTS_HT`, `CC_Control_History_Blend_Quantize_With_Teacher_honest_tench_2026_07_04_22_30_weights` |
+
+This build ships exactly one weight set, so every preset but the default takes the fallback:
+
+```
+DLSSNR: preset %d is not available in this DLL build; falling back to shipping default preset %d ('%s')
+DLSSNR: CG2RFindWeightByPreset(%d) returned null; using descriptor [0] '%s' as last-resort fallback
+```
+
+**There is no "Natural", "Cinematic" or any other named look in this DLL.** A search of `.text`
+and `.rdata` for those words returns nothing; the only names it carries are the weight tags above.
+RenoDX, which is where most people meet this field, labels the three values exactly as this
+project does -- its string is *"Selects Neural Rendering Model A, Model B, or Model C through the
+prerelease DLSSNR.Style field."* Friendly names elsewhere are a downstream UI's own, and do not
+correspond to anything the runtime distinguishes.
+
+The practical consequence: Model A/B/C is a grading choice and reproducing it needs no weights,
+which is why it is in the compose shader. A *preset* would be a different network, and there is
+only one in this build to have.
+
 ## The table, read from the image
 
 `sub_18001D7C0` picks a descriptor; `sub_18001D5F0` applies it:
@@ -219,6 +246,31 @@ parameter plumbing without reading the kernel the parameters were going to.
   moment a fourth slot is ever given a value.
 - **That our pipeline's output is the same signal.** NVIDIA applies this to its own post-process
   output. Ours is a composed image. The knobs transfer; the tuning may not.
+
+### Where it is applied, and why that is the same place
+
+NVIDIA runs `cg2r_post_process_kernel` at the end of the evaluate, on the network's own output --
+which, for Neural Rendering, *is* the frame the game goes on to present. The grading is therefore
+the last thing done to the picture that reaches the screen.
+
+The compose shader does the same thing in the same place: `NeuralStyle()` is the last expression
+before the store, applied to `outc` after the residual has been composed and after `ToSrgb`, so it
+runs on display-referred values in `[0,1]`. That matches the kernel, where every step ends in an
+`FFMA.SAT` and the chain never sees anything outside the cube. It is not applied to the network's
+input, to the residual, or to any guide -- grading a source and then correcting it would put the
+grade under the correction instead of over it.
+
+One difference that cannot be closed from a ReShade add-on: NVIDIA's grading happens mid-pipeline,
+so a game's own post-processing after DLSS lands on top of it. This runs at present, after
+everything. Nothing here can change that.
+
+**What did need fixing:** the composed frame was only pasted back over the back buffer when the
+network had produced a correction that frame (`CompositionIsFresh`). On a frame the network sat
+out -- the previous evaluation still pending, which the log counts -- the game's own frame went
+out **ungraded**, so a selected style came and went with the skip rate. NVIDIA has no equivalent
+of that frame: its grading is inside the evaluate. Compose now runs with the correction forced to
+zero on those frames, which leaves the composition as the identity and the grade as the only thing
+it does, and the paste is allowed. With `Style=0` the old gate is unchanged.
 - **That it is worth shipping.** Three colour operations are not a different network, and calling
   them "Model B" carries an implication about the image that only a comparison can settle. That
   comparison is now cheap -- `tools/ab.ps1` measures it.

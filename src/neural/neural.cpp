@@ -1521,6 +1521,8 @@ void NoteJobCost(UINT64 ms);
 // The measurement that says dropping it is the right answer rather than a trade: the correction's
 // own mean in that scene is 0.003. Leaving it out of a frame is below anyone's threshold;
 // putting it in the wrong place is not.
+bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat);
+
 bool CompositionIsFresh(bool ranNetwork)
 {
     // A debug view draws a buffer, not a correction, so it has nothing that can go stale -- and
@@ -1533,7 +1535,20 @@ bool CompositionIsFresh(bool ranNetwork)
     // make the mode flicker between two different pictures, which is worse than either.
     if (g.debugView.load() != 0 || g.networkOutput.load())
         return true;
-    return ranNetwork && g.activePasses != 0;
+    if (ranNetwork && g.activePasses != 0)
+        return true;
+    // A style is colour grading on the finished frame, and it does not go stale: it is a function
+    // of the pixel in front of it, not of anything the network said. Gating it with the correction
+    // meant the grade came and went with the skip rate -- Model B's frame, then the game's own
+    // frame, then Model B's again -- which is a flicker in the one thing that is supposed to be
+    // constant. NVIDIA has no equivalent of a skipped frame here: its grading is inside the
+    // evaluate, so every frame it shows carries it.
+    //
+    // The correction is what is dropped on these frames, not the compose: RecordNetwork zeroes the
+    // residual for them, so what gets pasted is the game's own picture with the grade on it and
+    // nothing aimed at where the edges used to be.
+    float expo = 0.0f, con = 0.0f, sat = 0.0f;
+    return StyleCoefficients(g.style.load(), g.styleStrength.load(), expo, con, sat);
 }
 
 int RuntimeTonemap()
@@ -5107,13 +5122,21 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     cmd->SetComputeRootDescriptorTable(0, ctable);
     float gexp = 0.0f, gcon = 0.0f, gsat = 0.0f;
     StyleCoefficients(g.style.load(), g.styleStrength.load(), gexp, gcon, gsat);
+    // On a frame the network sat out, the residual still holds the last one's answer. Compose
+    // runs anyway -- a selected style has to reach every frame that is shown, or it flickers --
+    // but with no correction, because one aimed at where the picture used to be reads as a trail.
+    // Zero intensity makes every step of the composition the identity, additive or ratio alike,
+    // so what comes out is the game's own frame with the grade on it. A debug view is exempt for
+    // the reason CompositionIsFresh gives: what it draws is a buffer, not a correction.
+    const bool stale = !(runNetwork && g.activePasses != 0) && dbg == 0 && !g.networkOutput.load();
+    const float composeStrength = stale ? 0.0f : strength;
     // v0.6.0's packing, untouched: bit 0 is the filter and everything above it is the debug
     // view, so there is no spare bit here and the style does not take one.
     UINT cdims[15] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
                      (g.bicubic.load() ? 1u : 0u) | (static_cast<UINT>(dbg) << 1),
                      0, 0, 0, 0, 0, 0, 0 };
     std::memcpy(&cdims[5], &kWhite, sizeof(float));
-    std::memcpy(&cdims[6], &strength, sizeof(float));
+    std::memcpy(&cdims[6], &composeStrength, sizeof(float));
     const float rlimit = g.residualLimit.load(), rfade = g.residualFade.load();
     std::memcpy(&cdims[8], &rlimit, sizeof(float));
     std::memcpy(&cdims[9], &rfade, sizeof(float));
