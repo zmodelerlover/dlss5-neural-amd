@@ -861,6 +861,12 @@ struct Guide
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
+    // Set when the companion effect supplied this guide instead of the bind observation. The
+    // tally then has nothing to say about it: a ReShade effect texture is never bound as a
+    // render target the add-on can see, so SettleGuide would walk the slot straight back onto
+    // whatever the game happened to draw into most.
+    bool external = false;
+
     ComPtr<ID3D11Texture2D> snap;  // private, never bound as a target, so an SRV over it survives
     UINT snapW = 0, snapH = 0;
     DXGI_FORMAT snapFmt = DXGI_FORMAT_UNKNOWN;
@@ -1376,6 +1382,15 @@ struct State
     ComPtr<ID3D11ComputeShader> guideDepthCs;
     bool guideDepthCsFailed = false;
     std::atomic<bool> useGameGuides { true };
+    // The companion effect, shaders/DLSS5_Neural_Feed.fx, when the user has installed it. It
+    // hands over a real optical-flow field -- iMMERSE Launchpad runs an eight-level pyramid,
+    // against the two levels and radius of four this add-on can afford next to the network --
+    // and ReShade's own depth buffer, which is curated per game in a way the bind observation
+    // here cannot be. Both are only read at present, after ReShade has finished writing them.
+    reshade::api::effect_runtime *effects = nullptr;
+    std::atomic<bool> useFeedEffect { true };
+    char feedStatus[192] = "";
+    int feedSignature = -1;
     // Diagnostic. Runs the entire bridge but never touches the swapchain image, which is the
     // only way to tell a back-buffer reference apart from anything else the add-on does to the
     // device. Picture is untouched with this on; it is not a usable mode.
@@ -1693,6 +1708,7 @@ void LoadSettings()
     g.useDepth.store(flag(L"Depth", g.useDepth.load()));
     g.depthNormalise.store(flag(L"DepthNormalise", g.depthNormalise.load()));
     g.useGameGuides.store(flag(L"GameGuides", g.useGameGuides.load()));
+    g.useFeedEffect.store(flag(L"FeedEffect", g.useFeedEffect.load()));
     g.noBackBuffer.store(flag(L"NoBackBuffer", g.noBackBuffer.load()));
     g.noBridge.store(flag(L"NoBridge", g.noBridge.load()));
     g.glSemaphores.store(flag(L"GlSemaphores", g.glSemaphores.load()));
@@ -1808,6 +1824,7 @@ void ForEachSetting(Num num, Flag flag)
     flag(L"Depth", g.useDepth.load());
     flag(L"DepthNormalise", g.depthNormalise.load());
     flag(L"GameGuides", g.useGameGuides.load());
+    flag(L"FeedEffect", g.useFeedEffect.load());
     // StartOn used to be deliberately unsaved, so a diagnostic could not leave an install that
     // boots with the effect on. It is a normal setting now and the overlay owns it, so it has to
     // survive a save like everything else beside it.
@@ -2575,6 +2592,155 @@ bool PrepareGuide(Guide &guide, bool isDepth)
     return true;
 }
 
+// The motion-vector shaders the companion effect can be compiled against. Name checks only:
+// the effect binds the selected provider's output texture itself, so one that is not listed
+// here still works. This exists to answer "is anything actually writing that texture", which
+// is the difference between a real field and a page of zeros the network would read as
+// "nothing moved" -- a wrong answer, where no answer at all leaves the estimator in charge.
+constexpr struct
+{
+    const char *file, *tech;
+} kMvProviders[] = {
+    { "MartysMods_LAUNCHPAD.fx", "MartysMods_Launchpad" },
+    { "vort_Motion.fx", "vort_MotionEffects" },
+    { "lumenite_Kernel.fx", "Lumenite_Kernel" },
+    { "lumenite_QuantMotion.fx", "Lumenite_QuantMotion" },
+    { "qUINT_motionvectors.fx", "MotionVectors" },
+    { "dh_uber_motion.fx", "DH_UBER_MOTION_020" },
+    { "MotionEstimation.fx", "DRME" },
+};
+
+// Whether a technique of that name exists and is ticked. ReShade keeps a technique whose effect
+// failed to compile in its list and lets it be "enabled" -- it just never runs -- so this is
+// necessary but not sufficient, and the guide probe is what catches the rest.
+bool TechniqueOn(const char *file, const char *tech)
+{
+    if (g.effects == nullptr)
+        return false;
+    const auto t = g.effects->find_technique(file, tech);
+    return t.handle != 0 && g.effects->get_technique_state(t);
+}
+
+bool AnyMvProviderOn()
+{
+    for (const auto &p : kMvProviders)
+        if (TechniqueOn(p.file, p.tech))
+            return true;
+    return false;
+}
+
+// One texture of the companion effect, as the D3D11 resource ReShade allocated for it.
+// ReShade owns the lifetime; this is read inside present, between the effect chain finishing
+// and the copy that carries it across, which is the window where it is both written and alive.
+bool FeedTexture(const char *name, Guide &guide)
+{
+    if (g.effects == nullptr)
+        return false;
+    const auto var = g.effects->find_texture_variable("DLSS5_Neural_Feed.fx", name);
+    if (var.handle == 0)
+        return false;
+    reshade::api::resource_view srv {}, srgb {};
+    g.effects->get_texture_binding(var, &srv, &srgb);
+    if (srv.handle == 0)
+        return false;
+    reshade::api::device *dev = g.effects->get_device();
+    if (dev == nullptr)
+        return false;
+    const reshade::api::resource res = dev->get_resource_from_view(srv);
+    auto *native = reinterpret_cast<ID3D11Resource *>(res.handle);
+    if (native == nullptr)
+        return false;
+    const auto desc = dev->get_resource_desc(res);
+    if (desc.texture.width < kGuideFloor || desc.texture.height < kGuideFloor)
+        return false;
+    // reshade::api::format is DXGI's numbering, value for value, which is what lets the rest of
+    // the guide path -- built against DXGI_FORMAT throughout -- take this without a translation
+    // table that would have to be kept in step with two enums at once.
+    const auto format = static_cast<DXGI_FORMAT>(desc.texture.format);
+    if (guide.chosen.Get() != native || guide.format != format ||
+        guide.width != desc.texture.width || guide.height != desc.texture.height)
+    {
+        guide.chosen = native;
+        guide.width = desc.texture.width;
+        guide.height = desc.texture.height;
+        guide.format = format;
+        guide.ready = false;
+        guide.logged = false;
+        guide.failed = false;
+        guide.challenger = nullptr;
+        guide.challengerFrames = 0;
+    }
+    guide.external = true;
+    return true;
+}
+
+// Take the companion effect's guides when it is installed and switched on, and hand the slots
+// back to the bind observation when it is not. Called once per present, before the tally is
+// settled, because the tally must not be consulted for a slot the effect owns.
+//
+// The game's own depth is preferred over the effect's: a real depth buffer is the geometry the
+// engine drew, while ReShade's is whatever its heuristic selected, and on the routes where the
+// observation finds nothing the effect is the only source there is. Motion is the other way
+// round -- the effect's field beats this add-on's own estimator on every count -- but a game
+// that writes a velocity buffer still beats both, because that one is not a guess at all.
+void AdoptFeedEffect()
+{
+    // A texture whose technique is not ticked is not being written. It still resolves, still
+    // has the right size, and still copies across without complaint -- as whatever was in it
+    // when the technique was last on, or as zeros. Both read to the network as fact.
+    const bool ticked = g.useFeedEffect.load() && g.effects != nullptr &&
+                        TechniqueOn("DLSS5_Neural_Feed.fx", "DLSS5_Neural_Feed");
+    const bool provider = ticked && AnyMvProviderOn();
+    const bool haveGameMotion = g.guideMotion.chosen != nullptr && !g.guideMotion.external;
+    const bool haveGameDepth = g.guideDepth.chosen != nullptr && !g.guideDepth.external;
+
+    bool mv = false, depth = false;
+    // Depth needs only the effect; motion needs a provider behind it as well, because the
+    // effect is a validator and a converter, not an estimator -- with nothing writing the
+    // provider's texture it forwards zeros, and zeros are worse than the estimator.
+    if (provider && !haveGameMotion)
+        mv = FeedTexture("DLSS5N_MV", g.guideMotion);
+    if (ticked && !haveGameDepth)
+        depth = FeedTexture("DLSS5N_Depth", g.guideDepth);
+    for (Guide *guide : { &g.guideMotion, &g.guideDepth })
+    {
+        const bool taken = (guide == &g.guideMotion) ? mv : depth;
+        if (guide->external && !taken)
+        {
+            // The effect went away -- unticked, reloaded, or the game changed resolution and
+            // ReShade rebuilt its textures. Drop the slot rather than keep copying from a
+            // resource that is no longer the one being written.
+            guide->external = false;
+            guide->chosen.Reset();
+            guide->ready = false;
+            guide->failed = false;
+        }
+    }
+
+    // Says the state once per change, not once per frame. Games recreate swapchains in bursts
+    // and ReShade its effects with them, and a line per present would bury everything else.
+    const int signature = (ticked ? 1 : 0) | (mv ? 2 : 0) | (depth ? 4 : 0) |
+                          (haveGameMotion ? 8 : 0) | (haveGameDepth ? 16 : 0) |
+                          (provider ? 32 : 0);
+    if (signature == g.feedSignature)
+        return;
+    g.feedSignature = signature;
+    std::snprintf(g.feedStatus, sizeof(g.feedStatus),
+                  "DLSS5_Neural_Feed.fx: %s; motion %s, depth %s",
+                  g.effects == nullptr      ? "no effect runtime yet"
+                  : !g.useFeedEffect.load() ? "switched off"
+                  : !ticked                 ? "not installed, or its technique is not enabled"
+                  : !provider ? "enabled, but no motion-vector shader is enabled above it"
+                              : "enabled",
+                  mv               ? "from the effect"
+                  : haveGameMotion ? "from the game"
+                                   : "estimated",
+                  depth           ? "from the effect"
+                  : haveGameDepth ? "from the game"
+                                  : "none of its own");
+    Log("%s", g.feedStatus);
+}
+
 // Submit everything recorded on the game's context and wait, on the CPU, for the GPU to finish
 // it. An event query does not report until every command submitted before it has completed.
 //
@@ -2850,13 +3016,20 @@ void BridgePresent(device *dev, swapchain *sc)
                                   reinterpret_cast<ID3D11Resource *>(back.handle));
         g.game11ctx->CopyResource(g.bridgeIn.on11.Get(), g.stageIn11.Get());
     }
-    SettleGuide(g.guideDepth, g_depthTally);
-    SettleGuide(g.guideMotion, g_motionTally);
+    if (!g.guideDepth.external)
+        SettleGuide(g.guideDepth, g_depthTally);
+    if (!g.guideMotion.external)
+        SettleGuide(g.guideMotion, g_motionTally);
+    AdoptFeedEffect();
     g.guideDepth.ready = g.guideMotion.ready = false;
     if (g.useGameGuides.load())
     {
+        // The effect's depth is already a plain R32_FLOAT, which opens on the second device as
+        // it stands. It goes down the motion path -- one CopyResource -- rather than the depth
+        // one, whose snapshot and compute pass exist only to get a planar depth-stencil format
+        // into a shape that can cross at all.
         if (g.useDepth.load())
-            PrepareGuide(g.guideDepth, true);
+            PrepareGuide(g.guideDepth, !g.guideDepth.external);
         if (g.useMotion.load())
             PrepareGuide(g.guideMotion, false);
     }
@@ -4351,9 +4524,11 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         if (!g.loggedGameMotion)
         {
             g.loggedGameMotion = true;
-            Log("motion: the game's own vectors, %llux%u -> %ux%u, scale %.3f. The estimator is "
+            Log("motion: %s, %llux%u -> %ux%u, scale %.3f. The estimator is "
                 "off. Check Debug View \"Motion vectors\" while panning: the field should follow "
                 "the camera, and MotionScale flips or rescales it if it does not.",
+                g.guideMotion.external ? "an optical-flow shader, through DLSS5_Neural_Feed.fx"
+                                       : "the game's own vectors",
                 static_cast<unsigned long long>(md.Width), md.Height, nw, nh,
                 static_cast<double>(mscale));
         }
@@ -5056,6 +5231,34 @@ void SettleD3D12Depth()
     Log("depth (D3D12): taking %ux%u format %d, bound %u times a present and cleared %u",
         best->width, best->height, static_cast<int>(best->format), best->binds, best->clears);
     g_d12DepthTally.clear();
+}
+
+// The companion effect's textures are ReShade's, and only ReShade knows where they live. It
+// hands over the runtime here; the guides are taken from it at present, once the whole effect
+// chain has run, so what crosses is this frame's field rather than last frame's.
+void OnInitEffects(effect_runtime *runtime)
+{
+    std::lock_guard guard(g.lock);
+    g.effects = runtime;
+    g.feedSignature = -1;
+}
+
+void OnDestroyEffects(effect_runtime *runtime)
+{
+    std::lock_guard guard(g.lock);
+    if (g.effects != runtime)
+        return;
+    g.effects = nullptr;
+    g.feedSignature = -1;
+    // The guides point into textures that runtime owned. Letting them stand would copy from
+    // freed memory on the next present.
+    for (Guide *guide : { &g.guideMotion, &g.guideDepth })
+        if (guide->external)
+        {
+            guide->external = false;
+            guide->chosen.Reset();
+            guide->ready = false;
+        }
 }
 
 void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, uint32_t,
@@ -6185,10 +6388,15 @@ void OnOverlay(effect_runtime *runtime)
         ImGui::Text(T("Colour %s   Depth %s   Motion %s   Exposure not fed",
                       "Cor %s   Profundidade %s   Movimento %s   Exposição não alimentada"),
                     T("from the swapchain", "da swapchain"),
-                    g.gameDepthActive    ? T("FROM THE GAME", "DO JOGO")
-                    : g.depthSnapshot    ? T("pre-clear snapshot", "snapshot antes do clear")
-                                         : T("none", "nenhuma"),
-                    g.gameMotionActive ? T("FROM THE GAME", "DO JOGO") : T("estimated", "estimado"));
+                    g.guideDepth.external && g.gameDepthActive
+                        ? T("FROM THE EFFECT", "DO EFFECT")
+                    : g.gameDepthActive ? T("FROM THE GAME", "DO JOGO")
+                    : g.depthSnapshot   ? T("pre-clear snapshot", "snapshot antes do clear")
+                                        : T("none", "nenhuma"),
+                    g.guideMotion.external && g.gameMotionActive
+                        ? T("FROM THE EFFECT", "DO EFFECT")
+                    : g.gameMotionActive ? T("FROM THE GAME", "DO JOGO")
+                                         : T("estimated", "estimado"));
         Help("The four inputs the engine takes. This line, not any slider above it, sets the "
              "ceiling on what the network can do.\n\n"
              "On PCSX2 it is colour only: a PS2 never computed per-pixel motion, and its depth "
@@ -6200,6 +6408,39 @@ void OnOverlay(effect_runtime *runtime)
              "No PCSX2 é só cor: o PS2 nunca calculou movimento por pixel, e a profundidade dele "
              "existe só entre um bind e um clear. Um motor moderno em D3D11 entrega profundidade "
              "e movimento, e os dois são pegos quando estão lá.");
+
+        bool feed = g.useFeedEffect.load();
+        if (ImGui::Checkbox(T("Take the guides from DLSS5_Neural_Feed.fx",
+                              "Pegar as guias do DLSS5_Neural_Feed.fx"),
+                            &feed))
+        {
+            g.useFeedEffect.store(feed);
+            g.feedSignature = -1;
+            Log("menu: companion effect %s", feed ? "on" : "off");
+        }
+        Help("The companion effect in shaders/. It hands over a real optical-flow field from a "
+             "motion-vector shader -- iMMERSE Launchpad, VORT, LumeniteFX -- and ReShade's own "
+             "depth buffer.\n\n"
+             "This matters most where the add-on has nothing: on an emulator the PS2 computed no "
+             "motion at all, so the only alternative is this add-on's own estimator, which is two "
+             "levels of block matching with a search radius of four because it has to share the "
+             "frame with the network. Launchpad runs eight levels and filters between each one.\n\n"
+             "A game that renders its own velocity buffer still wins over both, and that is what "
+             "the line above reports. Install the effect, enable the provider's technique above "
+             "it, and this line changes on its own.",
+
+             "O effect companheiro, em shaders/. Ele entrega um campo de fluxo óptico de verdade, "
+             "vindo de um shader de vetores de movimento -- iMMERSE Launchpad, VORT, LumeniteFX -- "
+             "e o depth buffer do próprio ReShade.\n\n"
+             "Isso pesa mais onde o add-on não tem nada: num emulador o PS2 nunca calculou "
+             "movimento, então a única alternativa é o estimador do próprio add-on, que são dois "
+             "níveis de block matching com raio de busca quatro porque ele divide o frame com a "
+             "rede. O Launchpad roda oito níveis e filtra entre cada um.\n\n"
+             "Um jogo que desenha o próprio velocity buffer ainda ganha dos dois, e é isso que a "
+             "linha acima informa. Instale o effect, ligue a técnica do provider acima dele, e "
+             "essa linha muda sozinha.");
+        if (g.feedStatus[0] != '\0')
+            ImGui::TextDisabled("%s", g.feedStatus);
 
         // A buffer can be crossed, bound and fed and still be a cleared constant, which looks
         // identical from the outside and is worth nothing to the network.
@@ -6951,6 +7192,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         if (g.events & 8)
             reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
         reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
+        reshade::register_event<reshade::addon_event::init_effect_runtime>(OnInitEffects);
+        reshade::register_event<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffects);
         reshade::register_event<reshade::addon_event::present>(OnPresent);
         if (g.events & 16)
             reshade::register_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
