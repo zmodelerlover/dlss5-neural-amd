@@ -5628,6 +5628,58 @@ void OnOverlay(effect_runtime *runtime)
              "conversão ao criar os recursos de entrada.");
         Tag(kMeasured);
 
+        // Live, and deliberately so: judging three looks by editing an ini and restarting is
+        // three restarts, and on a host whose swapchain is in a child window Ctrl+Home cannot
+        // reload the file at all. Here it is one click and the frame changes under you.
+        int style = g.style.load();
+        if (ImGui::Combo(T("Neural Rendering Model", "Modelo de Renderização Neural"), &style,
+                         T("Model A (default)\0Model B\0Model C\0",
+                           "Modelo A (padrão)\0Modelo B\0Modelo C\0")))
+        {
+            g.style.store(std::clamp(style, 0, 2));
+            Log("menu: style %d", style);
+        }
+        Help("The same three models DLSSNR.Style selects on NVIDIA. They are not three "
+             "networks -- there is one set of weights, and a model is a short vector of colour "
+             "coefficients applied to the finished frame.\n\n"
+             "Model A is the neutral vector and is what every release so far has drawn, so it "
+             "changes nothing. Model B darkens by 0.1 stop, flattens contrast a quarter of the "
+             "way off its S-curve, and removes a tenth of the saturation. Model C only removes "
+             "15 percent of the saturation.\n\n"
+             "The coefficients are read out of nvngx_dlssnr.dll, not invented: the descriptor "
+             "table at record+108 and record+176, feeding slots 75, 77 and 78 of the style "
+             "vector. What each slot does was read from the post-process kernel's own "
+             "disassembly. Whether this matches NVIDIA's output pixel for pixel has not been "
+             "checked against NVIDIA hardware.",
+
+             "Os mesmos tres modelos que DLSSNR.Style seleciona na NVIDIA. Nao sao tres redes "
+             "-- ha um unico conjunto de pesos, e um modelo e um vetor curto de coeficientes de "
+             "cor aplicado ao quadro pronto.\n\n"
+             "O Modelo A e o vetor neutro e e o que toda release desenhou ate agora, entao nao "
+             "muda nada. O Modelo B escurece 0,1 stop, achata o contraste um quarto do caminho "
+             "para fora da curva S, e tira um decimo da saturacao. O Modelo C so tira 15 por "
+             "cento da saturacao.\n\n"
+             "Os coeficientes foram lidos do nvngx_dlssnr.dll, nao inventados: a tabela de "
+             "descritores em record+108 e record+176, alimentando os slots 75, 77 e 78 do vetor "
+             "de estilo. O que cada slot faz veio da desmontagem do proprio kernel de "
+             "pos-processamento. Se isso bate com a saida da NVIDIA pixel a pixel nao foi "
+             "verificado contra hardware NVIDIA.");
+        Tag(kTraced);
+
+        if (style != 0)
+        {
+            float ss = g.styleStrength.load();
+            if (ImGui::SliderFloat(T("Model Strength", "Força do Modelo"), &ss, 0.0f, 1.0f, "%.2f"))
+                g.styleStrength.store(std::clamp(ss, 0.0f, 1.0f));
+            Help("Scales the selected model towards neutral, the way the runtime's "
+                 "LocalToneStrength scales a style. 1 is the full model; 0 is Model A whatever "
+                 "is selected above.",
+                 "Escalona o modelo selecionado em direcao ao neutro, como o LocalToneStrength "
+                 "do runtime faz com um estilo. 1 e o modelo inteiro; 0 e o Modelo A qualquer "
+                 "que seja a selecao acima.");
+            Tag(kTraced);
+        }
+
         ImGui::BeginDisabled(g.encoding.load() == 0);
         float white = g.diffuseWhite.load();
         if (ImGui::SliderFloat(T("Diffuse White", "Branco Difuso"), &white, 80.0f, 1000.0f,
