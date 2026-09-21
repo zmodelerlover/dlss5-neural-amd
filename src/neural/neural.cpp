@@ -294,11 +294,15 @@ constexpr char kDepthShader[] = R"(
 Texture2D<float> src : register(t0);
 RWTexture2D<float> dst : register(u0);
 SamplerState smp : register(s0);
-cbuffer Extent : register(b0) { uint dw; uint dh; uint sw; uint sh; };
+cbuffer Extent : register(b0) { uint dw; uint dh; uint sw; uint sh; float dscale; };
 [numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
  if(p.x>=dw || p.y>=dh) return;
  uint2 t = min(uint2((float2(p.xy)+0.5)*float2(sw,sh)/float2(dw,dh)), uint2(sw-1,sh-1));
- dst[p.xy] = src.Load(int3(t,0));
+ // Scaled into the range the network was trained on. An emulator's projection can leave depth
+ // occupying a fraction of a percent of [0,1] -- PCSX2 measures 0.002 -- and a buffer that flat
+ // carries no geometry the network can use, however correct it is as depth. dscale is 1.0 for a
+ // buffer that already fills the range, so this is a no-op everywhere it should be.
+ dst[p.xy] = saturate(src.Load(int3(t,0)) * dscale);
 })";
 
 // The network runs at a fraction of the back buffer and only its *correction* comes back to
@@ -1334,7 +1338,12 @@ struct State
     ComPtr<ID3D12Resource> guideReadDepth, guideReadMotion;
     bool pendingGuides = false;
     std::atomic<bool> probeGuides { true };
-    uint64_t nextGuideProbe = 600;
+    // 120, not 600: the probe is what measures the depth range, and the depth range is what the
+    // guide is scaled by. The automatic `measure, residual` fires at 240, so a probe at 600 meant
+    // the one measurement of what the network did was always taken before the guide was right.
+    // The JUNK and FLAT guards are what make an early look safe; if the guides are not real yet
+    // it re-arms and tries again.
+    uint64_t nextGuideProbe = 120;
     // Last numbers the probe saw, for the overlay. A menu has no depth and nothing moving, so a
     // flat reading there means nothing -- these only become meaningful in a real scene, which is
     // why the probe keeps re-arming until it sees one.
@@ -1346,6 +1355,14 @@ struct State
     // 0..1 and x500 is pure white, which reads as "the view is broken". The probe sets this from
     // the range it actually measured, so one view works on both.
     std::atomic<float> depthDebugScale { 500.0f };
+    // The same measurement, on the path the network actually reads. The probe was already
+    // computing 1/max for the debug view and throwing it away everywhere else, so the guide the
+    // network got was the raw buffer: on PCSX2 that is 0..0.002, which is 0.2% of the range and
+    // flat as far as the network is concerned. Left at 1.0 until something has been measured,
+    // and only moved when the measured range is far enough below full that it is a defect
+    // rather than a scene -- a modern engine fills the range and keeps 1.0.
+    std::atomic<bool> depthNormalise { true };
+    std::atomic<float> depthScale { 1.0f };
     ComPtr<ID3D12Resource> netDepth;
     ComPtr<ID3D12Resource> depthAlias;
     ComPtr<ID3D12Resource> depthSnapshot;
@@ -1674,6 +1691,7 @@ void LoadSettings()
     g.useMotion.store(flag(L"Motion", g.useMotion.load()));
     g.useHistory.store(flag(L"History", g.useHistory.load()));
     g.useDepth.store(flag(L"Depth", g.useDepth.load()));
+    g.depthNormalise.store(flag(L"DepthNormalise", g.depthNormalise.load()));
     g.useGameGuides.store(flag(L"GameGuides", g.useGameGuides.load()));
     g.noBackBuffer.store(flag(L"NoBackBuffer", g.noBackBuffer.load()));
     g.noBridge.store(flag(L"NoBridge", g.noBridge.load()));
@@ -1788,6 +1806,7 @@ void ForEachSetting(Num num, Flag flag)
     flag(L"Motion", g.useMotion.load());
     flag(L"History", g.useHistory.load());
     flag(L"Depth", g.useDepth.load());
+    flag(L"DepthNormalise", g.depthNormalise.load());
     flag(L"GameGuides", g.useGameGuides.load());
     // StartOn used to be deliberately unsaved, so a diagnostic could not leave an install that
     // boots with the effect on. It is a normal setting now and the overlay owns it, so it has to
@@ -2056,6 +2075,19 @@ void DrainReadbacks(UINT nw, UINT nh)
                 // whatever few samples happened to land in 0..1, which is noise.
                 if (!depthJunk && hi > 1e-6)
                     g.depthDebugScale.store(static_cast<float>(1.0 / hi));
+                // The guide the network reads, from the same measurement. Gated on depthReal so
+                // a flat buffer cannot latch a scale, and on hi < 0.5 so a game whose depth
+                // already fills the range is left exactly as it was. Clamped because a max that
+                // measures near zero would otherwise turn rounding noise into the whole signal.
+                if (depthReal && hi < 0.5)
+                {
+                    const float s = std::clamp(static_cast<float>(1.0 / hi), 1.0f, 4096.0f);
+                    g.depthScale.store(s);
+                    Log("guide depth: range tops out at %.6f, so the buffer fills %.2f%% of 0..1 "
+                        "-- scaling the guide by %.1fx to give the network the range it was "
+                        "trained on. DepthNormalise=0 turns this off.",
+                        hi, 100.0 * hi, static_cast<double>(s));
+                }
                 Log("guide probe, depth %ux%u: min %.6f max %.6f mean %.6f, %.1f%% in 0..1%s", nw,
                     nh, lo, hi, inRange == 0 ? 0.0 : sum / static_cast<double>(inRange), inPct,
                     depthJunk ? "  <-- JUNK. Most of this is not in 0..1, so it is not being read "
@@ -4542,6 +4574,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             dtable.ptr += 4 * inc;
             cmd->SetComputeRootDescriptorTable(0, dtable);
             UINT ddims[8] { nw, nh, static_cast<UINT>(dd.Width), dd.Height, 0, 0, 0, 0 };
+            const float dscale = g.depthNormalise.load() ? g.depthScale.load() : 1.0f;
+            std::memcpy(&ddims[4], &dscale, sizeof(float));
             cmd->SetComputeRoot32BitConstants(1, 8, ddims, 0);
             cmd->Dispatch((nw + 7) / 8, (nh + 7) / 8, 1);
             Barrier(cmd, g.netDepth.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
