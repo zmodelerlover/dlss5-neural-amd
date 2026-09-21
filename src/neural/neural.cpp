@@ -338,8 +338,36 @@ Texture2D<float4> res  : register(t1);
 Texture2D<float4> dbgs : register(t2);
 RWTexture2D<float4> dst : register(u0);
 SamplerState smp : register(s0);
-cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float intensity; uint pad; float limit; float fade; float colour; float guard; };
+cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float intensity; uint pad; float limit; float fade; float colour; float guard; float gExp; float gCon; float gSat; };
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
+// Neural Rendering Model B and Model C, as cg2r_post_process_kernel applies them. Not an
+// impression of them: the three coefficients are read out of the descriptor table in
+// nvngx_dlssnr.dll and the operations are the ones its SASS performs, in its order. The full
+// derivation, with the disassembly, is in docs/styles-model-abc.md.
+//
+// Display-referred on purpose. Every step in the kernel ends in an FFMA.SAT, so the chain runs
+// on values already clamped to [0,1] -- which is the frame as it will be shown, not the linear
+// light the composition above works in.
+float3 NeuralStyle(float3 c)
+{
+ // opts[75]: exposure in stops. MUFU.EX2 on the coefficient, then a saturating multiply.
+ c = saturate(c * exp2(gExp));
+ // opts[77]: contrast, as a blend towards a smoothstep S-curve. The kernel builds x*x*(3-2x)
+ // and adds k times the difference, so a negative coefficient flattens rather than steepens.
+ c = c + gCon * (c * c * (3.0 - 2.0 * c) - c);
+ // opts[78]: saturation, as a multiply on HSV's S with hue and value held. Written here in the
+ // closed form of that round trip -- for fixed H and V, c_i = V - S*(V - c_i) -- because the
+ // hue sectors cancel out exactly and a literal RGB->HSV->RGB would only add its own rounding.
+ // The saturate on S is the kernel's, and it is why this is not just a lerp: a coefficient
+ // above zero can drive S past 1, and there it has to stop.
+ float V = max(c.r, max(c.g, c.b));
+ float mn = min(c.r, min(c.g, c.b));
+ if (V > 1e-6) {
+  float S = (V - mn) / V;
+  if (S > 1e-6) c = V - (saturate(S * (1.0 + gSat)) / S) * (V - c);
+ }
+ return saturate(c);
+}
 float3 ToLinear(float3 c){ return c <= 0.04045 ? c/12.92 : pow(abs(c+0.055)/1.055, 2.4); }
 float3 ToSrgb(float3 c){ return c <= 0.0031308 ? c*12.92 : 1.055*pow(abs(c), 1.0/2.4) - 0.055; }
 // The largest fraction of the correction that leaves every channel inside [0,1], applied to the
@@ -462,7 +490,16 @@ float3 CubeScale(float3 p, float3 t){
   if (peak > 1.0) v /= peak;
   v = max(v, 0.0);
  }
- dst[p.xy] = float4((mode != 0) ? ToSrgb(saturate(v)) : saturate(v), 1.0);
+ float3 outc = (mode != 0) ? ToSrgb(saturate(v)) : saturate(v);
+ // Applied last, to the frame as it will be shown, and only when a style is selected -- with
+ // Style=0 the coefficients are all zero and every operation above is its own identity, so
+ // this is skipped rather than run to no effect.
+ // No flag bit. Above bit 0 `pad` is the debug view here, and a bit taken from it would
+ // silently switch the picture to a debug draw. The coefficients answer it themselves:
+ // all three are exactly zero for Model A and for strength 0. That is also the question
+ // NVIDIA's own sub_1800176E0 asks before it records this pass at all.
+ if (gExp != 0.0 || gCon != 0.0 || gSat != 0.0) outc = NeuralStyle(outc);
+ dst[p.xy] = float4(outc, 1.0);
 })";
 
 // Optical flow, in three passes. The PS2 never computed per-pixel motion, so there is nothing to
@@ -1144,6 +1181,13 @@ struct State
     // luminance, so this cannot shift hue on its own: at 0 every pixel keeps the game's exact
     // colour and only its brightness carries the network's verdict.
     std::atomic<float> colourStrength { 1.0f };
+    // Neural Rendering Model A (0), B (1) or C (2). A is the neutral vector and what every
+    // release so far has drawn, so 0 is the default and selecting it changes nothing.
+    std::atomic<int> style { 0 };
+    // DLSSNR scales a style's coefficients by LocalToneStrength, clamped to [0,1], as
+    // (value - neutral) * t + neutral. Same knob, same range, so a style can be taken at part
+    // strength instead of only on or off.
+    std::atomic<float> styleStrength { 1.0f };
     std::atomic<bool> bicubic { true };
     // Show the network's own answer instead of composing it onto the game's frame.
     //
@@ -1460,6 +1504,9 @@ int RuntimeTonemap()
 // here are the same defaults the code carries; this file existing changes nothing about how the
 // add-on behaves.
 void LoadSettings();
+// Defined with the other composition helpers, below; wanted in LoadSettings only so the log can
+// report which model was selected.
+bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat);
 void SaveSettings(bool quiet = false);
 
 // Returns whether it read the settings itself, which it does only on the run that writes the file.
@@ -1520,7 +1567,20 @@ bool EnsureNeuralIni()
          "; sits behind somebody else's picture. The overlay explains each one where it sits.\r\n"
          "; Intensity leads because it is the one people reach for: the weight of the whole\r\n"
          "; effect, 1 being the network at full strength.\r\n"
-         "Intensity=1\r\n";
+         "Intensity=1\r\n"
+         "\r\n"
+         "; --- Neural Rendering Model ---------------------------------------------------\r\n"
+         "; 0 = Model A, 1 = Model B, 2 = Model C, the same three DLSSNR.Style selects on\r\n"
+         "; NVIDIA. One set of weights: a model is a short vector of colour coefficients\r\n"
+         "; applied to the finished frame. Model A is the neutral vector, so 0 is exactly\r\n"
+         "; what every release so far has drawn. B darkens by 0.1 stop, flattens contrast\r\n"
+         "; a quarter off its S-curve and takes a tenth of the saturation; C only takes\r\n"
+         "; 15 percent of the saturation. The coefficients are read out of\r\n"
+         "; nvngx_dlssnr.dll -- docs/styles-model-abc.md has the disassembly.\r\n"
+         "Style=0\r\n"
+         "; Scales the selected model towards neutral, as the runtime's LocalToneStrength\r\n"
+         "; does. 1 is the full model; 0 is Model A whatever Style says.\r\n"
+         "StyleStrength=1\r\n";
     f.close();
 
     // The rest of the keys, through the same writer the overlay's Save uses, so a file written
@@ -1574,6 +1634,18 @@ void LoadSettings()
     g.ratioGuard.store(std::clamp(num(L"Guard", g.ratioGuard.load()), 0.0f, 8.0f));
     g.guardTracksPasses.store(flag(L"GuardPerPass", g.guardTracksPasses.load()));
     g.colourStrength.store(std::clamp(num(L"ColourStrength", g.colourStrength.load()), 0.0f, 1.0f));
+    g.style.store(std::clamp(static_cast<int>(num(L"Style", 0.0f)), 0, 2));
+    g.styleStrength.store(std::clamp(num(L"StyleStrength", 1.0f), 0.0f, 1.0f));
+    {
+        // Stated in the log because a style is a small change to the whole frame, and a
+        // measurement run that does not say which one it drew cannot be compared to another.
+        float se = 0.0f, sc = 0.0f, ss = 0.0f;
+        if (StyleCoefficients(g.style.load(), g.styleStrength.load(), se, sc, ss))
+            Log("Style=%d at strength %.2f: exposure %+.3f stops, contrast %+.3f, saturation "
+                "%+.3f, applied to the composed frame.",
+                g.style.load(), static_cast<double>(g.styleStrength.load()),
+                static_cast<double>(se), static_cast<double>(sc), static_cast<double>(ss));
+    }
     g.structure.store(num(L"Structure", g.structure.load()));
     g.skin.store(num(L"Skin", g.skin.load()));
     g.tone.store(num(L"Tone", g.tone.load()));
@@ -1685,6 +1757,8 @@ void ForEachSetting(Num num, Flag flag)
     num(L"EdgeFade", g.residualFade.load());
     num(L"Guard", g.ratioGuard.load());
     num(L"ColourStrength", g.colourStrength.load());
+    num(L"Style", static_cast<float>(g.style.load()));
+    num(L"StyleStrength", g.styleStrength.load());
     flag(L"GuardPerPass", g.guardTracksPasses.load());
     flag(L"PassTaper", g.passTaper.load());
     num(L"Structure", g.structure.load());
@@ -3274,10 +3348,11 @@ bool InitPipeline()
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable = { 2, ranges };
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    // Twelve, not eight: compose needs four more than the rest -- the residual limit, the edge
-    // fade, the colour strength and the highlight guard. A shader declaring a shorter cbuffer
-    // over a longer root constant block is fine, so the other six keep passing eight.
-    params[1].Constants = { 0, 0, 12 };
+    // Fifteen, not eight: compose needs seven more than the rest -- the residual limit, the edge
+    // fade, the colour strength, the highlight guard, and the three style coefficients. A shader
+    // declaring a shorter cbuffer over a longer root constant block is fine, so the other six
+    // keep passing eight.
+    params[1].Constants = { 0, 0, 15 };
     D3D12_STATIC_SAMPLER_DESC smp {};
     smp.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     smp.AddressU = smp.AddressV = smp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -4017,6 +4092,26 @@ float EffectiveGuard()
         return base;
     const UINT running = std::max(1u, g.activePasses);
     return base + static_cast<float>(running - 1);
+}
+
+// The Model B and Model C coefficients, and the strength scaling DLSSNR applies to them.
+//
+// These three numbers are not tuned here. They are the descriptor table in nvngx_dlssnr.dll,
+// read out of the image at record+108 (mask 0x34) and record+176 (mask 0x20), feeding slots 75,
+// 77 and 78 of the style vector -- exposure in stops, contrast towards a smoothstep, and HSV
+// saturation. docs/styles-model-abc.md has the disassembly that says which is which.
+//
+// The neutral value of all three slots is zero, so the runtime's (value - neutral) * t + neutral
+// reduces to value * t. Returns whether anything is actually being applied, so Style=0 and
+// StyleStrength=0 both skip the work instead of running an identity.
+bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat)
+{
+    expo = con = sat = 0.0f;
+    const float t = std::clamp(strength, 0.0f, 1.0f);
+    if (style == 1)        { expo = -0.10f * t; con = -0.25f * t; sat = -0.10f * t; }
+    else if (style == 2)   { sat = -0.15f * t; }
+    else                   return false;
+    return t > 0.0f;
 }
 
 // What one pass of the network is told. The globals unless that pass carries its own profile.
@@ -4768,8 +4863,13 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     auto ctable = heap->GetGPUDescriptorHandleForHeapStart();
     ctable.ptr += 8 * inc;
     cmd->SetComputeRootDescriptorTable(0, ctable);
-    UINT cdims[12] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
-                     (g.bicubic.load() ? 1u : 0u) | (static_cast<UINT>(dbg) << 1), 0, 0, 0, 0 };
+    float gexp = 0.0f, gcon = 0.0f, gsat = 0.0f;
+    StyleCoefficients(g.style.load(), g.styleStrength.load(), gexp, gcon, gsat);
+    // v0.6.0's packing, untouched: bit 0 is the filter and everything above it is the debug
+    // view, so there is no spare bit here and the style does not take one.
+    UINT cdims[15] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
+                     (g.bicubic.load() ? 1u : 0u) | (static_cast<UINT>(dbg) << 1),
+                     0, 0, 0, 0, 0, 0, 0 };
     std::memcpy(&cdims[5], &kWhite, sizeof(float));
     std::memcpy(&cdims[6], &strength, sizeof(float));
     const float rlimit = g.residualLimit.load(), rfade = g.residualFade.load();
@@ -4779,7 +4879,10 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     const float guardEff = EffectiveGuard();
     std::memcpy(&cdims[10], &cstrength, sizeof(float));
     std::memcpy(&cdims[11], &guardEff, sizeof(float));
-    cmd->SetComputeRoot32BitConstants(1, 12, cdims, 0);
+    std::memcpy(&cdims[12], &gexp, sizeof(float));
+    std::memcpy(&cdims[13], &gcon, sizeof(float));
+    std::memcpy(&cdims[14], &gsat, sizeof(float));
+    cmd->SetComputeRoot32BitConstants(1, 15, cdims, 0);
     cmd->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
     Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
