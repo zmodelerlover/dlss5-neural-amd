@@ -1092,6 +1092,9 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally)
     guide.ready = false;
     guide.logged = false;
     guide.failed = false;
+    // Whatever the companion effect had here, the game has just outbid it with a buffer it
+    // renders itself. That is not a guess at motion, so it wins.
+    guide.external = false;
     Log("guide %s: taking %ux%u format %u, bound %u times %s", guide.name, best->width,
         best->height, static_cast<unsigned>(best->format), best->binds,
         cold ? "over the first three presents" : "a frame for three frames running");
@@ -1407,6 +1410,9 @@ struct State
     // here cannot be. Both are only read at present, after ReShade has finished writing them.
     reshade::api::effect_runtime *effects = nullptr;
     std::atomic<bool> useFeedEffect { true };
+    // True between reshade_begin_effects and reshade_finish_effects: the window in which the
+    // render targets being bound belong to ReShade's shaders and not to the game.
+    std::atomic<bool> inEffects { false };
     char feedStatus[192] = "";
     int feedSignature = -1;
     // Diagnostic. Runs the entire bridge but never touches the swapchain image, which is the
@@ -3034,10 +3040,11 @@ void BridgePresent(device *dev, swapchain *sc)
                                   reinterpret_cast<ID3D11Resource *>(back.handle));
         g.game11ctx->CopyResource(g.bridgeIn.on11.Get(), g.stageIn11.Get());
     }
-    if (!g.guideDepth.external)
-        SettleGuide(g.guideDepth, g_depthTally);
-    if (!g.guideMotion.external)
-        SettleGuide(g.guideMotion, g_motionTally);
+    // Settled first, and unconditionally, so a game that renders its own buffers can take a slot
+    // back off the companion effect. The observation no longer sees ReShade's own targets, so an
+    // entry in these tallies is the game's by construction.
+    SettleGuide(g.guideDepth, g_depthTally);
+    SettleGuide(g.guideMotion, g_motionTally);
     AdoptFeedEffect();
     g.guideDepth.ready = g.guideMotion.ready = false;
     if (g.useGameGuides.load())
@@ -3870,6 +3877,14 @@ bool LooksLikeMotion(const D3D11_TEXTURE2D_DESC &d, UINT screenW, UINT screenH)
 void ObserveD3D11(device *dev, const resource_view *rtvs, uint32_t count, resource depthRes)
 {
     if (!g.useGameGuides.load())
+        return;
+    // Not while ReShade is drawing its own effect chain. Every shader in that chain renders into
+    // screen-sized intermediates, and an optical-flow shader's are two-channel float ones the
+    // size of the screen -- which is the exact description this observation uses to recognise a
+    // velocity buffer. Without this gate the motion guide could settle on a provider's working
+    // texture, or on the companion effect's own previous-frame copy, and prefer it over the
+    // game's real one on nothing better than which got bound more often.
+    if (g.inEffects.load())
         return;
     const UINT screenW = g.outWidth, screenH = g.outHeight;
     auto record = [](std::unordered_map<void *, Tallied> &tally, ID3D11Resource *native,
@@ -5259,6 +5274,19 @@ void OnInitEffects(effect_runtime *runtime)
     std::lock_guard guard(g.lock);
     g.effects = runtime;
     g.feedSignature = -1;
+}
+
+// No lock and no work: this runs twice per frame on the render thread, and all it does is mark
+// the window in which a render-target bind belongs to ReShade rather than to the game. The
+// runtime pointer is taken in OnInitEffects, where the lock is already held.
+void OnBeginEffects(effect_runtime *, command_list *, resource_view, resource_view)
+{
+    g.inEffects.store(true);
+}
+
+void OnFinishEffects(effect_runtime *, command_list *, resource_view, resource_view)
+{
+    g.inEffects.store(false);
 }
 
 void OnDestroyEffects(effect_runtime *runtime)
@@ -7212,6 +7240,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
         reshade::register_event<reshade::addon_event::init_effect_runtime>(OnInitEffects);
         reshade::register_event<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffects);
+        reshade::register_event<reshade::addon_event::reshade_begin_effects>(OnBeginEffects);
+        reshade::register_event<reshade::addon_event::reshade_finish_effects>(OnFinishEffects);
         reshade::register_event<reshade::addon_event::present>(OnPresent);
         if (g.events & 16)
             reshade::register_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
