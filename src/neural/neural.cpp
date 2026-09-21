@@ -6654,6 +6654,40 @@ void OnOverlay(effect_runtime *runtime)
              "transforme a imagem.");
         Tag(kTraced);
 
+        if (depth)
+        {
+            bool dn = g.depthNormalise.load();
+            if (Risk r(kWarn, dn); ImGui::Checkbox(T("Stretch depth to fill 0..1",
+                                                     "Esticar profundidade para 0..1"), &dn))
+            {
+                g.depthNormalise.store(dn);
+                Log("menu: depth normalise %s", dn ? "on" : "off");
+            }
+            Help("Multiplies the depth guide by 1/max, measured by the guide probe, so a buffer "
+                 "that occupies a fraction of 0..1 fills the range instead.\n\n"
+                 "It is a knob and not a fix, and on this bench it reads as the wrong operation: "
+                 "PCSX2's depth has its bulk already sitting at the top of its own tiny range "
+                 "(probe: mean 0.00197 against max 0.00200), so scaling by 1/max lands almost "
+                 "every pixel at 0.99 rather than spreading anything out. The geometry still "
+                 "occupies about one percent of the range, only now at the ceiling -- which under "
+                 "the engine's inverted convention reads as 'the whole scene is against the "
+                 "camera'.\n\n"
+                 "Compare the 'measure, residual' line with it on and off before trusting it.",
+
+                 "Multiplica a guia de profundidade por 1/max, medido pelo probe, para que um "
+                 "buffer que ocupa uma fracao de 0..1 passe a preencher a faixa.\n\n"
+                 "E um botao, nao uma correcao, e nesta bancada ele parece ser a operacao errada: "
+                 "a profundidade do PCSX2 ja tem o grosso dos pixels no topo da propria faixa "
+                 "minuscula (probe: media 0,00197 contra maximo 0,00200), entao escalar por 1/max "
+                 "joga quase todo pixel em 0,99 em vez de espalhar alguma coisa. A geometria "
+                 "continua ocupando cerca de um por cento da faixa, so que agora no teto -- o que "
+                 "sob a convencao invertida do motor le como 'a cena inteira esta colada na "
+                 "camera'.\n\n"
+                 "Compare a linha 'measure, residual' com ele ligado e desligado antes de "
+                 "confiar nele.");
+            Tag(kUnknown);
+        }
+
         // Depth Inverted used to be a checkbox here. It is gone: 97b10 is pinned to the
         // engine's own default of 1 in the record path. No run on either target ever
         // produced a reading that told the two settings apart, so the only thing the switch
