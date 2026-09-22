@@ -38,9 +38,9 @@ struct Engine {
 }g;
 struct Host{uint64_t settingsRevision=1;WireSettings factoryDefaults{};
 '''+methods+'''};
-std::string file(){std::ifstream f("dlss5-neural.ini",std::ios::binary);return std::string(std::istreambuf_iterator<char>(f),{});}
+std::string file(){std::ifstream f("amd-nr.ini",std::ios::binary);return std::string(std::istreambuf_iterator<char>(f),{});}
 int main(){
- std::ofstream("dlss5-neural.ini")<<"[dlss5]\\nColourStrength=0.75\\nUserText=untouched\\n";auto original=file();
+ std::ofstream("amd-nr.ini")<<"[amd-nr]\\nColourStrength=0.75\\nUserText=untouched\\n";auto original=file();
  Host host;host.CaptureFactoryDefaults();auto captured=host.factoryDefaults;
  auto custom=host.ExportSettings();custom.settings_revision=2;custom.colourStrength=.9f;custom.structure=2;custom.skin=-1;custom.passes=3;custom.scale=1.5f;custom.tone=2;
  custom.enabled=1;custom.startOn=1;custom.toggleKey=65;custom.toggleMods=5;custom.language=1;custom.disableOnAltTab=1;custom.useHistory=0;custom.useDepth=0;

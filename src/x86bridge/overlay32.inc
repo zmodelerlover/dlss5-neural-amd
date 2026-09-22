@@ -205,12 +205,12 @@ void Draw()
             Log("menu: start enabled %d", start ? 1 : 0);
         }
         Help("Whether Enabled above is already ticked when the game opens, instead of waiting "
-             "for the hotkey every time. `StartOn=1` in dlss5-neural.ini.\n\n"
+             "for the hotkey every time. `StartOn=1` in amd-nr.ini.\n\n"
              "For a game that takes a while to get back into, pressing a key every launch is "
              "work for nothing. Set this once and it stays set.",
 
              "Se o Ligado aí em cima já vem marcado quando o jogo abre, em vez de esperar a "
-             "tecla de atalho toda vez. `StartOn=1` no dlss5-neural.ini.\n\n"
+             "tecla de atalho toda vez. `StartOn=1` no amd-nr.ini.\n\n"
              "Em jogo que dá trabalho pra voltar, apertar tecla todo lançamento é trabalho à "
              "toa. Marque uma vez e fica.");
 
@@ -223,7 +223,7 @@ void Draw()
         }
         Help("Switch the effect off the moment the game stops being the window in front, and "
              "leave it off. Coming back to the game, it is still off: turn it on with the hotkey "
-             "or the box above when you want it. `DisableOnAltTab=1` in dlss5-neural.ini.\n\n"
+             "or the box above when you want it. `DisableOnAltTab=1` in amd-nr.ini.\n\n"
              "This does not resume by itself, on purpose. Sitting out a minimised window is a "
              "separate safety that is always on and does resume, because frames nobody can see "
              "are not a decision anyone needs to make.",
@@ -231,7 +231,7 @@ void Draw()
              "Desliga o efeito no instante em que o jogo deixa de ser a janela da frente, e "
              "deixa desligado. Ao voltar pro jogo ele continua desligado: você liga na tecla de "
              "atalho ou na caixa aí em cima quando quiser. `DisableOnAltTab=1` no "
-             "dlss5-neural.ini.\n\n"
+             "amd-nr.ini.\n\n"
              "Não volta sozinho, de propósito. Pular quadros de janela minimizada é outra coisa, "
              "uma proteção que está sempre ligada e essa sim volta sozinha — quadro que ninguém "
              "vê não é decisão de usuário.");
@@ -557,12 +557,12 @@ void Draw()
              "the next present, so the helper works while the game builds its next frame. It is "
              "faster and it costs one frame of lag. It does not smear: the whole picture is replaced, "
              "so you see the previous frame finished rather than a mix of two. Changing this takes "
-             "effect at once and is saved to dlss5-neural.ini.",
+             "effect at once and is saved to amd-nr.ini.",
              "No modo assíncrono o quadro é enviado e a "
              "resposta é composta no present seguinte, então o ajudante trabalha enquanto o jogo "
              "monta o próximo quadro. É mais rápido e custa um quadro de atraso. Não borra: a imagem "
              "inteira é substituída, então você vê o quadro anterior pronto, não uma mistura de dois. "
-             "A troca vale na hora e fica salva no dlss5-neural.ini.");
+             "A troca vale na hora e fica salva no amd-nr.ini.");
         // Preview while dragging, but commit only once when the edit ends. Re-staging the
         // network raster on every mouse movement leaves retired runtime/driver allocations
         // resident and can quickly exhaust VRAM.
@@ -1006,12 +1006,12 @@ void Draw()
             controls.measure=true;
             Log("menu: residual measurement re-armed");
         }
-        Help("Writes a 'measure, residual' line to dlss5-neural.log: the size of the correction, "
+        Help("Writes a 'measure, residual' line to amd-nr.log: the size of the correction, "
              "and how much of it follows the image's own detail rather than being a flat shift.\n\n"
              "Change one control, press this, compare the two numbers. It is the only way to tell "
              "a control that does something from one that does not.",
 
-             "Escreve uma linha 'measure, residual' no dlss5-neural.log: o tamanho da correção, e "
+             "Escreve uma linha 'measure, residual' no amd-nr.log: o tamanho da correção, e "
              "quanto dela segue o detalhe da própria imagem em vez de ser um deslocamento "
              "chapado.\n\n"
              "Mude um controle, aperte isto, compare os dois números. É o único jeito de separar "
@@ -1219,13 +1219,13 @@ void Draw()
                     g.stage.load(), g.events, g.noBridge.load() ? 1 : 0,
                     g.noBackBuffer.load() ? 1 : 0);
         Help("Diagnostics that decide what gets built at startup, so they cannot be changed live "
-             "-- set them in dlss5-neural.ini.\n\n"
+             "-- set them in amd-nr.ini.\n\n"
              "Stage=1 stops before D3D12 loads, 2 before the engine, 3 is everything. Events is a "
              "bitmask: 1 bind, 2 draw, 4 clear, 8 destroy_swapchain, 16 overlay. These are what "
              "found the DXGI resize failure.",
 
              "Diagnósticos que decidem o que é construído na inicialização, então não podem ser "
-             "mudados ao vivo -- ajuste no dlss5-neural.ini.\n\n"
+             "mudados ao vivo -- ajuste no amd-nr.ini.\n\n"
              "Stage=1 para antes da D3D12 carregar, 2 antes do motor, 3 é tudo. Events é uma "
              "máscara de bits: 1 bind, 2 draw, 4 clear, 8 destroy_swapchain, 16 overlay. Foram "
              "eles que acharam a falha de resize da DXGI.");
@@ -1261,7 +1261,7 @@ void Draw()
         ImGui::Text(T("Back buffer %ux%u -> network %ux%u", "Back buffer %ux%u -> rede %ux%u"),g.outWidth,g.outHeight,g.netWidth,g.netHeight);
         ImGui::Text("Depth active=%u | Motion active=%u | Passes loaded/active=%u/%u",controls.status.depthActive,controls.status.motionActive,controls.status.loadedPasses,controls.status.activePasses);
         CandidateStatus();
-        ImGui::TextDisabled("Logs: dlss5-neural-x86.log / dlss5-neural-x86-host.log");
+        ImGui::TextDisabled("Logs: amd-nr-x86.log / amd-nr-x86-host.log");
     }
 
     ImGui::Separator();
@@ -1323,11 +1323,11 @@ void Draw()
     ImGui::Separator();
     if (ImGui::Button(T("Save Settings", "Salvar Ajustes")))
         controls.save=true;
-    Help("Writes everything above to dlss5-neural.ini next to the exe, so it survives a restart.\n\n"
+    Help("Writes everything above to amd-nr.ini next to the exe, so it survives a restart.\n\n"
          "You do not have to press it: every control saves itself the moment you let go of it. This "
          "is here to write now, and to put a line in the log saying it happened.",
 
-         "Escreve tudo acima no dlss5-neural.ini ao lado do exe, para sobreviver a um restart.\n\n"
+         "Escreve tudo acima no amd-nr.ini ao lado do exe, para sobreviver a um restart.\n\n"
          "Você não precisa apertar: cada controle se salva sozinho assim que você solta. Isto serve "
          "para escrever agora, e para deixar uma linha no log dizendo que aconteceu.");
     ImGui::SameLine();
@@ -1336,8 +1336,8 @@ void Draw()
         controls.reload=true;
         Log("menu: settings reloaded from the ini");
     }
-    Help("Re-reads dlss5-neural.ini, discarding anything changed here since the last save.",
-         "Relê o dlss5-neural.ini, descartando qualquer coisa mudada aqui desde o último salvamento.");
+    Help("Re-reads amd-nr.ini, discarding anything changed here since the last save.",
+         "Relê o amd-nr.ini, descartando qualquer coisa mudada aqui desde o último salvamento.");
     ImGui::SameLine();
     if(ImGui::Button(T("Factory Defaults", "Padrões de Fábrica")))controls.factory=true;
     Help("Restore factory tuning. Enabled, startup, hotkey and language are preserved. It lands in the ini with everything else, on its own.",
@@ -1359,7 +1359,7 @@ void OnOverlay32(effect_runtime* runtime){
     controls.runtime=runtime;
     controls.syncRequested=true;
     if(!controls.synced){
-        ImGui::TextDisabled(g.failed?"x64 host unavailable. See dlss5-neural-x86.log.":"Synchronizing with x64 host...");
+        ImGui::TextDisabled(g.failed?"x64 host unavailable. See amd-nr-x86.log.":"Synchronizing with x64 host...");
         if(g.failed&&ImGui::Button("Retry host synchronization"))g.failed=false;
         return;
     }

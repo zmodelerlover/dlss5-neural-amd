@@ -6,7 +6,7 @@
 
 int main()
 {
-    const std::wstring name = L"\\\\.\\pipe\\dlss5-x86bridge-io-test-" +
+    const std::wstring name = L"\\\\.\\pipe\\amd-nr-x86bridge-io-test-" +
         std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
 
     x86bridge::Handle server(CreateNamedPipeW(

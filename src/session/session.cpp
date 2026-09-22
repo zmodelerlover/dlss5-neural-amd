@@ -1093,13 +1093,13 @@ void OnPresent(command_queue *, swapchain *sc, const rect *, const rect *, uint3
 
 void OpenLog()
 {
-    g_log = fopen(GamePath("dlss5-session.log").c_str(), "w");
-    Log("dlss5 session -- what it costs to carry colour and depth from D3D11 to a D3D12 device");
+    g_log = fopen(GamePath("amd-nr-session.log").c_str(), "w");
+    Log("AMD NR session -- what it costs to carry colour and depth from D3D11 to a D3D12 device");
     Log("needs PCSX2 on Direct3D 11. Runs no network. The right half of the screen shows what came back.");
 }
 }
 
-extern "C" __declspec(dllexport) const char *NAME = "dlss5 session";
+extern "C" __declspec(dllexport) const char *NAME = "AMD NR session";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "Measures the per-frame cost of carrying the render-resolution colour and the depth buffer "
     "from the game's D3D11 device to a separate D3D12 device by shared texture and shared fence.";

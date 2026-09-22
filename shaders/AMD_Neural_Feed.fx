@@ -1,5 +1,5 @@
 /*
-    DLSS5_Neural_Feed.fx - companion effect for the DLSS 5 Neural Rendering (AMD) add-on.
+    AMD_Neural_Feed.fx - companion effect for the AMD Neural Rendering (AMD) add-on.
 
     The add-on already estimates motion from the image when a game hands over nothing. That
     estimator is two levels of 3x3 block matching with a search radius of four, and it has to
@@ -9,14 +9,14 @@
     the only answer, and it does the same for ReShade's depth buffer on the routes where the
     add-on cannot see the game's own.
 
-      DLSS5N_MV     RG16F  motion vectors as delta UV, prev_uv = uv + mv -- the convention every
+      AMDNR_MV     RG16F  motion vectors as delta UV, prev_uv = uv + mv -- the convention every
                            provider below uses, and the one the add-on's own estimator produces.
                            Vectors that fail validation are zeroed.
-      DLSS5N_Depth  R32F   ReShade's depth buffer, with its RESHADE_DEPTH_INPUT_* fixes applied.
+      AMDNR_Depth  R32F   ReShade's depth buffer, with its RESHADE_DEPTH_INPUT_* fixes applied.
                            Used only where the add-on has no depth of its own; a game's own
                            buffer is always better and is preferred when it is there.
 
-    PROVIDER -- set DLSS5N_MV_PROVIDER (ReShade overlay: this effect's "Preprocessor
+    PROVIDER -- set AMDNR_MV_PROVIDER (ReShade overlay: this effect's "Preprocessor
     definitions") and enable that provider's technique ABOVE this one in the effect list:
 
       0  texMotionVectors    the shared texture qUINT_motionvectors, dh_uber_motion and
@@ -42,18 +42,18 @@
 #include "ReShade.fxh"
 
 #if __RENDERER__ < 0xA000
-    #error "DLSS5_Neural_Feed needs D3D10 or newer. On ReShade's DirectX 9 backend the add-on could not be fed anyway."
+    #error "AMD_Neural_Feed needs D3D10 or newer. On ReShade's DirectX 9 backend the add-on could not be fed anyway."
 #endif
 
-#ifndef DLSS5N_MV_PROVIDER
-    #define DLSS5N_MV_PROVIDER 1
+#ifndef AMDNR_MV_PROVIDER
+    #define AMDNR_MV_PROVIDER 1
 #endif
 
 // ------------------------------------------------------------------------------------------
 // The selected provider's output, declared byte for byte the way the provider declares it.
 // ------------------------------------------------------------------------------------------
 
-#if DLSS5N_MV_PROVIDER == 1
+#if AMDNR_MV_PROVIDER == 1
     // iMMERSE Launchpad (MartysMods/mmx_deferred.fxh)
     namespace Deferred {
         texture MotionVectorsTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RG16F; };
@@ -65,38 +65,38 @@
             texture2D PredicationBuffer { Format = RGBA8; };
         }
     }
-    sampler sDLSS5N_Provider { Texture = Deferred::MotionVectorsTex; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Point; MagFilter = Point; };
-    float4 DLSS5N_IpcVS(in uint id : SV_VertexID) : SV_Position { return float4(0.0, 0.0, 0.0, 1.0); }
-    float4 DLSS5N_IpcPS(in float4 vpos : SV_Position) : SV_Target0 { return 1.0; }
-    #define DLSS5N_PROVIDER_NAME "Launchpad (Deferred::MotionVectorsTex)"
-    #define DLSS5N_REQUEST_PASS pass IpcRequestOpticalFlow { PrimitiveTopology = POINTLIST; VertexCount = 1; VertexShader = DLSS5N_IpcVS; PixelShader = DLSS5N_IpcPS; RenderTarget = Deferred::IPC::PredicationBuffer; RenderTargetWriteMask = 4; }
-#elif DLSS5N_MV_PROVIDER == 2
+    sampler sAMDNR_Provider { Texture = Deferred::MotionVectorsTex; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Point; MagFilter = Point; };
+    float4 AMDNR_IpcVS(in uint id : SV_VertexID) : SV_Position { return float4(0.0, 0.0, 0.0, 1.0); }
+    float4 AMDNR_IpcPS(in float4 vpos : SV_Position) : SV_Target0 { return 1.0; }
+    #define AMDNR_PROVIDER_NAME "Launchpad (Deferred::MotionVectorsTex)"
+    #define AMDNR_REQUEST_PASS pass IpcRequestOpticalFlow { PrimitiveTopology = POINTLIST; VertexCount = 1; VertexShader = AMDNR_IpcVS; PixelShader = AMDNR_IpcPS; RenderTarget = Deferred::IPC::PredicationBuffer; RenderTargetWriteMask = 4; }
+#elif AMDNR_MV_PROVIDER == 2
     // VORT (Includes/vort_MotionUtils.fxh, V_MV_MODE 1)
     texture2D MotVectTexVort { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RG16F; };
-    sampler sDLSS5N_Provider { Texture = MotVectTexVort; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Point; MagFilter = Point; };
-    #define DLSS5N_PROVIDER_NAME "VORT (MotVectTexVort)"
-#elif DLSS5N_MV_PROVIDER == 3
+    sampler sAMDNR_Provider { Texture = MotVectTexVort; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Point; MagFilter = Point; };
+    #define AMDNR_PROVIDER_NAME "VORT (MotVectTexVort)"
+#elif AMDNR_MV_PROVIDER == 3
     // LumeniteFX Kernel (lumenite_Kernel.fx), as lumenite_RTAO re-declares it. 1/8 resolution.
     namespace Kernel {
         texture2D tFlow { Width = BUFFER_WIDTH/8; Height = BUFFER_HEIGHT/8; Format = RG16F; };
     }
-    sampler sDLSS5N_Provider { Texture = Kernel::tFlow; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Linear; MagFilter = Linear; };
-    #define DLSS5N_PROVIDER_NAME "LumeniteFX Kernel (Kernel::tFlow, 1/8 res)"
-#elif DLSS5N_MV_PROVIDER == 4
+    sampler sAMDNR_Provider { Texture = Kernel::tFlow; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Linear; MagFilter = Linear; };
+    #define AMDNR_PROVIDER_NAME "LumeniteFX Kernel (Kernel::tFlow, 1/8 res)"
+#elif AMDNR_MV_PROVIDER == 4
     // LumeniteFX QuantMotion (lumenite_QuantMotion.fx), as lumenite_QuantAO re-declares it.
     namespace QuantMotion {
         texture2D tFlow { Width = BUFFER_WIDTH/8; Height = BUFFER_HEIGHT/8; Format = RG16F; };
     }
-    sampler sDLSS5N_Provider { Texture = QuantMotion::tFlow; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Linear; MagFilter = Linear; };
-    #define DLSS5N_PROVIDER_NAME "LumeniteFX QuantMotion (QuantMotion::tFlow, 1/8 res)"
+    sampler sAMDNR_Provider { Texture = QuantMotion::tFlow; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Linear; MagFilter = Linear; };
+    #define AMDNR_PROVIDER_NAME "LumeniteFX QuantMotion (QuantMotion::tFlow, 1/8 res)"
 #else
     texture texMotionVectors < pooled = false; > { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RG16F; };
-    sampler sDLSS5N_Provider { Texture = texMotionVectors; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Point; MagFilter = Point; };
-    #define DLSS5N_PROVIDER_NAME "texMotionVectors (qUINT, dh_uber_motion, DRME)"
+    sampler sAMDNR_Provider { Texture = texMotionVectors; AddressU = Clamp; AddressV = Clamp; MipFilter = Point; MinFilter = Point; MagFilter = Point; };
+    #define AMDNR_PROVIDER_NAME "texMotionVectors (qUINT, dh_uber_motion, DRME)"
 #endif
 
-#ifndef DLSS5N_REQUEST_PASS
-    #define DLSS5N_REQUEST_PASS
+#ifndef AMDNR_REQUEST_PASS
+    #define AMDNR_REQUEST_PASS
 #endif
 
 // ------------------------------------------------------------------------------------------
@@ -104,8 +104,8 @@
 uniform int PROVIDER_INFO <
     ui_type = "radio";
     ui_label = " ";
-    ui_text = "Motion vector provider: " DLSS5N_PROVIDER_NAME "\n"
-              "Change it with the DLSS5N_MV_PROVIDER preprocessor definition:\n"
+    ui_text = "Motion vector provider: " AMDNR_PROVIDER_NAME "\n"
+              "Change it with the AMDNR_MV_PROVIDER preprocessor definition:\n"
               "  0 texMotionVectors   1 Launchpad   2 VORT\n"
               "  3 LumeniteFX Kernel  4 LumeniteFX QuantMotion\n"
               "Enable that provider's technique ABOVE this one.";
@@ -190,32 +190,32 @@ uniform float2 MV_SIGN <
 > = float2(1.0, 1.0);
 
 // Outputs the add-on reads.
-texture DLSS5N_MV    { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RG16F; };
-texture DLSS5N_Depth { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R32F;  };
-sampler sDLSS5N_MV   { Texture = DLSS5N_MV; AddressU = Clamp; AddressV = Clamp; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; };
+texture AMDNR_MV    { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RG16F; };
+texture AMDNR_Depth { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R32F;  };
+sampler sAMDNR_MV   { Texture = AMDNR_MV; AddressU = Clamp; AddressV = Clamp; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; };
 
 // Previous-frame state the validation needs. Luma may be interpolated, being a smooth quantity;
 // depth and vectors must not be, because bilinear across an object edge mixes two surfaces and
 // then fails the test on every edge in motion.
-texture DLSS5N_PrevLuma  { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F;  };
-texture DLSS5N_PrevDepth { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F;  };
-texture DLSS5N_PrevMV    { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RG16F; };
-sampler sDLSS5N_PrevLuma  { Texture = DLSS5N_PrevLuma;  AddressU = Clamp; AddressV = Clamp; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; };
-sampler sDLSS5N_PrevDepth { Texture = DLSS5N_PrevDepth; AddressU = Clamp; AddressV = Clamp; MinFilter = POINT;  MagFilter = POINT;  MipFilter = POINT; };
-sampler sDLSS5N_PrevMV    { Texture = DLSS5N_PrevMV;    AddressU = Clamp; AddressV = Clamp; MinFilter = POINT;  MagFilter = POINT;  MipFilter = POINT; };
+texture AMDNR_PrevLuma  { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F;  };
+texture AMDNR_PrevDepth { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R16F;  };
+texture AMDNR_PrevMV    { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = RG16F; };
+sampler sAMDNR_PrevLuma  { Texture = AMDNR_PrevLuma;  AddressU = Clamp; AddressV = Clamp; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; };
+sampler sAMDNR_PrevDepth { Texture = AMDNR_PrevDepth; AddressU = Clamp; AddressV = Clamp; MinFilter = POINT;  MagFilter = POINT;  MipFilter = POINT; };
+sampler sAMDNR_PrevMV    { Texture = AMDNR_PrevMV;    AddressU = Clamp; AddressV = Clamp; MinFilter = POINT;  MagFilter = POINT;  MipFilter = POINT; };
 
 // The static decision, this frame and last. A texture cannot be sampled and written in one
 // pass, which is why the hysteresis needs two of them.
-texture DLSS5N_StaticNow  { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R8; };
-texture DLSS5N_PrevStatic { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R8; };
-sampler sDLSS5N_StaticNow  { Texture = DLSS5N_StaticNow;  AddressU = Clamp; AddressV = Clamp; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; };
-sampler sDLSS5N_PrevStatic { Texture = DLSS5N_PrevStatic; AddressU = Clamp; AddressV = Clamp; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; };
+texture AMDNR_StaticNow  { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R8; };
+texture AMDNR_PrevStatic { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R8; };
+sampler sAMDNR_StaticNow  { Texture = AMDNR_StaticNow;  AddressU = Clamp; AddressV = Clamp; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; };
+sampler sAMDNR_PrevStatic { Texture = AMDNR_PrevStatic; AddressU = Clamp; AddressV = Clamp; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; };
 
 // ------------------------------------------------------------------------------------------
 
 float2 ProviderMV(float2 uv)
 {
-    return tex2Dlod(sDLSS5N_Provider, float4(uv, 0.0, 0.0)).xy * MV_SIGN;
+    return tex2Dlod(sAMDNR_Provider, float4(uv, 0.0, 0.0)).xy * MV_SIGN;
 }
 
 float Luma(float2 uv)
@@ -237,7 +237,7 @@ float PatchError(float2 uv_cur, float2 uv_prev, out float contrast)
     {
         const float2 o = float2(i % 3 - 1, i / 3 - 1) * px;
         c[i] = Luma(uv_cur + o);
-        p[i] = tex2Dlod(sDLSS5N_PrevLuma, float4(uv_prev + o, 0.0, 0.0)).x;
+        p[i] = tex2Dlod(sAMDNR_PrevLuma, float4(uv_prev + o, 0.0, 0.0)).x;
         mc += c[i]; mp += p[i];
     }
     mc /= 9.0; mp /= 9.0;
@@ -283,14 +283,14 @@ void PS_Guides(float4 vpos : SV_Position, float2 uv : TEXCOORD,
             stat = 1.0;
             // With hysteresis the first win only records itself. The vector is zeroed once the
             // test has won twice running, which is what stops the alternation.
-            zero = zero || !STATIC_HYSTERESIS || tex2Dlod(sDLSS5N_PrevStatic, float4(uv, 0.0, 0.0)).x > 0.5;
+            zero = zero || !STATIC_HYSTERESIS || tex2Dlod(sAMDNR_PrevStatic, float4(uv, 0.0, 0.0)).x > 0.5;
         }
     }
 
     // Disocclusion: the vector points at a different surface than the one it came from.
     if (VALIDATE_DEPTH && depth < 0.999)
     {
-        const float dp  = tex2Dlod(sDLSS5N_PrevDepth, float4(puv, 0.0, 0.0)).x;
+        const float dp  = tex2Dlod(sAMDNR_PrevDepth, float4(puv, 0.0, 0.0)).x;
         const float tol = DEPTH_TOLERANCE * max(depth, 1e-3);
         zero = zero || abs(dp - depth) > tol;
     }
@@ -298,7 +298,7 @@ void PS_Guides(float4 vpos : SV_Position, float2 uv : TEXCOORD,
     // Consistency: real motion is smooth frame to frame, flow over fire is not.
     if (VALIDATE_MV && MV_CONSISTENCY > 0.0)
     {
-        const float2 pmv   = tex2Dlod(sDLSS5N_PrevMV, float4(puv, 0.0, 0.0)).xy;
+        const float2 pmv   = tex2Dlod(sAMDNR_PrevMV, float4(puv, 0.0, 0.0)).xy;
         const float  diff  = length((mv - pmv) * BUFFER_SCREEN_SIZE);
         const float  allow = MV_CONSISTENCY + 0.5 * length(mv * BUFFER_SCREEN_SIZE);
         zero = zero || diff > allow;
@@ -314,27 +314,32 @@ void PS_History(float4 vpos : SV_Position, float2 uv : TEXCOORD,
 {
     luma  = Luma(uv);
     depth = ReShade::GetLinearizedDepth(uv);
-    mv    = tex2Dlod(sDLSS5N_MV, float4(uv, 0.0, 0.0)).xy;
-    stat  = tex2Dlod(sDLSS5N_StaticNow, float4(uv, 0.0, 0.0)).x;
+    // The provider's own vector, not the validated one. The consistency test compares this
+    // frame's vector against last frame's at the spot it points to; keeping the validated field
+    // here made that a latch: one zeroed frame, and every following frame with more than
+    // MV_CONSISTENCY / 0.5 px of real motion failed against a zero and was zeroed too. Measured
+    // as the network never receiving more than about 2 px from an eight-level optical flow.
+    mv    = ProviderMV(uv);
+    stat  = tex2Dlod(sAMDNR_StaticNow, float4(uv, 0.0, 0.0)).x;
 }
 
-technique DLSS5_Neural_Feed
+technique AMD_Neural_Feed
 <
-    ui_label = "DLSS 5 Neural Feed (put this ABOVE nothing; the add-on reads it at present)";
+    ui_label = "AMD Neural Feed (put this ABOVE nothing; the add-on reads it at present)";
     ui_tooltip = "Hands the add-on a real optical-flow field and ReShade's depth buffer.\n"
                  "Enable the motion-vector provider's own technique ABOVE this one.";
 >
 {
-    DLSS5N_REQUEST_PASS
+    AMDNR_REQUEST_PASS
     pass Guides
     {
         VertexShader = PostProcessVS; PixelShader = PS_Guides;
-        RenderTarget0 = DLSS5N_MV; RenderTarget1 = DLSS5N_Depth; RenderTarget2 = DLSS5N_StaticNow;
+        RenderTarget0 = AMDNR_MV; RenderTarget1 = AMDNR_Depth; RenderTarget2 = AMDNR_StaticNow;
     }
     pass History
     {
         VertexShader = PostProcessVS; PixelShader = PS_History;
-        RenderTarget0 = DLSS5N_PrevLuma; RenderTarget1 = DLSS5N_PrevDepth;
-        RenderTarget2 = DLSS5N_PrevMV;   RenderTarget3 = DLSS5N_PrevStatic;
+        RenderTarget0 = AMDNR_PrevLuma; RenderTarget1 = AMDNR_PrevDepth;
+        RenderTarget2 = AMDNR_PrevMV;   RenderTarget3 = AMDNR_PrevStatic;
     }
 }

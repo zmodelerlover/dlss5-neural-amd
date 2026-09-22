@@ -277,14 +277,14 @@ void DumpResource(device *dev, command_queue *queue, resource res, const resourc
         const uint32_t pitch = mapped.row_pitch;
 
         char name[64];
-        snprintf(name, sizeof(name), "dlss5-%s-f%llu.raw", role, g_frame);
+        snprintf(name, sizeof(name), "amd-nr-%s-f%llu.raw", role, g_frame);
         if (FILE *f = fopen(GamePath(name).c_str(), "wb"))
         {
             for (uint32_t y = 0; y < desc.texture.height; ++y)
                 fwrite(base + static_cast<size_t>(y) * pitch, 1, static_cast<size_t>(desc.texture.width) * texel, f);
             fclose(f);
         }
-        snprintf(name, sizeof(name), "dlss5-%s-f%llu.ppm", role, g_frame);
+        snprintf(name, sizeof(name), "amd-nr-%s-f%llu.ppm", role, g_frame);
         if (FILE *f = fopen(GamePath(name).c_str(), "wb"))
         {
             fprintf(f, "P6\n%u %u\n255\n", desc.texture.width, desc.texture.height);
@@ -299,7 +299,7 @@ void DumpResource(device *dev, command_queue *queue, resource res, const resourc
             fclose(f);
         }
         dev->unmap_texture_region(staging, 0);
-        Log("  dump %s: %ux%u %s -> dlss5-%s-f%llu.ppm", role, desc.texture.width, desc.texture.height,
+        Log("  dump %s: %ux%u %s -> amd-nr-%s-f%llu.ppm", role, desc.texture.width, desc.texture.height,
             FormatName(desc.texture.format), role, g_frame);
     }
     else
@@ -459,14 +459,14 @@ void OnPresent(command_queue *queue, swapchain *, const rect *, const rect *, ui
 
 void OpenLog()
 {
-    g_log = fopen(GamePath("dlss5-probe.log").c_str(), "w");
-    Log("dlss5 probe -- per-frame inventory of render targets");
+    g_log = fopen(GamePath("amd-nr-probe.log").c_str(), "w");
+    Log("AMD NR probe -- per-frame inventory of render targets");
     Log("inventory for the first %llu frames, then every %llu", kDumpFirst, kDumpEvery);
     Log("conteudo gravado nos frames 600, 1200 e 1800 (.ppm e .raw ao lado do executavel)");
 }
 }
 
-extern "C" __declspec(dllexport) const char *NAME = "dlss5 probe";
+extern "C" __declspec(dllexport) const char *NAME = "AMD NR probe";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "Per-frame render target inventory and content dump: finds and proves colour, depth and motion "
     "em jogos sem contrato de upscaler.";

@@ -26,7 +26,7 @@
 // declared below against the spec. They are laid out with natural alignment on purpose -- the
 // Vulkan ABI is the C ABI, so letting the compiler insert the padding is what matches it.
 //
-// Build:  .\build.ps1 -Target vkprobe -Exe      Run:  .\build\dlss5-vkprobe.exe
+// Build:  .\build.ps1 -Target vkprobe -Exe      Run:  .\build\amd-nr-vkprobe.exe
 
 #include <windows.h>
 #include <dxgi1_6.h>
@@ -373,7 +373,7 @@ int main()
     VkApplicationInfo app {};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "vkprobe";
-    app.pEngineName = "dlss5-neural-amd";
+    app.pEngineName = "amd-neural-rendering";
     app.apiVersion = (1u << 22) | (1u << 12);  // VK_API_VERSION_1_1
 
     VkInstanceCreateInfo ci {};

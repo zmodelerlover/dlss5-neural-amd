@@ -71,8 +71,8 @@
 // one unwanted import did to NFS 2015's ResizeBuffers.
 //
 // Build:  .\build.ps1 -Target glprobe -Exe
-// Run:    .\build\dlss5-glprobe.exe                 the context wglCreateContext gives
-//         .\build\dlss5-glprobe.exe -gl 3.3 -core   a stricter host's context
+// Run:    .\build\amd-nr-glprobe.exe                 the context wglCreateContext gives
+//         .\build\amd-nr-glprobe.exe -gl 3.3 -core   a stricter host's context
 
 #include <windows.h>
 
@@ -449,7 +449,7 @@ bool CreateHiddenContext(Context &ctx, int width, int height, int major, int min
     wc.style = CS_OWNDC;
     wc.lpfnWndProc = ProbeWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"dlss5-glprobe";
+    wc.lpszClassName = L"amd-nr-glprobe";
     RegisterClassExW(&wc);
 
     RECT rect { 0, 0, width, height };
@@ -888,7 +888,7 @@ int main(int argc, char **argv)
             profileBit = WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB_;
         else
         {
-            std::printf("usage: dlss5-glprobe.exe [-gl MAJOR.MINOR] [-core|-compat]\n"
+            std::printf("usage: amd-nr-glprobe.exe [-gl MAJOR.MINOR] [-core|-compat]\n"
                         "  no -gl: the context wglCreateContext gives, which is what a legacy\n"
                         "  host such as an old OpenGL game gets.\n");
             return 2;

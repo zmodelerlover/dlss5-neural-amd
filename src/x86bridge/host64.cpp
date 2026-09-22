@@ -1,5 +1,5 @@
 // Additive x64 process boundary. The upstream engine is compiled verbatim in this TU.
-#define DLSS5_WITH_VULKAN 0
+#define AMDNR_WITH_VULKAN 0
 #include "../neural/neural.cpp"
 #include "bridge_io.h"
 #include "control_state.h"
@@ -60,15 +60,15 @@ struct Host {
         factoryDefaults=FactorySettings(factoryDefaults,factoryDefaults);
     }
     void EnsureX86Ini(){
-        const auto ini=ExeDirectory()/L"dlss5-neural.ini";
+        const auto ini=ExeDirectory()/L"amd-nr.ini";
         std::error_code ec;const bool existed=std::filesystem::exists(ini,ec);
         EnsureNeuralIni();
         if(!existed&&!ec){
             g.colourStrength.store(0.25f);g.structure.store(1);g.skin.store(1);g.passes.store(1);
-            WritePrivateProfileStringW(L"dlss5",L"ColourStrength",L"0.25",ini.c_str());
-            WritePrivateProfileStringW(L"dlss5",L"Structure",L"1",ini.c_str());
-            WritePrivateProfileStringW(L"dlss5",L"Skin",L"1",ini.c_str());
-            WritePrivateProfileStringW(L"dlss5",L"Passes",L"1",ini.c_str());
+            WritePrivateProfileStringW(L"amd-nr",L"ColourStrength",L"0.25",ini.c_str());
+            WritePrivateProfileStringW(L"amd-nr",L"Structure",L"1",ini.c_str());
+            WritePrivateProfileStringW(L"amd-nr",L"Skin",L"1",ini.c_str());
+            WritePrivateProfileStringW(L"amd-nr",L"Passes",L"1",ini.c_str());
         }
     }
     void RestoreFactoryDefaults(){
@@ -317,7 +317,7 @@ int wmain(int argc,wchar_t** argv){
     host.parent.reset(OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid));if(!host.parent)return 3;
     host.pipe.reset(CreateFileW(argv[1],GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr));if(!host.pipe)return 4;
     ULONG server=0;if(!GetNamedPipeServerProcessId(host.pipe.value,&server)||server!=pid)return 5;
-    g_log=_wfopen((ExeDirectory()/L"dlss5-neural-x86-host.log").c_str(),L"w");
+    g_log=_wfopen((ExeDirectory()/L"amd-nr-x86-host.log").c_str(),L"w");
     try{host.Run();if(g_log){fclose(g_log);g_log=nullptr;}return 0;}
     catch(const std::exception& e){
         Log("x86bridge HOST_ERROR: %s; original frame only",e.what());

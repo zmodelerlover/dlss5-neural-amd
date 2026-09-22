@@ -1,7 +1,7 @@
 // Repeat one lossless SDR frame through the actual add-on pipeline, without a game.
 // Build: ./build.ps1 -Target framecheck -Exe
-// Run in a private directory containing the runtime, weights and dlss5-neural.ini:
-//   dlss5-framecheck.exe input.ppm [frames=20]
+// Run in a private directory containing the runtime, weights and amd-nr.ini:
+//   amd-nr-framecheck.exe input.ppm [frames=20]
 // PPM must be binary P6, RGB8, with no comments. Outputs are tightly packed raw
 // textures plus capture.csv (formats/dimensions) and timings.csv (GPU and wall ms).
 // This includes the production implementation so experiments cannot silently use
@@ -114,7 +114,7 @@ void Dump(ID3D12Resource *res, const std::string &name, std::ofstream &manifest)
 }
 void Run(const std::filesystem::path &input, int frames)
 {
-    g_log = _wfopen((ExeDirectory() / L"dlss5-neural.log").c_str(), L"w");
+    g_log = _wfopen((ExeDirectory() / L"amd-nr.log").c_str(), L"w");
     Check(g_log != nullptr, "open log");
     LoadSettings();
     Check(g.inlineMode && g.passes >= 1 && g.passes <= 3 && !g.useMotion && !g.useHistory &&
@@ -220,7 +220,7 @@ int wmain(int argc, wchar_t **argv)
     int result = 0;
     try
     {
-        framecheck::Check(argc >= 2 && argc <= 3, "usage: dlss5-framecheck.exe input.ppm [frames=20]");
+        framecheck::Check(argc >= 2 && argc <= 3, "usage: amd-nr-framecheck.exe input.ppm [frames=20]");
         const int frames = argc == 3 ? std::stoi(argv[2]) : 20;
         framecheck::Check(frames >= 2 && frames <= 120, "frames must be 2..120");
         framecheck::Run(argv[1], frames);

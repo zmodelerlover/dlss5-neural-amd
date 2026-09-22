@@ -90,11 +90,11 @@ try {
         & $captureTest | Tee-Object -FilePath (Join-Path $out "capture-test-$arch.log")
         if($LASTEXITCODE -ne 0){throw "Hotkey capture test failed: $arch"}
         if($arch -eq 'x86'){
-            $binary=Join-Path $out 'dlss5-neural.addon32'
+            $binary=Join-Path $out 'amd-nr.addon32'
             & $cl @flags /LD (Join-Path $root 'src/x86bridge/frontend32.cpp') "/Fo$out\frontend32.obj" /link /DLL "/OUT:$binary" user32.lib d3d9.lib d3d11.lib dxgi.lib d3dcompiler.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x86.log')
         }else{
-            $binary=Join-Path $out 'dlss5-neural-host64.exe'
-            & $cl @flags (Join-Path $root 'src/x86bridge/host64.cpp') "/Fo$out\host64.obj" /link "/OUT:$binary" user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x64.log')
+            $binary=Join-Path $out 'amd-nr-host64.exe'
+            & $cl @flags (Join-Path $root 'src/x86bridge/host64.cpp') "/Fo$out\host64.obj" /link "/OUT:$binary" user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x64.log')
         }
         if($LASTEXITCODE -ne 0){throw "Compile failed: $arch"}
         PE $binary $(if($arch -eq 'x86'){0x14c}else{0x8664})
@@ -112,16 +112,16 @@ try {
     # and both are retired.
     $release=Join-Path $root 'release'
     New-Item -ItemType Directory -Force -Path (Join-Path $release 'files') | Out-Null
-    foreach($name in @('dlss5-neural.addon32','dlss5-neural-host64.exe')){
+    foreach($name in @('amd-nr.addon32','amd-nr-host64.exe')){
         Copy-Item -LiteralPath (Join-Path $out $name) -Destination (Join-Path $release 'files') -Force
     }
-    @('dlss5-neural.addon32','dlss5-neural-host64.exe') | ForEach-Object {"$((Get-FileHash -LiteralPath (Join-Path $release "files/$_") -Algorithm SHA256).Hash.ToLowerInvariant())  $_"} | Set-Content -Encoding ASCII -LiteralPath (Join-Path $release 'payload.sha256')
+    @('amd-nr.addon32','amd-nr-host64.exe') | ForEach-Object {"$((Get-FileHash -LiteralPath (Join-Path $release "files/$_") -Algorithm SHA256).Hash.ToLowerInvariant())  $_"} | Set-Content -Encoding ASCII -LiteralPath (Join-Path $release 'payload.sha256')
     # Build the current integrated addon64 from the same checkout. Git already records whether
     # this feature changed existing sources; byte hashes tied to an older checkout are brittle
     # across rebases and Windows line-ending conversion.
     & (Join-Path $root 'build.ps1') -Target neural -VsPath $VsPath -SdkPath $SdkPath -SdkVersion $SdkVersion 2>&1 | Tee-Object -FilePath (Join-Path $out 'addon64-build.log')
     if($LASTEXITCODE -ne 0){throw 'Integrated addon64 build failed'}
-    $original=Join-Path $root 'build/dlss5-neural.addon64';if(!(Test-Path -LiteralPath $original)){throw 'Integrated addon64 output missing'}
+    $original=Join-Path $root 'build/amd-nr.addon64';if(!(Test-Path -LiteralPath $original)){throw 'Integrated addon64 output missing'}
     PE $original 0x8664
     Get-ChildItem -LiteralPath $out -File | Where-Object {$_.Name -ne 'SHA256SUMS.txt'} | Sort-Object Name | ForEach-Object {"$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)  $($_.Name)"} | Set-Content -LiteralPath (Join-Path $out 'SHA256SUMS.txt')
     Write-Host 'PASS native x86/x64 builds, protocol, IPC and hotkey-capture tests, PE, imports and integrated addon64 build. GPU/game tests still require live validation.'

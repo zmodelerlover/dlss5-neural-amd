@@ -1,7 +1,7 @@
 """GPU regression: each inline pass must consume its own tuning.
 
 Build framecheck first. Supply a real P6 SDR frame and the pinned runtime files:
-  python tools/pass_profile_check.py --exe build/dlss5-framecheck.exe \
+  python tools/pass_profile_check.py --exe build/amd-nr-framecheck.exe \
     --runtime-dir /path/to/runtime --input /path/to/frame.ppm --output /new/directory
 
 Runs the actual pipeline, with temporal/history disabled. The old batch path
@@ -18,7 +18,7 @@ import subprocess
 
 import numpy as np
 
-BASE = """[dlss5]
+BASE = """[amd-nr]
 Scale=1.0
 Passes=2
 Encoding=0
@@ -58,11 +58,11 @@ def run(args):
         for attempt in range(1, 4):
             folder = args.output / name / f"attempt-{attempt}"
             folder.mkdir(parents=True)
-            exe = folder / "dlss5-framecheck.exe"
+            exe = folder / "amd-nr-framecheck.exe"
             shutil.copy2(args.exe, exe)
             for filename in ("dlssnr_amd_pass1.dll", "dlssnr_on_amd_weights.bin", "dlssnr_on_amd.ini"):
                 shutil.copy2(args.runtime_dir / filename, folder / filename)
-            (folder / "dlss5-neural.ini").write_text(BASE + f"SerialPasses={serial}\nTone={tone}\n")
+            (folder / "amd-nr.ini").write_text(BASE + f"SerialPasses={serial}\nTone={tone}\n")
             with (folder / "stdout.log").open("w") as log:
                 subprocess.run([str(exe.resolve()), str(args.input.resolve()), "40"],
                                cwd=folder, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)

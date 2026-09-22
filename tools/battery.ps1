@@ -3,7 +3,7 @@ param([string]$Label, [string]$NeuralIni = '', [string]$AmdIni = '', [string]$En
       [string]$GamePath = '')
 
 . (Join-Path $PSScriptRoot 'find-steam-game.ps1')
-$nfs = Find-SteamGame -Name 'Need for Speed' -Explicit $GamePath -EnvName 'DLSS5_NFS_PATH'
+$nfs = Find-SteamGame -Name 'Need for Speed' -Explicit $GamePath -EnvName 'AMDNR_NFS_PATH'
 Get-Process NFS16 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 8
 
@@ -17,10 +17,10 @@ function Set-Ini($path, $pairs) {
     }
     $lines | Set-Content $path -Encoding ascii
 }
-Set-Ini "$nfs\dlss5-neural.ini" $NeuralIni
+Set-Ini "$nfs\amd-nr.ini" $NeuralIni
 Set-Ini "$nfs\dlssnr_on_amd.ini" $AmdIni
 
-Remove-Item "$nfs\dlss5-neural.log" -ErrorAction SilentlyContinue
+Remove-Item "$nfs\amd-nr.log" -ErrorAction SilentlyContinue
 Remove-Item "$nfs\dlssnr_on_amd.log" -ErrorAction SilentlyContinue
 
 if ($EnvVar -ne '') {
@@ -32,7 +32,7 @@ Start-Sleep -Seconds $Seconds
 Get-Process NFS16 -ErrorAction SilentlyContinue | Stop-Process -Force
 if ($EnvVar -ne '') { Remove-Item ("env:" + $EnvVar.Split('=')[0]) -ErrorAction SilentlyContinue }
 
-$nl  = Get-Content "$nfs\dlss5-neural.log" -ErrorAction SilentlyContinue
+$nl  = Get-Content "$nfs\amd-nr.log" -ErrorAction SilentlyContinue
 $eng = Get-Content "$nfs\dlssnr_on_amd.log" -ErrorAction SilentlyContinue
 
 Write-Output ('===== ' + $Label + ' =====')

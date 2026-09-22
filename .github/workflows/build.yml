@@ -40,7 +40,7 @@ jobs:
       - name: The add-on does not import opengl32
         shell: pwsh
         run: |
-          python tools/opengl_import_check.py build/dlss5-neural.addon64
+          python tools/opengl_import_check.py build/amd-nr.addon64
           if ($LASTEXITCODE -ne 0) { throw 'opengl import check failed' }
 
       - name: Check composition and guide selection
@@ -56,8 +56,8 @@ jobs:
           name: addons
           path: |
             build/*.addon64
-            build/dlss5-framecheck.exe
-            build/dlss5-glprobe.exe
+            build/amd-nr-framecheck.exe
+            build/amd-nr-glprobe.exe
 
   x86-bridge:
     runs-on: windows-latest
@@ -72,8 +72,8 @@ jobs:
         with:
           name: x86-bridge
           path: |
-            build-x86bridge/dlss5-neural.addon32
-            build-x86bridge/dlss5-neural-host64.exe
+            build-x86bridge/amd-nr.addon32
+            build-x86bridge/amd-nr-host64.exe
             build-x86bridge/protocol-test-*.log
             build-x86bridge/io-test-*.log
             build-x86bridge/imports-*.txt

@@ -9,7 +9,7 @@ for word in ['d3d12','amdhip','dlssnr_amd_pass','Packet','RecordFn','ID3D11Devic
  assert word.lower() not in f.lower(),word
 for word in ['VORT','Generic Depth','async_home','amd_last_nr','g.sent_n','retryAfter','soft_timeout','ping-pong']:
  assert word not in f+h+ipc+io,word
-assert '#include "../neural/neural.cpp"' in h and '#define DLSS5_WITH_VULKAN 0' in h
+assert '#include "../neural/neural.cpp"' in h and '#define AMDNR_WITH_VULKAN 0' in h
 assert h.count('DllMain(')==0
 assert 'EnumAdapterByLuid' in h and 'got.LowPart==luid.LowPart&&got.HighPart==luid.HighPart' in h
 assert 'DuplicateHandle(GetCurrentProcess(),source.handle.value,g.process.value' in f
@@ -64,11 +64,11 @@ assert 'native!=ours' in gone and 'g.nativeD3D9?' in gone
 for unsafe in ['FlushAndWait','ClearState(','->Flush()','CopyResource','Kind::Quit','x86bridge::Request']:
  assert unsafe not in gone,unsafe
 
-assert 'const std::wstring name=L"\\\\\\\\.\\\\pipe\\\\dlss5-x86bridge-"' in f
+assert 'const std::wstring name=L"\\\\\\\\.\\\\pipe\\\\amd-nr-x86bridge-"' in f
 # The stage probe measures; it must never participate. It stays off unless the environment asks
 # for it, and it may only read boundaries the frame already crosses -- a wait of its own would
 # land inside the D3D9 reset window the frontend keeps clear.
-assert 'DLSS5_X86BRIDGE_TIMING' in f
+assert 'AMDNR_X86BRIDGE_TIMING' in f
 sp=f[f.index('struct StageProbe'):f.index('} probe;')]
 assert 'bool on=false;' in sp and 'QueryPerformanceFrequency' in sp and 'QueryPerformanceCounter' in sp
 for unsafe in ['FlushAndWait','CreateQuery','Issue(','GetData(','Sleep(','ClearState(','Request(','Flush()','Map(','CopyResource']:
@@ -89,7 +89,7 @@ assert 'L"Async",1,ini.c_str()' in f
 # settings. It must not issue IPC or GPU work: the switch costs at most one frame either way
 # precisely because nothing has to be reconciled.
 setasync=f[f.index('void SetAsync(bool async){'):f.index('#include "overlay32.inc"')]
-assert 'if(g.async==async)return;' in setasync and 'WritePrivateProfileStringW(L"dlss5",L"Async"' in setasync
+assert 'if(g.async==async)return;' in setasync and 'WritePrivateProfileStringW(L"amd-nr",L"Async"' in setasync
 assert 'presentation switched to' in setasync
 for unsafe in ['Request(','Post(','Collect(','FlushAndWait','CopyResource','StopHost']:
  assert unsafe not in setasync,unsafe
@@ -158,7 +158,7 @@ assert h.count('++g.frame')==1 and 'Idle();ReleaseSwapchainSized();built=false;g
 for path in [new/'frontend32.cpp',new/'host64.cpp']:
  text=read(path)
  assert 'ProfileForThisProcess' not in text and 'kTargets' not in text
- assert set(re.findall(r'[A-Za-z0-9_-]+\.exe',text)) <= {'dlss5-neural-host64.exe'}
+ assert set(re.findall(r'[A-Za-z0-9_-]+\.exe',text)) <= {'amd-nr-host64.exe'}
 print('PASS static boundaries: original engine TU; no neural imports/API in frontend; generic LUID match; fixed-width IPC; shared handle ownership; same-frame confirmation; host output fence before ACK; transport isolated; original pending policy; no cached output')
 compiler=os.environ.get('CXX') or shutil.which('g++')
 if not compiler:raise SystemExit('Set CXX to a C++20 compiler; native MSVC checks are separate')

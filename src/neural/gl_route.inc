@@ -1088,7 +1088,7 @@ void Present(command_queue *queue, swapchain *sc)
         {
             g.unavailable = true;
             if (*g.reason == 0)
-                g.reason = "could not create the working textures; see dlss5-neural.log";
+                g.reason = "could not create the working textures; see amd-nr.log";
             Log("opengl: %s", g.reason);
             return;
         }
@@ -1130,9 +1130,7 @@ void Present(command_queue *queue, swapchain *sc)
     auto jobPending = [&] {
         return !transportOnly &&
                (g.fence->GetCompletedValue() < g.completion ||
-                static_cast<UINT>(InterlockedCompareExchange(
-                    reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kJobCounter)), 0,
-                    0)) < g.lastJob);
+                RuntimeBusy());
     };
 
     bool runNetwork = !transportOnly;
@@ -1266,7 +1264,7 @@ void Present(command_queue *queue, swapchain *sc)
     {
         Log("opengl: closing work slot %u failed (0x%08lX); discarding the unsubmitted job and "
             "recreating the pair.", slot, hr);
-        g.lastJob = 0;
+        ResetJobs();
         g.activePasses = 0;
         g.historyValid.store(false);
         if (!RecreateWorkSlot(slot))
@@ -1281,8 +1279,7 @@ void Present(command_queue *queue, swapchain *sc)
         g.workQueue->Wait(g.backFence.Get(), r.toD3DValue);
     g.workQueue->ExecuteCommandLists(1, lists);
     if (!transportOnly && g.activePasses != 0)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
-            g.workQueue.Get(), 1, lists);
+        NotifyRuntimes(g.workQueue.Get(), 1, lists);
     g.ringValue[slot] = ++g.ringSerial;
     g.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
     g.completion = ++g.serial;

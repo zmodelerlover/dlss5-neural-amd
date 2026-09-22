@@ -35,7 +35,7 @@ a merged tool, and losing the preflight would be a regression for everyone using
 
 ### 1. Payloads stay external, and coupling is kept by pinned hash
 
-The Rust installer embeds `dlss5-neural.addon64` so that "the installer cannot hand out an add-on
+The Rust installer embeds `amd-nr.addon64` so that "the installer cannot hand out an add-on
 from a different release than the one it was built beside". That guarantee is worth keeping. Its
 implementation is not.
 
@@ -103,7 +103,7 @@ API plus guidance, or that knowledge is lost.
 
 ## What the merged tool must keep
 
-From `installer-x86`: transactional journal with rollback, `.dlss5-x86bridge-backups/`, the install
+From `installer-x86`: transactional journal with rollback, `.amd-nr-x86bridge-backups/`, the install
 manifest with ownership and hashes, preservation of user config and of files modified after install,
 `[INSTALL] BasePath` resolution confined to the game directory, fail-closed handling of unknown D3D8
 wrappers, and the PE machine check.

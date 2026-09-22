@@ -108,7 +108,10 @@ if ($Target -in @('neural', 'framecheck')) {
     )
 }
 
-$dll = Join-Path $out $(if ($Exe) { "dlss5-$Target.exe" } else { "dlss5-$Target.addon64" })
+# The neural add-on is the product and carries the product's name; every other target is a
+# diagnostic and keeps its own, prefixed.
+$stem = if ($Target -eq 'neural') { 'amd-nr' } else { "amd-nr-$Target" }
+$dll = Join-Path $out $(if ($Exe) { "$stem.exe" } else { "$stem.addon64" })
 
 Push-Location $out
 try {
@@ -119,7 +122,7 @@ try {
     & $cl /nologo /utf-8 /std:c++20 /EHsc /O2 /MT /W3 /DNDEBUG /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS `
           /DNOMINMAX /DWIN32_LEAN_AND_MEAN `
           /Fo"$out\" $(if (-not $Exe) { '/LD' }) $sources /link $(if (-not $Exe) { '/DLL' }) /OUT:"$dll" `
-          user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib
+          user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib
     if ($LASTEXITCODE -ne 0) { throw "compilation failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 

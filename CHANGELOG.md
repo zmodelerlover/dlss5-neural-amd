@@ -1,5 +1,187 @@
 # Changelog
 
+## v0.7.0 - 2026-09-22 - AMD Neural Rendering
+
+Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights, so an upgrade is the add-on,
+the companion effect, and nothing else.
+
+**The project is now AMD Neural Rendering.** Every name this project owns has been renamed: the
+add-on is `amd-nr.addon64`, the settings are `amd-nr.ini`, the log is `amd-nr.log`, the companion
+effect is `AMD_Neural_Feed.fx`, and ReShade's Add-ons tab reads **AMD Neural Rendering**. Nothing
+belonging to anyone else moved -- the runtime is still `dlssnr_amd_pass1.dll`, its log is still
+`dlssnr_on_amd.log`, the NGX parameter names are unchanged, and the upstream project is still
+[DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) by danielblnc, which is what this
+add-on drives and does not reimplement. **An existing `dlss5-neural.ini` is carried over to
+`amd-nr.ini` on first run**, section header and all, and the old file is left where it is. Two
+things a rename cannot migrate: a ReShade preset naming the old effect has to be re-enabled
+against `AMD_Neural_Feed.fx`, and the `AMDNR_MV_PROVIDER` preprocessor definition starts again at
+its default of Launchpad. The repository keeps its URL so links already in circulation keep
+working.
+
+### The correction is composed as a bounded ratio now, not added
+
+This is the change that makes everything below it worth having. The add-on used to add the
+network's correction to the frame channel by channel and clip whatever left the range -- and a
+clipped channel is a hue rotation, not a stronger version of the same picture. That is what "three
+passes looks deep fried" was, and it is why Pass Count was not worth using: two passes meant twice
+the difference, three meant three times it, and none of it read as detail.
+
+The answer is now made into a picture of its own, its luminance compared against the frame's as a
+ratio, that ratio bounded, and two finished pictures blended. A bounded ratio cannot move hue. This
+is what the OptiScaler DLSS-NR fork does and what RenoDX's addon did before it. `Composition` in
+the ini still selects the old behaviour for an A/B.
+
+Four controls come out of that composition, all of them new:
+
+- **Colour Strength.** Whether the network's colour arrives with its light. At 0 every pixel keeps
+  the game's own hue and only its brightness carries what the network decided -- by construction it
+  cannot change colour there. This is the answer to "it changed the colours of my game".
+- **Highlight Guard.** The most compose may move a pixel, as a multiple of what it already was. One
+  scalar taken from luminance and applied to the whole triple, so it bounds brightness without
+  touching hue. 2.0x by default, which is what 254 composition lines across seven games and nine
+  RTX machines all read.
+- **Residual Limit.** The control for blown blocks. A measured two-pass run came back with a mean
+  correction of 0.072 and a **maximum of 4.16** -- four times brighter than white, in a picture
+  whose own mean is 0.13. That is a tile where the network extrapolated rather than saw, and every
+  extra pass ran on top of it. The whole correction is scaled rather than one channel clamped,
+  because clamping one channel of a triple is the hue rotation this path exists to avoid.
+- **Edge Fade.** Border tiles have no neighbour on one side, so what the network returns there is
+  invented rather than seen, and bicubic upsampling rings on top of it. A corner sits inside two
+  border bands at once, which is why the corners went first. Off by default.
+
+**Bicubic residual upsample.** Below full Resolution Scale only the correction comes back up.
+Stretching it bilinearly is a blur that throws away everything but colour and brightness, and that
+alone was enough to make the whole effect look like a colour filter. Catmull-Rom keeps the rest.
+
+### Neural Rendering Models A, B and C
+
+The same three models `DLSSNR.Style` selects on NVIDIA, selectable live from the overlay. On NVIDIA
+a model is two things: an input of the network, which is what moves lighting and detail, and a
+grade on the finished frame. **This runtime has no slot for the first that anything here can
+reach**, so here a model is its grade only -- B darkens by 0.1 stop, flattens contrast a quarter of
+the way off its S-curve and removes a tenth of the saturation; C removes 15 percent of the
+saturation. The constants were read out of `nvngx_dlssnr.dll` and verified against its SASS, and
+the saturation slot works in HSL rather than HSV, which is checked against a real round trip in CI.
+
+Two names for the same three values are in circulation, so the overlay prints both: RenoDX writes
+Model A, B and C, Deep Fried Chicken writes Default, Natural and Cinematic.
+
+**NR Preset is closed.** It is `DLSSNR.Hint.Render.Preset`, a weight-set hint; the shipping DLL
+carries one set, its own log says `1 config(s) available`, and every other value falls back to it.
+It does nothing here and it does nothing on NVIDIA either.
+
+**One measured bug, found and fixed inside this cycle.** For about two hours the style vector was
+written to engine offset `97b3c` on the reading that it was the network's fifth control. It is not
+-- it is the runtime's `Scale`, and it belongs to the post kernel that writes the output. Model A
+sends 0, so the effect was multiplied by zero: residual mean 0.00024 against an input of 0.45, with
+"enabled" and "disabled" producing identical frames while every frame was reported as processed.
+The field is back at the runtime's own default of 1/32, the ini refuses a value near zero, and the
+overlay's slider will not reach it.
+
+### The companion effect, and real motion vectors
+
+`AMD_Neural_Feed.fx` hands the add-on a real optical-flow field from whichever motion-vector shader
+is installed -- **iMMERSE Launchpad, VORT or LumeniteFX** -- along with ReShade's own depth buffer
+with its `RESHADE_DEPTH_INPUT_*` fixes applied. It bundles none of them and includes none of them.
+
+This matters most where the add-on has nothing of its own. On an emulator the PS2 never computed
+per-pixel motion, so the only alternative is this add-on's built-in estimator: two levels of block
+matching at a search radius of four, because it has to share the frame with the network. Launchpad
+runs eight levels and filters between each one. A game that renders its own velocity buffer still
+beats both, and the overlay says which one is actually feeding the network.
+
+Depth is handed over in the range the network was trained on rather than raw. `DepthNormalise` is
+still there, and it now ships **off** -- see below.
+
+### The engine's option struct, mapped rather than guessed
+
+The runtime's ini reader was decompiled, so the key string sits beside the address it writes.
+Five fields this add-on never wrote, and two it wrote wrong:
+
+- **`Temporal`** is the byte this project had labelled "motion is valid". That was a guess and it
+  was wrong, and it explains a measurement nobody could account for: `Temporal=1` was the only run
+  where the engine reported non-zero motion. Accumulating over time is what gives a motion vector
+  something to point at.
+- **`UseAutoMask`** is the engine's semantic character mask -- the same control RenoDX exposes as
+  Character Mask. It defaults to 1 and was never written, so it has always been on by omission.
+  Turning it off removes the effect from the whole frame, not just from characters.
+- **`ToneChannels`**, **`Scale`** and **`Tonemap`** are exposed, with what is and is not known
+  about each stated where it sits.
+
+**Per-pass profiles.** A later pass is looking at a picture an earlier one already edited, so the
+same numbers again ask it to sharpen its own sharpening. Local Tone now reaches the first pass only,
+which is what the reference fork does in one deliberate line, and each pass can carry its own
+Structure, Tone and Skin. Each pass also keeps its own history rather than sharing the chain's last
+output.
+
+### Weight parity, proven
+
+153 tensors, byte for byte identical to `nvngx_dlssnr.dll`. **The network is NVIDIA's**, so any
+difference in image between this and an RTX machine is in the composition, the controls or the fp8
+arithmetic -- never in the model. The AMD kernels were carved out and read: the conditioning vector
+lives only in LDS, which is why no external kernel, IAT hook or shared buffer can reach it, and why
+feeding a style value into the network is closed by construction rather than by effort.
+
+### Three controls that were broken, and are not any more
+
+- **Skin Structure shipped at 1.0**, writing over the `-1` the engine boots with -- and `-1` means
+  *automatic*, "derive it from local structure". The add-on turned that automatic off before anyone
+  touched a control, while the overlay's own help text described it in the past tense. The default
+  is `-1` again, and because `-1` is a mode and not a strength it is a checkbox now with the slider
+  behind it, instead of a position on a `-1..3` scale where every value between `-1` and `0` meant
+  nothing.
+- **Tone Channels had four positions and two meanings.** The record path writes
+  `(value & ~2) | 4` -- bits 2 and 4 stopped being tone channels and became the frame-timeout
+  policy -- so slider position 2 was byte for byte identical to 0, and 3 to 1. It is a two-position
+  control now. Bit 4 has to stay set for a second reason read in the worker: with the whole word at
+  0 the runtime zeroes Local Tone and Local Structure before they reach the network, whatever the
+  sliders say.
+- **`DepthNormalise` shipped on** while the overlay painted it amber for being past what had been
+  measured, and its own help text said it reads as the wrong operation: PCSX2's depth already has
+  its bulk at the top of its own tiny range (probe: mean 0.00197 against max 0.00200), so scaling
+  by 1/max lands nearly every pixel at 0.99 rather than spreading anything out. It ships off.
+
+### The overlay, rebuilt
+
+It carried 47 controls across eight headers. It carries 15, and it is built for a **narrow panel**,
+because that is how it is used -- kept thin so the game stays visible behind it.
+
+- **Nothing was removed, only taken off screen.** Every atomic, every load and every save is
+  untouched: a hidden control still reads and writes its own key in `amd-nr.ini`. **More settings**
+  at the bottom opens a cascade with a checkbox per hidden control, grouped under the header it will
+  appear beneath, so turning one on tells you where to look for it.
+- **Status moved to the right-hand column**, opposite the switches, in vertical space those rows
+  already occupied. Left is what you change, right is what happened. It used to be a collapsing
+  section that spent a header and a click on five lines of text.
+- **A colour rule, and it is a report rather than a threshold.** The old panel painted Timing, Scale
+  and Passes amber the moment Scale passed 0.50 or Passes passed 1 -- which is most of a working
+  configuration, and amber that is on while everything is fine is amber nobody reads. Red is now the
+  documented device-removal path and nothing else; amber comes from the measured skip rate, from the
+  card's own cap having fired, or from a switch seen to break the picture. Section headers each
+  carry their own hue so a thin panel reads as regions.
+- **The MEASURED / TRACED / UNKNOWN / INERT tags are gone.** They were provenance, which belongs in
+  the source and in the handoffs, and they cost eight to twelve characters on every row.
+- **Export logs to desktop.** One button copies `amd-nr.log`, the runtime's `dlssnr_on_amd.log`,
+  `ReShade.log` and `amd-nr.ini` into a dated folder on the desktop. The settings go with the logs
+  because a log without them cannot be compared against anything.
+- Labels are short because ImGui neither wraps nor clips a checkbox label -- it runs off the right
+  edge. What a control means lives in its `(?)`, which has room.
+- Tooltips are one or two sentences. Performance sits above Image.
+
+### Checks
+
+`compose_check.py` had never looked at Edge Fade, which is the honest reason nobody could tell
+whether it was working. It now proves the correction reaches zero at the border, that a corner fades
+harder than an edge because it sits in two bands, that halfway into the band is half the correction,
+and that the whole triple is scaled so hue cannot move -- and writing it caught a wrong claim about
+what the maximum value does.
+
+`style_check.py` checks the B and C coefficients against the descriptor table, that every knob is
+the identity at neutral, and that the closed-form saturation agrees with a real HSL round trip.
+`feed_fx_check.py` proves the companion effect and the add-on still agree on every texture name,
+which is what made the rename safe to do mechanically.
+
+
 ## v0.6.0 - 2026-09-19 - OpenGL
 
 Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights, so an upgrade is the add-on
@@ -57,7 +239,7 @@ Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights as v0.5.2, so
   differed: GTA IV **43.8 -> 61.6 FPS (+41%)** on classic D3D9 staging, Resident Evil 5 **46.6 ->
   62.2 FPS (+33%)** by the game's own benchmark, Half-Life 2 **77.0 -> 89.3 FPS (+16%)** on the
   D3D9Ex shared path. No dropped frames and no faults in any of them.
-- **It is the default on the 32-bit bridge**, as `Async=1` under `[dlss5]` in `dlss5-neural.ini`.
+- **It is the default on the 32-bit bridge**, as `Async=1` under `[dlss5]` in `amd-nr.ini`.
   `Async=0` restores same-frame presentation exactly -- the same code path, minus two clock reads.
   The startup line reports `present=pipelined` or `present=same-frame` so a log says which it was.
   Note the key means something else on the 64-bit add-on, where `Async` is the older inline
@@ -74,7 +256,7 @@ Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights as v0.5.2, so
   either direction: turning it off collects the answer in flight and drops it, turning it on leaves
   the first present with no previous answer to compose. The choice is written one key at a time,
   because rewriting the whole ini from the frontend would drop everything the helper owns.
-- **Arm the stage probe from the ini with `Timing=1`.** `DLSS5_X86BRIDGE_TIMING=1` still works
+- **Arm the stage probe from the ini with `Timing=1`.** `AMDNR_X86BRIDGE_TIMING=1` still works
   where it already worked, but a game that re-launches itself through its own launcher, GTA IV
   among them, loads the add-on into a process that inherits no environment from whoever started it
   and reported `probe=off` however you launched it. A timing window that spans a mode switch is
@@ -99,7 +281,7 @@ Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights as v0.5.2, so
 Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights as v0.5.1, so an upgrade is the
 three add-on files and nothing else — the 141 MB does not move.
 
-- **The overlay saves itself.** Every control now writes to `dlss5-neural.ini` the moment you let
+- **The overlay saves itself.** Every control now writes to `amd-nr.ini` the moment you let
   go of it, on both the 64-bit route and the 32-bit bridge. Save Settings stays — it is still what
   puts a line in the log saying a write happened — but nothing is lost to closing a game without
   having scrolled down to it, which is where half a dozen A/B tests went. The write is armed when a
@@ -135,7 +317,7 @@ hash. The weights are unchanged, so an upgrade replaces a 7 MB DLL and downloads
   was written to a copy nothing else reads, and a capture armed on the click frame took the click's
   own key. Capture now reads `effect_runtime::is_key_down`, waits for release, and writes through
   the shadow the panel and the host both read.
-- Strip a UTF-8 byte-order mark from `dlss5-neural.ini` at load. `GetPrivateProfileInt` reads the
+- Strip a UTF-8 byte-order mark from `amd-nr.ini` at load. `GetPrivateProfileInt` reads the
   file as bytes, so a BOM hides the whole file and every setting silently falls back to its default.
 - Carry an `X8R8G8B8` back buffer as its `A8` twin on the D3D9 CPU route. `B8G8R8X8_UNORM` has no
   typed UAV store on this hardware, so there was no way to write the corrected image back and the
@@ -157,7 +339,7 @@ hash. The weights are unchanged, so an upgrade replaces a 7 MB DLL and downloads
   driver resets and takes the game with it. The person's own Scale setting is untouched.
 - Refuse a guide buffer below 256 pixels on a side. With the swapchain size still unknown every
   buffer passed the floor, including a 1x1 that was taken as the motion guide.
-- Write every setting into `dlss5-neural.ini` on the first run, at its default, so the add-on can
+- Write every setting into `amd-nr.ini` on the first run, at its default, so the add-on can
   be tuned from the file alone with the overlay never opened.
 - Retire the Rust terminal installer. Installing is AMD-NR ReShade Installer, which finds games,
   fetches and verifies the payloads, installs ReShade, and keeps a manifest of what it wrote.
@@ -292,7 +474,7 @@ Vulkan route is fixed and has not been run.**
   copy. Those checks now run before the journal exists, for both routes, and name the cause.
 - Accept either shape of folder in the first field, and either a folder or an executable as the
   target.
-- Add an opt-in x86 stage probe behind `DLSS5_X86BRIDGE_TIMING=1`, off by default. It splits the
+- Add an opt-in x86 stage probe behind `AMDNR_X86BRIDGE_TIMING=1`, off by default. It splits the
   bridge into `input+prepare`, `host` and `output` and averages one line per 120 completed frames,
   naming the staging path measured. On classic D3D9 the input and output stages are a full frame
   crossing CPU-visible memory each way, so their sum is roughly fixed and does not shrink with
@@ -401,7 +583,7 @@ reporting; neither was separated and neither changes the result.
 - **DisableOnAltTab** — switches the effect off when the game stops being the focused window, and
   leaves it off until the hotkey brings it back. Separate from the minimised-window handling,
   which is unconditional and does resume on its own.
-- The add-on writes a **commented `dlss5-neural.ini`** when none exists. The panel saves through
+- The add-on writes a **commented `amd-nr.ini`** when none exists. The panel saves through
   `WritePrivateProfileString`, which cannot carry a comment, so an install that had only ever
   been saved from the panel was a bare list of keys.
 
@@ -749,7 +931,7 @@ on an access violation at address zero, reads the return address a `call` leaves
 which module it points into and at what offset. One run, one line:
 
 ```
-fault probe: jumped to null; stack+0 returns to dlss5-neural.addon64+0x6705
+fault probe: jumped to null; stack+0 returns to amd-nr.addon64+0x6705
 ```
 
 That named the culprit as the add-on rather than the runtime, and 0x6705 disassembles to the

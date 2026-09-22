@@ -8,7 +8,7 @@ placed in, and `neural.cpp` records what one unwanted import already did to NFS 
 every test passes, and the damage only shows up in somebody else's game.
 
     python tools/opengl_import_check.py                             # sources only, no toolchain needed
-    python tools/opengl_import_check.py build/dlss5-neural.addon64  # and the built import table
+    python tools/opengl_import_check.py build/amd-nr.addon64  # and the built import table
 
 What it proves:
 

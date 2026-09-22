@@ -1,6 +1,6 @@
 # The compute shaders live as string literals in neural.cpp and are compiled by D3DCompile at
 # runtime, so build.ps1 succeeding says nothing about them -- a syntax error only shows up as
-# "shader X failed to compile" in dlss5-neural.log, in a game, after a launch. Pull them out and
+# "shader X failed to compile" in amd-nr.log, in a game, after a launch. Pull them out and
 # run fxc over them instead.
 #
 #   powershell -File tools\check_shaders.ps1
@@ -23,7 +23,7 @@ if ($sdk -and (Test-Path (Join-Path $sdk 'bin'))) {
 if (-not $fxc) { throw 'fxc.exe not found. Install the Windows 10/11 SDK.' }
 
 $src = Get-Content (Join-Path $root 'src\neural\neural.cpp') -Raw
-$tmp = Join-Path $env:TEMP ('dlss5-shaders-' + [guid]::NewGuid().ToString('N'))
+$tmp = Join-Path $env:TEMP ('amd-nr-shaders-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 $failed = 0

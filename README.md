@@ -1,6 +1,6 @@
-# dlss5-neural-amd
+# AMD Neural Rendering
 
-A ReShade add-on that runs the DLSS 5 neural rendering network on AMD GPUs.
+A ReShade add-on that runs neural rendering on AMD GPUs.
 
 NVIDIA's DLSS 5 tools call `nvngx_dlssnr.dll`, which does nothing on a Radeon. This add-on drives
 the AMD port of the same network instead. The port is
@@ -45,7 +45,7 @@ There is a [video of the whole install](https://www.youtube.com/watch?v=L2v0b98w
 
 ## Turn it on
 
-Press **Home** to open ReShade, go to the **Add-ons** tab, and find **DLSS Neural Rendering (AMD)**.
+Press **Home** to open ReShade, go to the **Add-ons** tab, and find **AMD Neural Rendering**.
 
 The add-on starts switched off. Tick **Enabled** or press **Ctrl+End**.
 
@@ -60,7 +60,7 @@ hotkey can be rebound. **Disable the effect on alt-tab** turns it off when the g
 Every control has a `(?)` tooltip that explains what it does. The panel is in English or Brazilian
 Portuguese; use the **Language** control to switch.
 
-Settings are saved to `dlss5-neural.ini` as soon as you release a control. Nothing is lost by
+Settings are saved to `amd-nr.ini` as soon as you release a control. Nothing is lost by
 closing the game.
 
 The controls are colour-coded:
@@ -81,7 +81,7 @@ The main controls:
   waits for it, and Async is older and is not the tested path. On a 32-bit game it chooses
   presentation: pipelined is the default, because it measured 16% to 41% faster in three
   games and costs one frame of lag and nothing else. Both write `Async` to
-  `dlss5-neural.ini`, so a value copied from one route's ini means the other thing in the
+  `amd-nr.ini`, so a value copied from one route's ini means the other thing in the
   other's.
 
 The defaults are a reasonable starting point.
@@ -97,14 +97,14 @@ emulator, every game without one — the add-on has to *estimate* motion by comp
 and what it can afford next to the network is two levels of block matching with a search radius
 of four.
 
-A dedicated optical-flow shader is not on that budget. `shaders/DLSS5_Neural_Feed.fx` lets the
+A dedicated optical-flow shader is not on that budget. `shaders/AMD_Neural_Feed.fx` lets the
 add-on read one instead, and passes ReShade's depth buffer along with it.
 
 1. Install a motion-vector shader. **iMMERSE Launchpad** is the default and runs an eight-level
    pyramid with a filter between every level: <https://martysmods.com>. VORT, LumeniteFX Kernel
-   and anything writing `texMotionVectors` also work — pick one with the `DLSS5N_MV_PROVIDER`
+   and anything writing `texMotionVectors` also work — pick one with the `AMDNR_MV_PROVIDER`
    preprocessor definition on the effect.
-2. Copy `DLSS5_Neural_Feed.fx` into your ReShade shaders folder.
+2. Copy `AMD_Neural_Feed.fx` into your ReShade shaders folder.
 3. In ReShade's **Home** tab, tick both techniques, with the provider's **above**
    `DLSS 5 Neural Feed`.
 
@@ -145,7 +145,7 @@ Two things are needed:
 1. **The status line** in the panel. It reads `Running: X processed, Y skipped (Z%)` with the
    buffer sizes. Copy that line.
 2. **The logs**, both next to the game's `.exe`:
-   - `dlss5-neural.log` — what the add-on detected and what it measured.
+   - `amd-nr.log` — what the add-on detected and what it measured.
    - `dlssnr_on_amd.log` — what the runtime did.
 
 If the problem is the installer rather than the add-on, use its own **Report a problem** button. It

@@ -3,10 +3,70 @@
 `DLSSNR.Style` is an NGX parameter, not an ini key. It selects Neural Rendering Model A, B or C.
 RenoDX exposes it and it visibly changes the image on NVIDIA hardware.
 
+## Correction, 21/09/2026: Style is a network control first and a grade second
+
+Everything below about the grading vector stands, byte for byte. What was wrong is the sentence
+"not network conditioning". It is both, and the network half is the one that changes the picture:
+
+- `CG2RNetworkManager::Evaluate` (`0x180021BB0`) reads `Style` from `opts+0xEC`, clamps it
+  **unsigned** to `n-1` where `n` is the descriptor's style count (`descriptor+0x64`), and hands
+  the forward pass `style * 0.0078125` (= style/128) beside LocalTone, LocalStructure and the
+  derived skin/structure pair. Measured at runtime on NVIDIA: `n = 3`, so the network takes
+  0, 1 and 2 -- exactly Model A, B, C -- as controls 0, 0.0078125 and 0.015625. Anything else,
+  negative included, silently becomes 2.
+- **The AMD runtime does not have that slot -- corrected 22/09.** For one day (builds 21/09
+  22:24 to 22/09 00:04) this document and the add-on said it did: the worker (`sub_180018670`,
+  `0x180019070..0x1800190E5`) builds four control floats at `0x96F98..0x96FA4` (tone, structure
+  raw, skinEff, structEff) and copies `97b3c` -- the ini key `Scale`, default `0.03125` -- into
+  the float right after them, `0x96FA8`, which looked like a fifth control. It is not one. The
+  runtime's own log line prints `ctl (%.2f %.2f %.2f %.2f)`, four values; and in the evaluate
+  (`sub_18002D2D0`) object+32..44 go to the *pre* kernel that feeds the network while object+48
+  (`0x96FA8`) goes to the *post* kernel that writes the output, as the argument after the history
+  pointer. Writing `style/128` there made Model A (0) return its input unchanged -- measured in
+  ETS2: residual mean 0.00024 against an input mean of 0.45, "enabled" and "disabled" identical,
+  every frame reported processed -- and cut Models B and C to a quarter and a half. The add-on
+  writes the runtime's default `1/32` again, refuses values near zero, and measures the residual
+  every 1800 frames so this class of failure is reported instead of found by eye.
+  **On AMD a Model is its grade and nothing else.** The network half has no input to reach: the
+  original conclusion of this document stands for this runtime.
+- Measured on NVIDIA hardware (ETS2, D3D11 via RenoDX's D3D12 proxy, RTX 3050, driver 610.62;
+  `handoffs/RESULTADO-nvidia-preset-style-ets2-20260921.md`): switching Model writes **only**
+  `DLSSNR.Style` plus a one-frame `DLSSNR.Reset` pulse. Tone, Structure, Skin, Intensity, AutoMask
+  and Preset are untouched. RenoDX defaults: Style 0, Intensity 1, LocalTone 1, LocalStructure 1,
+  Skin 1, AutoMask 1, MVecScale 1/1, DepthInverted 0 (the DLL's own default is 1; RenoDX sends 0
+  explicitly), Preset 1.
+- `CG2R_ResetTemporalHistoryOnControlChange` (`0x1800179D0`) drops the history when Style or
+  UseAutoMask change (exact) or LocalTone, LocalStructure, Skin, skinEff or structEff move by more
+  than `1e-5`. **Not** on Intensity or MVecScale. 27 resets in the trace, all `control change`.
+  The add-on does the same in one place, `ControlsChanged()`, where the controls are written.
+- The derived pair (`0x1AA4B..0x1AAA1`): with `UseAutoMask != 0`, `skinEff = Skin >= 0 ? Skin :
+  LocalStructure` and `structEff = LocalStructure`; with it off, **both** are `-1.0`. A present
+  `ControlMask` forces UseAutoMask to 0. On AMD this derivation lives inside the runtime worker,
+  not in the add-on.
+- The grading vectors are in `.rdata`, not the kernel: the 648-byte entry at `0x1800B0D80` carries
+  one `0x44`-byte block per non-identity style -- style 1 at `+0x64` (exposure `-0.10`, contrast
+  `-0.25`, saturation `-0.10`), style 2 at `+0xA8` (saturation `-0.15`) -- and its header has
+  `+0x24 = 3`, the same `n`. The same entry holds the weight name, id 1, `WEIGHTS_HT` and
+  `CC_SILVER_AARDWOLD`; those are fields of one record, not different DLLs.
+- **NR Preset is closed on both sides.** The NGX log prints `1 config(s) available` once per
+  `CreateFeature`, both features report `preset=1 -> CC_Control_History_Blend_Quantize_With_Teacher_
+  honest_tench_2026_07_04_22_30_weights`, and the fallback line never appears because 1 is the
+  only entry. `CG2RFindWeightByPreset` walks a one-entry table. There is nothing for an AMD
+  control to select; Deep Fried Chicken's `NRPreset` combo has no effect on the shipping DLL.
+- `GlobalToneStrength` is not read by this DLL (the 60 `DLSSNR.*` names it consults are in
+  `sub_180019F30`); it is a Streamline ABI field. RenoDX sends it; nothing happens.
+
+The NVIDIA machine's DLL was the pre-RTX-50 patched build (sha256 `E67DEE20…`, same 165 840 496
+bytes as the `e16bcf15…` analysed below); the style table and `Evaluate` match the reading here.
+
+The rest of this document is the grading half and remains the reference for the compose shader.
+Its "Still closed" section at the end is right for this runtime: the grade is all a Model can be
+here.
+
 Two earlier passes concluded the feature was out of reach, and a third one here nearly repeated
 that conclusion from the DLL's C++ alone. It was wrong. Disassembling the CUDA kernel shows the
-style vector is **colour grading on the output RGB** -- not network conditioning -- and that Models
-B and C are three scalar knobs our own composition stage can apply. No HIP backend is involved.
+style vector is **colour grading on the output RGB** and that Models B and C are three scalar
+knobs our own composition stage can apply. No HIP backend is involved for that half.
 
 Reference binary: `nvngx_dlssnr.dll`, 165 840 496 bytes,
 sha256 `e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e`, image base `0x180000000`.
@@ -40,9 +100,9 @@ and there are two conventions for one field:
 | 2 | Model C | **Cinematic** |
 
 RenoDX's string is *"Selects Neural Rendering Model A, Model B, or Model C through the prerelease
-DLSSNR.Style field."* Deep Fried Chicken's panel writes `NRStyle`, a three-entry combo; DLSS5-Feeder
+DLSSNR.Style field."* Deep Fried Chicken's panel writes `NRStyle`, a three-entry combo; AMDNR-Feeder
 mirrors that panel one-for-one and has the list verbatim from the add-on's string table
-(`src/dlss5-feed32.cpp`):
+(`src/amd-nr-feed32.cpp`):
 
 ```c
 static const char *const kNRStyleItems[] = { "Default", "Natural", "Cinematic" };
@@ -308,9 +368,14 @@ saturation is not a cosmetic imitation -- it is the operation, with the constant
 NVIDIA's own kernel. Whether to ship it under NVIDIA's model names is a separate question, and
 the user's call.
 
-## Still closed: the danielblnc runtime
+## Still closed: the danielblnc runtime cannot carry a style
 
-Unchanged and for a harder reason: its kernels are precompiled GCN code objects whose
-appearance-path parameter structs are 32 bytes total against 56 bytes of style vector, with no
-source. That route cannot carry the vector. It does not need to -- the operations above sit after
+For one day (21/09 22:24 to 22/09 00:04) this section was marked superseded, on the reading that
+`97b3c` was the network's style control. It is the post kernel's output scale; see the correction
+at the top. The runtime cannot carry the **grading vector** (its kernels are precompiled GCN code
+objects whose appearance-path parameter structs are 32 bytes total against 56 bytes of style
+vector, with no source), and its network takes four controls with no style among them. The grade
+sits after the network, on our side, and that is all a Model is here.
+
+The original text follows. The operations above sit after
 the network, on our side of it.

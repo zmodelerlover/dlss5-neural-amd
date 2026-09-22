@@ -60,6 +60,16 @@ def limit_residual(E, limit):
     return [x * (limit / mag) for x in E] if mag > limit else list(E)
 
 
+def edge_fade(E, uv, fade):
+    """The `fade` block: roll the correction off over a band at the frame border, using the
+    nearer of the two distances so a corner takes both rolloffs. uv is the output-space
+    coordinate the shader computes as (p + 0.5) / (dw, dh)."""
+    if fade <= 0.0:
+        return list(E)
+    e = [min(c, 1.0 - c) / fade for c in uv]
+    return [x * min(1.0, max(0.0, min(e))) for x in E]
+
+
 def chroma_direction(c):
     """Hue as a normalised direction away from grey. None for a pixel with no colour in it."""
     y = luma(c)
@@ -156,9 +166,40 @@ def main():
     assert close(limit_residual(small, 0.25), small), "an ordinary correction must be untouched"
     assert close(limit_residual(blown, 0.0), blown), "0 must mean off"
 
+    # 6. Edge Fade. Nobody had ever checked this one, and "I cannot tell whether it is doing
+    #    anything" is the reason: it removes a correction whose mean is 0.072 inside a band 2% of
+    #    the frame wide, which is invisible on an ordinary frame and obvious on Residual x8.
+    #    So the check is here instead of in somebody's eye.
+    E = [0.072, -0.030, 0.011]
+    band = 0.02
+    assert close(edge_fade(E, (0.5, 0.5), band), E), "the middle of the frame must be untouched"
+    assert close(edge_fade(E, (0.5, 0.5), 0.0), E), "0 must mean off"
+    for uv in ((0.0, 0.5), (0.5, 0.0), (1.0, 0.5), (0.5, 1.0)):
+        assert close(edge_fade(E, uv, band), [0.0, 0.0, 0.0]), f"the border at {uv} must go to zero"
+    # A corner is inside two bands at once, so it takes the smaller of the two ramps and is the
+    # first place the fade bites -- which is the artefact it was written for.
+    corner = edge_fade(E, (band * 0.25, band * 0.75), band)
+    edge = edge_fade(E, (band * 0.75, 0.5), band)
+    assert max(abs(x) for x in corner) < max(abs(x) for x in edge), "a corner must fade harder"
+    # Halfway into the band is half the correction, and the direction never moves: this is a
+    # scale on the whole triple, like the limit above, so it cannot rotate hue either.
+    half = edge_fade(E, (band * 0.5, 0.5), band)
+    for a, b in zip(E, half):
+        assert abs(a * 0.5 - b) < 1e-9, "the fade must scale the triple, not bend it"
+    # The value the ini clamps to, and what it actually does: at 0.49 the bands very nearly meet
+    # in the middle, so the one pixel at dead centre still passes at full strength (0.5 / 0.49 is
+    # over 1) and everything else is dimmed by how far it is from there. A quarter of the way in
+    # keeps about half. That is a vignette on the correction, not a border band -- worth knowing
+    # before somebody drags the slider to the top wondering why the whole effect went quiet.
+    assert close(edge_fade(E, (0.5, 0.5), 0.49), E), "dead centre survives even at the maximum"
+    quarter = edge_fade(E, (0.25, 0.5), 0.49)
+    for a, b in zip(E, quarter):
+        assert abs(a * (0.25 / 0.49) - b) < 1e-9, "0.49 must dim a quarter-in pixel by 0.51"
+
     print("compose: zero edit is a no-op, colour 0 holds hue, the guard bounds luminance,")
-    print("         nothing leaves the cube, the additive hue rotation is gone, and the")
-    print("         residual limit scales the correction instead of clamping a channel.")
+    print("         nothing leaves the cube, the additive hue rotation is gone, the residual")
+    print("         limit scales the correction instead of clamping a channel, and edge fade")
+    print("         reaches zero at the border, bites hardest in a corner, and holds hue.")
 
 
 if __name__ == "__main__":

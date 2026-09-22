@@ -6,20 +6,20 @@
 param([int]$MaxSeconds = 60, [string]$Ini = '', [int]$FrameGrace = 20, [string]$GamePath = '')
 
 . (Join-Path $PSScriptRoot 'find-steam-game.ps1')
-$nfs = Find-SteamGame -Name 'Need for Speed' -Explicit $GamePath -EnvName 'DLSS5_NFS_PATH'
+$nfs = Find-SteamGame -Name 'Need for Speed' -Explicit $GamePath -EnvName 'AMDNR_NFS_PATH'
 Get-Process NFS16 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 8
 
 if ($Ini -ne '') {
-    $lines = Get-Content "$nfs\dlss5-neural.ini"
+    $lines = Get-Content "$nfs\amd-nr.ini"
     foreach ($pair in $Ini.Split(',')) {
         $k = $pair.Split('=')[0]
         $lines = $lines | Where-Object { $_ -notmatch ('^' + $k + '=') }
         $lines += $pair
     }
-    $lines | Set-Content "$nfs\dlss5-neural.ini" -Encoding ascii
+    $lines | Set-Content "$nfs\amd-nr.ini" -Encoding ascii
 }
-Remove-Item "$nfs\dlss5-neural.log" -ErrorAction SilentlyContinue
+Remove-Item "$nfs\amd-nr.log" -ErrorAction SilentlyContinue
 Remove-Item "$nfs\ReShade.log" -ErrorAction SilentlyContinue
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -44,7 +44,7 @@ while ($sw.Elapsed.TotalSeconds -lt $MaxSeconds) {
     if (-not (Get-Process NFS16 -ErrorAction SilentlyContinue)) { $verdict = 'PROCESS-EXITED'; break }
 
     $log = Get-Content "$nfs\ReShade.log" -ErrorAction SilentlyContinue
-    $nl  = Get-Content "$nfs\dlss5-neural.log" -ErrorAction SilentlyContinue
+    $nl  = Get-Content "$nfs\amd-nr.log" -ErrorAction SilentlyContinue
     $tried  = @($log | Select-String -SimpleMatch 'ResizeBuffers(').Count
     $failed = @($log | Select-String -SimpleMatch 'ResizeBuffers failed').Count
     $frames = @($nl | Select-String -Pattern 'frame \d+ processed').Count
@@ -62,7 +62,7 @@ $elapsed = [math]::Round($sw.Elapsed.TotalSeconds)
 Get-Process NFS16 -ErrorAction SilentlyContinue | Stop-Process -Force
 
 $log = Get-Content "$nfs\ReShade.log" -ErrorAction SilentlyContinue
-$nl  = Get-Content "$nfs\dlss5-neural.log" -ErrorAction SilentlyContinue
+$nl  = Get-Content "$nfs\amd-nr.log" -ErrorAction SilentlyContinue
 $tried  = @($log | Select-String -SimpleMatch 'ResizeBuffers(').Count
 $failed = @($log | Select-String -SimpleMatch 'ResizeBuffers failed').Count
 $hooks  = @($log | Select-String -Pattern 'delayed hooks.*d3d12').Count

@@ -547,7 +547,7 @@ bool FindPhysicalDevice(Route &r)
 {
     VkApplicationInfo app {};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app.pApplicationName = "dlss5-neural";
+    app.pApplicationName = "amd-nr";
     app.apiVersion = (1u << 22) | (1u << 12);  // 1.1: the properties2 queries are core there
 
     VkInstanceCreateInfo ici {};
@@ -1001,7 +1001,7 @@ void Present(command_queue *queue, swapchain *sc)
     {
         g.unavailable = true;
         if (*g.reason == 0)
-            g.reason = "could not create the working textures; see dlss5-neural.log";
+            g.reason = "could not create the working textures; see amd-nr.log";
         Log("vulkan: %s", g.reason);
         return;
     }
@@ -1026,8 +1026,7 @@ void Present(command_queue *queue, swapchain *sc)
     bool runNetwork = true;
     const bool jobPending =
         g.fence->GetCompletedValue() < g.completion ||
-        static_cast<UINT>(InterlockedCompareExchange(
-            reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kJobCounter)), 0, 0)) < g.lastJob;
+        RuntimeBusy();
     if (jobPending && GetTickCount64() - g.lastJobAt < 500)
     {
         runNetwork = false;
@@ -1105,7 +1104,7 @@ void Present(command_queue *queue, swapchain *sc)
     {
         Log("vulkan: closing work slot %u failed (0x%08lX); discarding the unsubmitted job and "
             "recreating the pair.", slot, hr);
-        g.lastJob = 0;
+        ResetJobs();
         g.activePasses = 0;
         g.historyValid.store(false);
         if (!RecreateWorkSlot(slot))
@@ -1115,8 +1114,7 @@ void Present(command_queue *queue, swapchain *sc)
     ID3D12CommandList *lists[] { cmd12 };
     g.workQueue->ExecuteCommandLists(1, lists);
     if (g.activePasses != 0)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
-            g.workQueue.Get(), 1, lists);
+        NotifyRuntimes(g.workQueue.Get(), 1, lists);
     g.ringValue[slot] = ++g.ringSerial;
     g.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
     g.completion = ++g.serial;

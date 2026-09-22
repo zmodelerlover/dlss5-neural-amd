@@ -1,4 +1,4 @@
-﻿// ReShade add-on: runs the DLSS-NR network over the presented frame on an AMD GPU via HIP.
+// ReShade add-on: runs the DLSS-NR network over the presented frame on an AMD GPU via HIP.
 // D3D12 only. One core, one table row per target.
 
 #include <imgui.h>
@@ -15,12 +15,13 @@
 #include "build_config.h"
 #include "hotkey_capture.h"
 #include "ini_text.h"
-#if DLSS5_WITH_VULKAN
+#if AMDNR_WITH_VULKAN
 #include <MinHook.h>
 #include "../vkshared/vk_raw.inc"
 #endif
 
 #include <windows.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <atomic>
@@ -163,7 +164,7 @@ HMODULE LoadPrivateD3D12()
     if (GetSystemDirectoryW(system32, MAX_PATH) == 0)
         return LoadLibraryW(L"d3d12.dll");
     const std::filesystem::path sys = system32;
-    const std::filesystem::path dir = ExeDirectory() / L"dlss5-runtime";
+    const std::filesystem::path dir = ExeDirectory() / L"amd-nr-runtime";
 
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
@@ -427,7 +428,13 @@ float3 CubeScale(float3 p, float3 t){
  } else {
   fix = res.SampleLevel(smp,uv,0).rgb;
  }
- fix *= intensity;
+ // Intensity up to 1 is a blend towards the network's picture, which is what scaling the residual
+ // is. Above 1 the reference (RenoDX's composition, as the OptiScaler DLSS-NR fork carries it)
+ // does not extrapolate the residual -- a lerp past its target walks the channels apart faster
+ // than the luminance, and the guard cannot pull them back -- it raises the luminance ratio to a
+ // power instead, further down, where the guard still binds it. The additive path keeps the old
+ // meaning because it has no ratio to amplify.
+ fix *= (guard <= 0.0) ? intensity : min(intensity, 1.0);
  // Normalised before anything is decided about it, so "how big is this correction" means the
  // same thing whatever the encoding is: 1.0 is white. The correction arrives in the network's
  // own space, which is the frame's linear light times the Diffuse White scale, and a limit
@@ -457,11 +464,15 @@ float3 CubeScale(float3 p, float3 t){
   if      (dbg == 3) d = 0.5 + fix * 8.0;                     // the correction, on its own
   else if (dbg == 4) {                                        // motion, in raster pixels
    float2 m = dbgs.SampleLevel(smp,uv,0).xy;
-   d = float3(0.5 + m.x/32.0, 0.5 + m.y/32.0, 0.5);
+   d = float3(0.5 + m.x/8.0, 0.5 + m.y/8.0, 0.5);   // full red or green at 8 px
   }
   else if (dbg == 5) d = dbgs.SampleLevel(smp,uv,0).xxx * max(intensity,1e-3);
-  else               d = dbgs.SampleLevel(smp,uv,0).rgb;      // 1 input / 2 output
-  dst[p.xy] = float4(saturate(d), 1.0);
+  else               d = dbgs.SampleLevel(smp,uv,0).rgb;      // 1 input / 2 output / 6 network output mode
+  d = saturate(d);
+  // Network Output is a picture, not a diagnostic: the Model's grade belongs on it, as it does on
+  // the composed frame. The debug views stay ungraded so they keep showing what the buffer holds.
+  if (dbg == 6 && (gExp != 0.0 || gCon != 0.0 || gSat != 0.0)) d = NeuralStyle(d);
+  dst[p.xy] = float4(d, 1.0);
   return;
  }
  float3 c = full.Load(int3(p.xy,0)).rgb;
@@ -497,7 +508,12 @@ float3 CubeScale(float3 p, float3 t){
   float ratio = (ml + floorY) / (pl + floorY);
   // Two-sided, and one scalar taken from luminance applied to the whole triple. A per-channel
   // bound would be the hue distorter this whole path exists to avoid.
-  float bounded = clamp(ratio, 1.0 / guard, guard);
+  //
+  // Intensity above 1 lands here, as the reference does it: the ratio is raised to a power, which
+  // cannot go negative, leaves an unchanged pixel unchanged (one to any power is one), moves
+  // brightening and darkening by the same factor, and is still a ratio, so the guard bounds it.
+  // At intensity 1 the exponent is 1 and this line is what it was.
+  float bounded = clamp(pow(max(ratio, 1e-6), 1.0 + max(intensity - 1.0, 0.0)), 1.0 / guard, guard);
   // The network can hand back an empty picture for an input it could not read. Rescaling that
   // collapses the frame to black -- and it is the one case where the two ends of the blend below
   // do not share a luminance -- so the frame goes through on its own brightness instead.
@@ -1101,6 +1117,43 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally)
     tally.clear();
 }
 
+// Which optional controls have a widget. One bit each, saved as HiddenShown in the ini.
+//
+// This replaces a single "show everything" switch. That switch had the shape of the problem the
+// rebuild was fixing: the answer to "this panel has too much on it" is not a second panel with
+// all of it back. Here a person turns on the two controls they actually want and the rest stays
+// off, which is a panel that grows by what somebody asked for rather than by what exists.
+//
+// Table-driven so the cascade that toggles a bit and the gate that reads it cannot drift apart:
+// a new control is one enumerator, one row, and one Shown() at the call site.
+enum Opt : uint32_t
+{
+    kOptCompose      = 1u << 0,
+    kOptGuard        = 1u << 1,
+    kOptGuardPerPass = 1u << 2,
+    kOptLocalTone    = 1u << 3,
+    kOptTaper        = 1u << 4,
+    kOptPerPass      = 1u << 5,
+    kOptBicubic      = 1u << 6,
+    kOptFeed         = 1u << 7,
+    kOptGameGuides   = 1u << 8,
+    kOptDepth        = 1u << 9,
+    kOptDepthInv     = 1u << 10,
+    kOptDepthStretch = 1u << 11,
+    kOptHistory      = 1u << 12,
+    kOptMotion       = 1u << 13,
+    kOptMotionScale  = 1u << 14,
+    kOptFlowGate     = 1u << 15,
+    kOptFlowAccept   = 1u << 16,
+    kOptMask         = 1u << 17,
+    kOptTemporal     = 1u << 18,
+    kOptTonemap      = 1u << 19,
+    kOptToneChannels = 1u << 20,
+    kOptOutputScale  = 1u << 21,
+    kOptMeasure      = 1u << 22,
+};
+constexpr uint32_t kOptAll = (1u << 23) - 1u;
+
 struct State
 {
     std::mutex lock;
@@ -1132,11 +1185,20 @@ struct State
     std::atomic<bool> disableOnAltTab { false };
     std::atomic<float> structure { 1.0f };
     std::atomic<float> tone { 1.0f };
-    std::atomic<float> skin { 1.0f };
+    // -1, not 1. It is the value the engine boots with and it means "derive it from local
+    // structure" -- a mode, not a strength. Shipping 1.0 here wrote that automatic off on
+    // startup, before anybody had touched a control, while the overlay's own tooltip said the
+    // add-on had stopped doing exactly that.
+    std::atomic<float> skin { -1.0f };
     std::atomic<int> passes { 1 };
     std::atomic<bool> serialPasses { true };
     // 0 English, 1 Portugues do Brasil. English by default.
     std::atomic<int> language { 0 };
+    // A bit per optional control, saying whether the panel draws a widget for it. Nothing else:
+    // every one of them is live and settable from the ini whether its bit is set or not. The
+    // cascade at the bottom of the panel is what turns them on, one at a time, so a panel grows
+    // by what somebody asked for rather than by everything that exists. See enum Opt.
+    std::atomic<uint32_t> optional { 0 };
     // The engine's own option struct, mapped by decompiling its ini reader rather than guessed:
     //   97b30 LocalTone (0.0)   97b34 LocalStructure (1.0)   97b38 SkinStructure (-1.0)
     //   97b3c Scale (0.03125)   97b40 UseAutoMask (1)        97b44 ToneChannels (0)
@@ -1307,6 +1369,19 @@ struct State
     // list and HIP job before changing tuning globals for the following pass.
     // Temporal state remains shared; separate per-pass histories are future work.
     HMODULE runtime = nullptr;
+    // One runtime module per pass, runtimes[0] == runtime. The runtime keeps its temporal state
+    // -- history reprojection, auto exposure, the post-network history it blends -- in module
+    // globals and in one HIP engine object, so two passes through one module hand each pass
+    // the other stage's previous frame as "last frame": measured as lighting noise that history
+    // removes at one pass and stops removing at two. The reference (OptiScaler) holds one NGX
+    // feature per pass for the same reason. A copy of the DLL under another file name is a
+    // separate module with separate globals, which is all a second feature is here.
+    HMODULE runtimes[kMaxPasses] {};
+    UINT lastJobs[kMaxPasses] {};
+    // Bit i set when runtimes[i] recorded onto the list about to be submitted; NotifyRuntimes
+    // tells exactly those modules and clears it.
+    UINT recordedMask = 0;
+    std::filesystem::path runtimeFile;  // the file runtime was loaded from; the copies come from it
     UINT lastJob = 0;
     UINT activePasses = 0;
     // Log recording and parameter handoff once per process.
@@ -1363,6 +1438,7 @@ struct State
     // two threads share no lock here. Atomic, like the switches beside it.
     std::atomic<uint32_t> historyValid { 0 };
     bool loggedHistory = false;
+    bool loggedEffectsFirst = false;
     UINT flowWidth = 0, flowHeight = 0;
     std::atomic<bool> useMotion { true };
     bool loggedFlow = false;
@@ -1403,7 +1479,12 @@ struct State
     // flat as far as the network is concerned. Left at 1.0 until something has been measured,
     // and only moved when the measured range is far enough below full that it is a defect
     // rather than a scene -- a modern engine fills the range and keeps 1.0.
-    std::atomic<bool> depthNormalise { true };
+    // Off. It shipped on, and its own help text said it reads as the wrong operation on this
+    // bench: PCSX2's depth already has its bulk at the top of its own tiny range, so scaling
+    // by 1/max lands nearly every pixel at 0.99 rather than spreading anything out. A control
+    // the overlay painted amber for being past what was measured has no business being the
+    // default. Still settable as DepthNormalise in the ini.
+    std::atomic<bool> depthNormalise { false };
     std::atomic<float> depthScale { 1.0f };
     ComPtr<ID3D12Resource> netDepth;
     ComPtr<ID3D12Resource> depthAlias;
@@ -1418,7 +1499,7 @@ struct State
     ComPtr<ID3D11ComputeShader> guideDepthCs;
     bool guideDepthCsFailed = false;
     std::atomic<bool> useGameGuides { true };
-    // The companion effect, shaders/DLSS5_Neural_Feed.fx, when the user has installed it. It
+    // The companion effect, shaders/AMD_Neural_Feed.fx, when the user has installed it. It
     // hands over a real optical-flow field -- iMMERSE Launchpad runs an eight-level pyramid,
     // against the two levels and radius of four this add-on can afford next to the network --
     // and ReShade's own depth buffer, which is curated per game in a way the bind observation
@@ -1475,6 +1556,11 @@ struct State
     // not something that can be read off the resource, so leave the knob: -1 flips the direction,
     // and a value other than 1 rescales. Watch Debug View "Motion vectors" while panning.
     std::atomic<float> motionScale { 1.0f };
+    // 97b10 DepthInverted. 1 is both runtimes' own default; RenoDX writes 0 explicitly on its
+    // Present route (ETS2 trace, where its depth was a dummy, so that 0 says nothing about any
+    // game's real buffer). Exposed so the two can be told apart on a game with real depth; no run
+    // here has yet.
+    std::atomic<int> depthInverted { 1 };
     bool gameMotionActive = false, gameDepthActive = false;
 
     ID3D12Resource *depthCandidate = nullptr;
@@ -1490,6 +1576,11 @@ struct State
     ComPtr<ID3D12Resource> composed;
     ComPtr<ID3D12Resource> readbackBase, readbackNr;
     bool measured = false;
+    // Set by the residual measurement when the network handed back its input: the effect is
+    // running and changing nothing. Shown in red on the status line and re-checked every 1800
+    // frames, because this has happened more than once, for more than one reason, and every
+    // time it was found by eye instead of by the add-on.
+    std::atomic<bool> inert { false };
     bool pendingMeasure = false;
 
     uint64_t frame = 0;
@@ -1537,6 +1628,7 @@ void NoteJobCost(UINT64 ms);
 // own mean in that scene is 0.003. Leaving it out of a frame is below anyone's threshold;
 // putting it in the wrong place is not.
 bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat);
+float StyleGradeStrength();
 
 bool CompositionIsFresh(bool ranNetwork)
 {
@@ -1563,7 +1655,7 @@ bool CompositionIsFresh(bool ranNetwork)
     // residual for them, so what gets pasted is the game's own picture with the grade on it and
     // nothing aimed at where the edges used to be.
     float expo = 0.0f, con = 0.0f, sat = 0.0f;
-    return StyleCoefficients(g.style.load(), g.styleStrength.load(), expo, con, sat);
+    return StyleCoefficients(g.style.load(), StyleGradeStrength(), expo, con, sat);
 }
 
 int RuntimeTonemap()
@@ -1598,9 +1690,41 @@ void SaveSettings(bool quiet = false);
 // Returns whether it read the settings itself, which it does only on the run that writes the file.
 // The caller uses that to skip a second read: on a first run this used to parse the ini twice and
 // print the same two "settings:" and "compose:" lines twice, describing one state.
+// v0.7.0 renamed the add-on's files. Somebody upgrading has a dlss5-neural.ini they spent time
+// on, and a rename that silently resets every setting to default is a worse first impression than
+// any rebrand is worth -- so the old file is carried over once, section header and all, and left
+// in place rather than deleted. If both exist the new one wins and nothing is touched.
+//
+// ponytail: a copy and one string replace. The keys did not change, only the section they sit in
+// and the name of the file holding them.
+void MigrateLegacyIni()
+{
+    const auto here = ExeDirectory();
+    const auto now = here / L"amd-nr.ini", was = here / L"dlss5-neural.ini";
+    std::error_code ec;
+    if (std::filesystem::exists(now, ec) || !std::filesystem::exists(was, ec))
+        return;
+
+    std::ifstream in(was, std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    if (text.empty())
+        return;
+    if (const size_t at = text.find("[dlss5]"); at != std::string::npos)
+        text.replace(at, 7, "[amd-nr]");
+
+    std::ofstream out(now, std::ios::binary);
+    if (!out)
+        return;
+    out << text;
+    out.close();
+    Log("carried dlss5-neural.ini over to amd-nr.ini; the old file is left where it was.");
+}
+
 bool EnsureNeuralIni()
 {
-    const auto ini = ExeDirectory() / L"dlss5-neural.ini";
+    MigrateLegacyIni();
+    const auto ini = ExeDirectory() / L"amd-nr.ini";
     std::error_code ec;
     if (std::filesystem::exists(ini, ec))
         return false;
@@ -1611,8 +1735,8 @@ bool EnsureNeuralIni()
         Log("could not write %ls; the built-in defaults are used instead.", ini.c_str());
         return false;
     }
-    f << "[dlss5]\r\n"
-         "; Written because no dlss5-neural.ini was here. Every value below is the default, so\r\n"
+    f << "[amd-nr]\r\n"
+         "; Written because no amd-nr.ini was here. Every value below is the default, so\r\n"
          "; this file changes nothing until you edit it. The overlay writes back here on its own,\r\n"
          "; as soon as a control settles; the Save button does the same thing on demand.\r\n"
          "\r\n"
@@ -1650,7 +1774,11 @@ bool EnsureNeuralIni()
          "; Everything else the overlay carries follows, each at its default, so this file on\r\n"
          "; its own is enough to tune the add-on with the overlay never opened -- which is what\r\n"
          "; a game running under Lossless Scaling or Magpie needs, because there the overlay\r\n"
-         "; sits behind somebody else's picture. The overlay explains each one where it sits.\r\n"
+         "; sits behind somebody else's picture -- and because the overlay deliberately shows\r\n"
+         "; only the fifteen controls worth reaching for. Everything else lives here and nowhere\r\n"
+         "; else: the engine's option struct, the guide switches, the per-pass profiles, the\r\n"
+         "; composition bounds. Press Reload in the overlay to pick an edit up without\r\n"
+         "; restarting the game.\r\n"
          "; Intensity leads because it is the one people reach for: the weight of the whole\r\n"
          "; effect, 1 being the network at full strength.\r\n"
          "Intensity=1\r\n"
@@ -1658,17 +1786,19 @@ bool EnsureNeuralIni()
          "; --- Neural Rendering Model ---------------------------------------------------\r\n"
          "; 0 = Model A, 1 = Model B, 2 = Model C, the same three DLSSNR.Style selects on\r\n"
          "; NVIDIA. Deep Fried Chicken names the same three Default, Natural and Cinematic,\r\n"
-         "; in that order, so Natural is 1 and Cinematic is 2. Its NR Preset is a different\r\n"
-         "; field and picks weights, not colour.\r\n"
-         "; One set of weights: a model is a short vector of colour coefficients\r\n"
-         "; applied to the finished frame. Model A is the neutral vector, so 0 is exactly\r\n"
-         "; what every release so far has drawn. B darkens by 0.1 stop, flattens contrast\r\n"
-         "; a quarter off its S-curve and takes a tenth of the saturation; C only takes\r\n"
-         "; 15 percent of the saturation. The coefficients are read out of\r\n"
-         "; nvngx_dlssnr.dll -- docs/styles-model-abc.md has the disassembly.\r\n"
+         "; in that order, so Natural is 1 and Cinematic is 2.\r\n"
+         "; On NVIDIA a model is two things: an input of the network (style/128, which is\r\n"
+         "; what changes lighting and detail there) and a grade on the finished frame. This\r\n"
+         "; runtime has no slot for the first: its network takes tone, structure and the two\r\n"
+         "; derived skin/structure values, and nothing else. So here a model is its grade\r\n"
+         "; only: B darkens by 0.1 stop, flattens contrast a quarter off its S-curve and\r\n"
+         "; takes a tenth of the saturation; C only takes 15 percent of the saturation, both\r\n"
+         "; scaled by Tone clamped to 0..1, constants read out of nvngx_dlssnr.dll.\r\n"
+         "; NR Preset does not exist here or on NVIDIA: the shipping DLL carries one set of\r\n"
+         "; weights (preset 1) and any other value falls back to it. docs/styles-model-abc.md.\r\n"
          "Style=0\r\n"
-         "; Scales the selected model towards neutral, as the runtime's LocalToneStrength\r\n"
-         "; does. 1 is the full model; 0 is Model A whatever Style says.\r\n"
+         "; Scales the grade half of the model towards neutral, on top of Tone. 1 is the full\r\n"
+         "; grade; 0 leaves the network input alone and removes only the colour change.\r\n"
          "StyleStrength=1\r\n";
     f.close();
 
@@ -1683,19 +1813,19 @@ bool EnsureNeuralIni()
     // the written file describe the run it is about to have instead of a slightly different one.
     LoadSettings();
     SaveSettings(/*quiet=*/true);
-    Log("wrote a commented dlss5-neural.ini next to the exe; every value in it is a default.");
+    Log("wrote a commented amd-nr.ini next to the exe; every value in it is a default.");
     return true;
 }
 
 void LoadSettings()
 {
-    const auto ini = (ExeDirectory() / L"dlss5-neural.ini").wstring();
+    const auto ini = (ExeDirectory() / L"amd-nr.ini").wstring();
     if (ini_text::StripUtf8Bom(ini))
-        Log("removed a UTF-8 byte-order mark from dlss5-neural.ini: it was hiding every setting "
+        Log("removed a UTF-8 byte-order mark from amd-nr.ini: it was hiding every setting "
             "in the file, and all of them were reading as their defaults.");
     auto num = [&](const wchar_t *key, float fallback) {
         wchar_t buf[64] {};
-        if (GetPrivateProfileStringW(L"dlss5", key, L"", buf, 64, ini.c_str()) == 0)
+        if (GetPrivateProfileStringW(L"amd-nr", key, L"", buf, 64, ini.c_str()) == 0)
             return fallback;
         // wcstof honours the process locale's decimal separator. On a pt-BR install that is a
         // comma, so "0.50" parses as 0 and stops at the dot -- Scale=0.50 silently became the
@@ -1713,6 +1843,11 @@ void LoadSettings()
 
     g.scale.store(std::clamp(num(L"Scale", g.scale.load()), 0.25f, 2.0f));
     g.language.store(std::clamp(static_cast<int>(num(L"Language", 0.0f)), 0, 1));
+    // Advanced=1 was the single switch this replaced; honour it once as "show all of them".
+    // Advanced=1 was the single switch this replaced; honour it once as "show all of them".
+    // kOptAll lives beside enum Opt, so a new bit widens both the mask and this in one edit.
+    g.optional.store(static_cast<uint32_t>(num(L"HiddenShown",
+        static_cast<float>(flag(L"Advanced", false) ? kOptAll : g.optional.load()))) & kOptAll);
     g.passes.store(std::clamp(static_cast<int>(num(L"Passes", 1.0f)), 1,
                              static_cast<int>(State::kMaxPasses)));
     g.serialPasses.store(flag(L"SerialPasses", true));
@@ -1723,21 +1858,21 @@ void LoadSettings()
     g.ratioGuard.store(std::clamp(num(L"Guard", g.ratioGuard.load()), 0.0f, 8.0f));
     g.guardTracksPasses.store(flag(L"GuardPerPass", g.guardTracksPasses.load()));
     g.colourStrength.store(std::clamp(num(L"ColourStrength", g.colourStrength.load()), 0.0f, 1.0f));
+    g.structure.store(num(L"Structure", g.structure.load()));
+    g.skin.store(num(L"Skin", g.skin.load()));
+    g.tone.store(num(L"Tone", g.tone.load()));
     g.style.store(std::clamp(static_cast<int>(num(L"Style", 0.0f)), 0, 2));
     g.styleStrength.store(std::clamp(num(L"StyleStrength", 1.0f), 0.0f, 1.0f));
     {
         // Stated in the log because a style is a small change to the whole frame, and a
         // measurement run that does not say which one it drew cannot be compared to another.
         float se = 0.0f, sc = 0.0f, ss = 0.0f;
-        if (StyleCoefficients(g.style.load(), g.styleStrength.load(), se, sc, ss))
+        if (StyleCoefficients(g.style.load(), StyleGradeStrength(), se, sc, ss))
             Log("Style=%d at strength %.2f: exposure %+.3f stops, contrast %+.3f, saturation "
                 "%+.3f, applied to the composed frame.",
-                g.style.load(), static_cast<double>(g.styleStrength.load()),
+                g.style.load(), static_cast<double>(StyleGradeStrength()),
                 static_cast<double>(se), static_cast<double>(sc), static_cast<double>(ss));
     }
-    g.structure.store(num(L"Structure", g.structure.load()));
-    g.skin.store(num(L"Skin", g.skin.load()));
-    g.tone.store(num(L"Tone", g.tone.load()));
     // Per-pass profiles. Seeded from the globals so a pass whose override is switched on for the
     // first time starts where the chain already was, rather than at zero.
     for (UINT i = 0; i < State::kMaxPasses; ++i)
@@ -1763,6 +1898,7 @@ void LoadSettings()
     g.useMotion.store(flag(L"Motion", g.useMotion.load()));
     g.useHistory.store(flag(L"History", g.useHistory.load()));
     g.useDepth.store(flag(L"Depth", g.useDepth.load()));
+    g.depthInverted.store(flag(L"DepthInverted", true) ? 1 : 0);
     g.depthNormalise.store(flag(L"DepthNormalise", g.depthNormalise.load()));
     g.useGameGuides.store(flag(L"GameGuides", g.useGameGuides.load()));
     g.useFeedEffect.store(flag(L"FeedEffect", g.useFeedEffect.load()));
@@ -1794,7 +1930,21 @@ void LoadSettings()
     g.motionScale.store(num(L"MotionScale", g.motionScale.load()));
     g.autoMask.store(static_cast<int>(num(L"AutoMask", 1.0f)));
     g.toneChannels.store(static_cast<int>(num(L"ToneChannels", 0.0f)));
-    g.engineScale.store(num(L"EngineScale", 0.03125f));
+    {
+        // The post kernel's output scale; at zero the network's answer never reaches the frame,
+        // which reads as "enabled and disabled look the same" with the log saying every frame was
+        // processed. Refused here rather than allowed, because nothing distinguishes a run with
+        // it at zero from a run where the network broke, and Intensity 0 already exists for
+        // "show me the game's own frame".
+        float es = num(L"EngineScale", 0.03125f);
+        if (!(es >= 1e-4f))
+        {
+            Log("WARNING: EngineScale=%.6f would make the network's output identical to its "
+                "input; using the runtime's default 0.03125 instead.", static_cast<double>(es));
+            es = 0.03125f;
+        }
+        g.engineScale.store(es);
+    }
     g.tonemap.store(static_cast<int>(num(L"Tonemap", -1.0f)));
     g.temporalMode.store(std::clamp(static_cast<int>(num(L"Temporal", 0.0f)), 0, 2));
     g.diagnostics = flag(L"Diagnostics", false);
@@ -1838,6 +1988,7 @@ void ForEachSetting(Num num, Flag flag)
     num(L"Scale", g.scale.load());
     num(L"Passes", g.passes.load());
     num(L"Language", g.language.load());
+    num(L"HiddenShown", static_cast<float>(g.optional.load()));
     num(L"AutoMask", g.autoMask.load());
     num(L"ToneChannels", g.toneChannels.load());
     num(L"EngineScale", g.engineScale.load());
@@ -1879,6 +2030,7 @@ void ForEachSetting(Num num, Flag flag)
     flag(L"Motion", g.useMotion.load());
     flag(L"History", g.useHistory.load());
     flag(L"Depth", g.useDepth.load());
+    flag(L"DepthInverted", g.depthInverted.load() != 0);
     flag(L"DepthNormalise", g.depthNormalise.load());
     flag(L"GameGuides", g.useGameGuides.load());
     flag(L"FeedEffect", g.useFeedEffect.load());
@@ -1896,7 +2048,7 @@ void ForEachSetting(Num num, Flag flag)
 
 void SaveSettings(bool quiet)
 {
-    const auto ini = (ExeDirectory() / L"dlss5-neural.ini").wstring();
+    const auto ini = (ExeDirectory() / L"amd-nr.ini").wstring();
     ForEachSetting(
         [&](const wchar_t *key, double v) {
             wchar_t buf[64];
@@ -1905,14 +2057,14 @@ void SaveSettings(bool quiet)
                 _swprintf_s_l(buf, 64, L"%.4g", c_locale, v);
             else
                 swprintf_s(buf, 64, L"%.4g", v);
-            WritePrivateProfileStringW(L"dlss5", key, buf, ini.c_str());
+            WritePrivateProfileStringW(L"amd-nr", key, buf, ini.c_str());
         },
         [&](const wchar_t *key, bool v) {
-            WritePrivateProfileStringW(L"dlss5", key, v ? L"1" : L"0", ini.c_str());
+            WritePrivateProfileStringW(L"amd-nr", key, v ? L"1" : L"0", ini.c_str());
         });
     // Quiet while the first-run file is being filled in, and while autosaving: that line is the
     // only proof anyone has that the overlay's Save reached the disk, so it keeps meaning only that.
-    if (!quiet) Log("settings saved to dlss5-neural.ini");
+    if (!quiet) Log("settings saved to amd-nr.ini");
 }
 
 // "Has anything changed" without reading the ini back. FNV-1a over the same values, rounded through
@@ -2323,7 +2475,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                 {
                     g.capturePair = false;
                     std::error_code ec;
-                    const auto dir = ExeDirectory() / L"dlss5-captures";
+                    const auto dir = ExeDirectory() / L"amd-nr-captures";
                     std::filesystem::create_directories(dir, ec);
                     const std::string prefix = "frame-" + std::to_string(g.frame) + "-" +
                                                std::to_string(GetTickCount64());
@@ -2423,20 +2575,48 @@ void DrainReadbacks(UINT nw, UINT nh)
                 }
                 else
                 {
+                    const double meanRes = n ? sum / n : 0.0;
+                    const bool first = !g.measured;
                     g.measured = true;
-                    Log("measure, network input: mean absolute %.6f (%llu samples)",
-                        inputMean, static_cast<unsigned long long>(nb));
-                    Log("  0.000000 means a black image was handed to the network.");
-                    Log("measure, residual at %ux%u: mean %.6f, max %.6f (%llu samples)",
-                        nw, nh, n ? sum / n : 0.0, peak, static_cast<unsigned long long>(n));
-                    Log("  mean 0.000000 means the network returned its input unchanged.");
-                    Log("measure, residual detail: local variation of the correction %.6f against "
-                        "%.6f in the image itself -- ratio %.3f", gRes, gIn,
-                        gIn > 0.0 ? gRes / gIn : 0.0);
-                    Log("  Near 0.000 means the correction is smooth across the frame: a colour, "
-                        "exposure or saturation shift, with nothing done to texture. Rising toward "
-                        "and past 0.100 means the correction follows the image's own detail, which "
-                        "is the network working on structure.");
+                    if (first)
+                    {
+                        Log("measure, network input: mean absolute %.6f (%llu samples)",
+                            inputMean, static_cast<unsigned long long>(nb));
+                        Log("  0.000000 means a black image was handed to the network.");
+                        Log("measure, residual at %ux%u: mean %.6f, max %.6f (%llu samples)",
+                            nw, nh, meanRes, peak, static_cast<unsigned long long>(n));
+                        Log("  mean 0.000000 means the network returned its input unchanged.");
+                        Log("measure, residual detail: local variation of the correction %.6f "
+                            "against %.6f in the image itself -- ratio %.3f", gRes, gIn,
+                            gIn > 0.0 ? gRes / gIn : 0.0);
+                        Log("  Near 0.000 means the correction is smooth across the frame: a "
+                            "colour, exposure or saturation shift, with nothing done to texture. "
+                            "Rising toward and past 0.100 means the correction follows the "
+                            "image's own detail, which is the network working on structure.");
+                    }
+                    // The watchdog. A working run measures a residual of a few percent of the
+                    // input (God of War: 0.021 on a 0.13 mean; a run that had broken measured
+                    // 0.00024 on 0.45). One part in a thousand is far below any working reading
+                    // and far above readback noise.
+                    const bool inert = meanRes < inputMean * 1e-3;
+                    if (inert != g.inert.load() || (first && inert))
+                    {
+                        g.inert.store(inert);
+                        if (inert)
+                            Log("WARNING: the network is returning its input unchanged (residual "
+                                "mean %.6f against an input mean of %.6f). The picture will not "
+                                "change with the effect on, whatever the log says about frames. "
+                                "Checks, in order: output scale 97b3c %.5f (the runtime's default "
+                                "is 0.03125); intensity %.2f; structure %.2f (0 removes the "
+                                "effect); the runtime log for GPU errors or 'output stores are "
+                                "being dropped'.",
+                                meanRes, inputMean, static_cast<double>(g.engineScale.load()),
+                                static_cast<double>(g.intensity.load()),
+                                static_cast<double>(g.structure.load()));
+                        else
+                            Log("measure: the network is changing the frame again (residual mean "
+                                "%.6f against %.6f).", meanRes, inputMean);
+                    }
                 }
             }
             if (a != nullptr) g.readbackBase->Unmap(0, nullptr);
@@ -2699,7 +2879,7 @@ bool FeedTexture(const char *name, Guide &guide)
 {
     if (g.effects == nullptr)
         return false;
-    const auto var = g.effects->find_texture_variable("DLSS5_Neural_Feed.fx", name);
+    const auto var = g.effects->find_texture_variable("AMD_Neural_Feed.fx", name);
     if (var.handle == 0)
         return false;
     reshade::api::resource_view srv {}, srgb {};
@@ -2752,7 +2932,7 @@ void AdoptFeedEffect()
     // has the right size, and still copies across without complaint -- as whatever was in it
     // when the technique was last on, or as zeros. Both read to the network as fact.
     const bool ticked = g.useFeedEffect.load() && g.effects != nullptr &&
-                        TechniqueOn("DLSS5_Neural_Feed.fx", "DLSS5_Neural_Feed");
+                        TechniqueOn("AMD_Neural_Feed.fx", "AMD_Neural_Feed");
     const bool provider = ticked && AnyMvProviderOn();
     const bool haveGameMotion = g.guideMotion.chosen != nullptr && !g.guideMotion.external;
     const bool haveGameDepth = g.guideDepth.chosen != nullptr && !g.guideDepth.external;
@@ -2762,9 +2942,9 @@ void AdoptFeedEffect()
     // effect is a validator and a converter, not an estimator -- with nothing writing the
     // provider's texture it forwards zeros, and zeros are worse than the estimator.
     if (provider && !haveGameMotion)
-        mv = FeedTexture("DLSS5N_MV", g.guideMotion);
+        mv = FeedTexture("AMDNR_MV", g.guideMotion);
     if (ticked && !haveGameDepth)
-        depth = FeedTexture("DLSS5N_Depth", g.guideDepth);
+        depth = FeedTexture("AMDNR_Depth", g.guideDepth);
     for (Guide *guide : { &g.guideMotion, &g.guideDepth })
     {
         const bool taken = (guide == &g.guideMotion) ? mv : depth;
@@ -2802,7 +2982,7 @@ void AdoptFeedEffect()
         g.nextGuideProbe = g.frame + 120;
     }
     std::snprintf(g.feedStatus, sizeof(g.feedStatus),
-                  "DLSS5_Neural_Feed.fx: %s; motion %s, depth %s",
+                  "AMD_Neural_Feed.fx: %s; motion %s, depth %s",
                   g.effects == nullptr      ? "no effect runtime yet"
                   : !g.useFeedEffect.load() ? "switched off"
                   : !ticked                 ? "not installed, or its technique is not enabled"
@@ -2814,7 +2994,17 @@ void AdoptFeedEffect()
                   depth           ? "from the effect"
                   : haveGameDepth ? "from the game"
                                   : "none of its own");
-    Log("%s", g.feedStatus);
+    // The raw answers behind the summary, because the summary was seen flapping between
+    // "enabled" and "no motion-vector shader" several times a second on a preset that had not
+    // changed. A handle of 0 is find_technique refusing while ReShade is loading; a state of 0
+    // is the technique itself switched off.
+    const auto feedTech = g.effects ? g.effects->find_technique("AMD_Neural_Feed.fx", "AMD_Neural_Feed") : reshade::api::effect_technique { 0 };
+    const auto lpTech = g.effects ? g.effects->find_technique("MartysMods_LAUNCHPAD.fx", "MartysMods_Launchpad") : reshade::api::effect_technique { 0 };
+    Log("%s  [frame %llu: feed handle %d state %d, launchpad handle %d state %d]", g.feedStatus,
+        static_cast<unsigned long long>(g.frame), feedTech.handle != 0 ? 1 : 0,
+        feedTech.handle != 0 && g.effects->get_technique_state(feedTech) ? 1 : 0,
+        lpTech.handle != 0 ? 1 : 0,
+        lpTech.handle != 0 && g.effects->get_technique_state(lpTech) ? 1 : 0);
 }
 
 // Submit everything recorded on the game's context and wait, on the CPU, for the GPU to finish
@@ -2864,6 +3054,49 @@ bool EnsureStage(UINT w, UINT h, DXGI_FORMAT fmt)
     return true;
 }
 
+// The module pass `slot` records through. Without a copy of its own a pass shares the first
+// module, which is how every pass ran before the copies existed.
+HMODULE RuntimeFor(UINT slot)
+{
+    return slot < State::kMaxPasses && g.runtimes[slot] != nullptr ? g.runtimes[slot] : g.runtime;
+}
+
+// Whether any module still has a job in flight: its job counter has not reached the id of the
+// last job this add-on recorded through it.
+bool RuntimeBusy()
+{
+    for (UINT i = 0; i < State::kMaxPasses; ++i)
+    {
+        HMODULE m = g.runtimes[i];
+        if (m == nullptr)
+            continue;
+        if (static_cast<UINT>(InterlockedCompareExchange(
+                reinterpret_cast<volatile LONG *>(&At<UINT>(m, rt::kJobCounter)), 0, 0)) <
+            g.lastJobs[i])
+            return true;
+    }
+    return false;
+}
+
+void ResetJobs()
+{
+    g.lastJob = 0u;
+    for (UINT &j : g.lastJobs)
+        j = 0;
+    g.recordedMask = 0;
+}
+
+// The frame-notify, to every module that recorded onto the lists being submitted. A module that
+// recorded nothing is not told: what its notify does with a list it never saw is not known.
+void NotifyRuntimes(ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *const *lists)
+{
+    for (UINT i = 0; i < State::kMaxPasses; ++i)
+        if ((g.recordedMask & (1u << i)) != 0 && g.runtimes[i] != nullptr)
+            reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtimes[i]) + rt::kNotifyFn)(
+                queue, count, lists);
+    g.recordedMask = 0;
+}
+
 // A removed device fails every call silently from here on: the copies stop landing, the shared
 // output keeps whatever it was created with -- black -- and that black is what gets copied into
 // the back buffer, every frame, for ever. Worth naming the moment it happens.
@@ -2882,7 +3115,7 @@ bool DeviceLost()
             "alone.", reason);
     }
     g.unavailable = true;
-    g.reason = "the D3D12 device was removed; see dlss5-neural.log";
+    g.reason = "the D3D12 device was removed; see amd-nr.log";
     return true;
 }
 
@@ -2972,8 +3205,7 @@ bool FinishSubmittedPass()
         !WaitFence(g.fence.Get(), g.completion, g.completionEvent, "the intermediate pass"))
         return false;
     const UINT64 deadline = GetTickCount64() + 5000;
-    while (static_cast<UINT>(InterlockedCompareExchange(
-        reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kJobCounter)), 0, 0)) < g.lastJob)
+    while (RuntimeBusy())
     {
         if (GetTickCount64() >= deadline || DeviceLost())
         {
@@ -2992,12 +3224,13 @@ bool SubmitPrivatePass(ID3D12GraphicsCommandList *cmd, ID3D12CommandAllocator *a
         return false;
     ID3D12CommandList *lists[] {cmd};
     g.queue->ExecuteCommandLists(1, lists);
-    reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
-        g.queue.Get(), 1, lists);
+    NotifyRuntimes(g.queue.Get(), 1, lists);
     if (!FinishSubmittedPass())
         return false;
     return SUCCEEDED(allocator->Reset()) && SUCCEEDED(cmd->Reset(allocator, nullptr));
 }
+
+void RenderEffectsAheadOfNetwork(device *dev, resource back);
 
 void BridgePresent(device *dev, swapchain *sc)
 {
@@ -3021,7 +3254,7 @@ void BridgePresent(device *dev, swapchain *sc)
     {
         g.unavailable = true;
         if (*g.reason == 0)
-            g.reason = "could not create the working textures; see dlss5-neural.log";
+            g.reason = "could not create the working textures; see amd-nr.log";
         return;
     }
     if (!g.bridgeIn.Ensure(g.game11.Get(), g.workDevice.Get(), w, h, fmt) ||
@@ -3056,9 +3289,7 @@ void BridgePresent(device *dev, swapchain *sc)
     bool runNetwork = true;
     const bool jobPending =
         g.fence->GetCompletedValue() < g.completion ||
-        static_cast<UINT>(InterlockedCompareExchange(
-            reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kJobCounter)), 0, 0)) <
-            g.lastJob;
+        RuntimeBusy();
     if (!jobPending && g.jobRunning)
     {
         g.jobRunning = false;
@@ -3076,8 +3307,12 @@ void BridgePresent(device *dev, swapchain *sc)
     }
     else if (jobPending)
     {
-        g.lastJob = 0;
+        ResetJobs();
     }
+
+    // 0. when the companion effect is on, ReShade's chain runs now, before the copy below reads
+    // the back buffer. See RenderEffectsAheadOfNetwork for why the order matters.
+    RenderEffectsAheadOfNetwork(dev, back);
 
     // 1. the game's image goes over, and with it whatever guides the game actually renders.
     // This is the step that has no equivalent on PCSX2: there the only thing to send is colour.
@@ -3188,7 +3423,7 @@ void BridgePresent(device *dev, swapchain *sc)
         // add-on then returned from every present in silence and left the last image it wrote on
         // screen. Both halves of that were wrong.
         Log("bridge: closing the command list failed (0x%08lX); rebuilding.", hr);
-        g.lastJob = 0;
+        ResetJobs();
         g.activePasses = 0;
         g.historyValid.store(0);
         if (!RecreateWorkSlot(i))
@@ -3198,8 +3433,7 @@ void BridgePresent(device *dev, swapchain *sc)
     ID3D12CommandList *lists[] { cmd };
     g.workQueue->ExecuteCommandLists(1, lists);
     if (g.activePasses != 0)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
-            g.workQueue.Get(), 1, lists);
+        NotifyRuntimes(g.workQueue.Get(), 1, lists);
     g.ringValue[i] = ++g.ringSerial;
     g.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
     g.completion = ++g.serial;
@@ -3341,7 +3575,7 @@ std::filesystem::path RuntimeCopyUsingPrivateD3D12(const std::filesystem::path &
     if (g_privateD3D12 == nullptr)
         return original;  // the game is on D3D12 already; its d3d12.dll is long since loaded
 
-    const auto patched = ExeDirectory() / L"dlss5-pass1.dll";
+    const auto patched = ExeDirectory() / L"amd-nr-pass1.dll";
     std::ifstream in(original, std::ios::binary);
     std::vector<char> bytes((std::istreambuf_iterator<char>(in)), {});
     in.close();
@@ -3483,6 +3717,76 @@ LONG CALLBACK NullJumpProbe(EXCEPTION_POINTERS *e)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// Hand a freshly loaded module the device, the queue and the switches, then let it load the
+// weights. The same for the first module and for the per-pass copies.
+bool ArmRuntime(HMODULE h)
+{
+    At<ID3D12Device *>(h, rt::kDevice) = g.device.Get();
+    g.device->AddRef();
+    At<ID3D12CommandQueue *>(h, rt::kQueue) = g.queue.Get();
+    g.queue->AddRef();
+    At<int>(h, rt::kHipDevice) = g.hipDevice;
+    At<uint8_t>(h, rt::kInlineMode) = g.inlineMode.load() ? 1 : 0;
+    At<uint8_t>(h, rt::kInterop) = 1;
+    At<uint8_t>(h, rt::kEnabled) = 1;
+    At<uint8_t>(h, rt::kUseFsrInputs) = 1;
+    At<uint8_t>(h, rt::kUseDepth) = 0;
+    At<int>(h, rt::kTonemap) = RuntimeTonemap();
+
+    const std::string file = (ExeDirectory() / L"dlssnr_on_amd_weights.bin").string();
+    if (g.hipSet(g.hipDevice) != 0 ||
+        !reinterpret_cast<InitFn>(reinterpret_cast<uintptr_t>(h) + rt::kInitFn)(
+            reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(h) + rt::kEngineObject), &file))
+    {
+        Log("engine init failed.");
+        return false;
+    }
+    At<uint8_t>(h, rt::kReady) = 1;
+    return true;
+}
+
+// A second (third) copy of the runtime, for pass `slot` + 1. The loader keys modules by file
+// name, so a byte-identical copy under another name is a separate module: its own globals, its
+// own HIP engine object, its own weights in VRAM (about 150 MB each) and, the point of it, its
+// own temporal state. Loaded on demand, the first time the pass count asks for it, which costs
+// one long frame once.
+bool LoadExtraRuntime(UINT slot)
+{
+    if (g.runtime == nullptr || g.runtimeFile.empty() || slot == 0 || slot >= State::kMaxPasses)
+        return false;
+    wchar_t leaf[32];
+    std::swprintf(leaf, 32, L"amd-nr-pass%u.dll", slot + 1);
+    const auto copy = ExeDirectory() / leaf;
+    std::error_code ec;
+    std::filesystem::copy_file(g.runtimeFile, copy,
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec)
+    {
+        Log("pass %u: could not write %ls (%s)", slot + 1, copy.c_str(), ec.message().c_str());
+        return false;
+    }
+    HMODULE h = LoadLibraryExW(copy.c_str(), nullptr,
+                               LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (h == nullptr)
+    {
+        Log("pass %u: LoadLibrary failed for %ls (error %lu)", slot + 1, leaf, GetLastError());
+        return false;
+    }
+    HMODULE pinned {};
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       reinterpret_cast<LPCWSTR>(h), &pinned);
+    if (!ArmRuntime(h))
+    {
+        Log("pass %u: its own copy of the runtime did not initialise; the pass will share the "
+            "first module and its history.", slot + 1);
+        return false;
+    }
+    g.runtimes[slot] = h;
+    Log("pass %u: running through its own copy of the runtime (%ls), so it carries its own "
+        "temporal state instead of alternating with pass 1's.", slot + 1, leaf);
+    return true;
+}
+
 bool InitEngine()
 {
     if (g.runtime != nullptr)
@@ -3506,7 +3810,7 @@ bool InitEngine()
         // Said in the panel too. This is the one failure a user can actually fix, and the log
         // line above it says which file and which build, so pointing at the log is worth it.
         g.reason = "dlssnr_amd_pass1.dll is a different build to the one this add-on is built "
-                   "against; see dlss5-neural.log";
+                   "against; see amd-nr.log";
         Log("off: %s", g.reason);
         return false;
     }
@@ -3536,31 +3840,14 @@ bool InitEngine()
         AddVectoredExceptionHandler(1, NullJumpProbe);
         probeUp = true;
     }
-    At<ID3D12Device *>(h, rt::kDevice) = g.device.Get();
-    g.device->AddRef();
-    At<ID3D12CommandQueue *>(h, rt::kQueue) = g.queue.Get();
-    g.queue->AddRef();
-    At<int>(h, rt::kHipDevice) = g.hipDevice;
-    At<uint8_t>(h, rt::kInlineMode) = g.inlineMode.load() ? 1 : 0;
-    At<uint8_t>(h, rt::kInterop) = 1;
-    At<uint8_t>(h, rt::kEnabled) = 1;
-    At<uint8_t>(h, rt::kUseFsrInputs) = 1;
-    At<uint8_t>(h, rt::kUseDepth) = 0;
-    At<int>(h, rt::kTonemap) = RuntimeTonemap();
     Log("input contract: encoding %d, tonemap requested %d -> runtime %d; FP16 is transport, "
         "not a colour-space declaration. Restart after changing encoding or tonemap.",
         g.encoding.load(), g.tonemap.load(), RuntimeTonemap());
-
-    const std::string file = weights.string();
-    if (g.hipSet(g.hipDevice) != 0 ||
-        !reinterpret_cast<InitFn>(reinterpret_cast<uintptr_t>(h) + rt::kInitFn)(
-            reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(h) + rt::kEngineObject), &file))
-    {
-        Log("engine init failed.");
+    if (!ArmRuntime(h))
         return false;
-    }
-    At<uint8_t>(h, rt::kReady) = 1;
     g.runtime = h;
+    g.runtimes[0] = h;
+    g.runtimeFile = loadFrom;
     g.engineReady = true;
     Log("engine ready.");
 
@@ -3755,13 +4042,10 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     if (g.engineReady && g.runtime != nullptr)
     {
         const UINT64 deadline = GetTickCount64() + 5000;
-        while (static_cast<UINT>(InterlockedCompareExchange(
-                   reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kJobCounter)), 0, 0)) <
-                   g.lastJob &&
+        while (RuntimeBusy() &&
                    GetTickCount64() < deadline)
             Sleep(1);
-        if (static_cast<UINT>(InterlockedCompareExchange(
-                reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kJobCounter)), 0, 0)) < g.lastJob)
+        if (RuntimeBusy())
         {
             Log("raster: runtime job %u did not become idle in 5 s; keeping its textures alive "
                 "instead of releasing memory that the GPU may still own.", g.lastJob);
@@ -4020,6 +4304,51 @@ struct SelfIssued
     SelfIssued &operator=(const SelfIssued &) = delete;
 };
 
+// ReShade fires the add-on's `present` event BEFORE it renders its own effect chain: on D3D11
+// dxgi_swapchain.cpp invokes addon_event::present and only then present_effect_runtime, whose
+// on_present is what calls render_effects. So a texture the companion effect writes, read from
+// inside OnPresent, still holds what the chain produced for the PREVIOUS frame. The network was
+// being handed frame N's colour with frame N-1's flow -- vectors that describe a motion the
+// picture has already finished making -- which is why an eight-level Launchpad pyramid measured
+// no different from the two-level estimator it was meant to replace.
+//
+// The fix is to run the chain here, ahead of the copy that carries the back buffer across.
+// runtime::render_effects refuses to run twice in one frame (_effects_rendered_this_frame), so
+// ReShade's own on_present then skips straight to the overlay, and the frame the user sees is
+// still the composed one. Only when the effect is ticked: without it the chain keeps its usual
+// place after the network, which is what every other user of this add-on has today.
+//
+// Marked self-issued because ReShade reports the chain's own render-target binds back through
+// OnBindDepthStencil, which takes g.lock -- and the caller already holds it.
+void RenderEffectsAheadOfNetwork(device *dev, resource back)
+{
+    if (g.effects == nullptr || !g.useFeedEffect.load() ||
+        !TechniqueOn("AMD_Neural_Feed.fx", "AMD_Neural_Feed"))
+        return;
+    command_queue *queue = g.effects->get_command_queue();
+    if (queue == nullptr)
+        return;
+    // render_effects returns without drawing when the view is zero, so it needs a real one.
+    // ponytail: a view per frame; cache it by back-buffer handle if it ever shows in a profile.
+    const resource_desc bd = dev->get_resource_desc(back);
+    resource_view rtv {};
+    if (!dev->create_resource_view(back, resource_usage::render_target,
+                                   resource_view_desc(format_to_default_typed(bd.texture.format, 0)),
+                                   &rtv))
+        return;
+    {
+        SelfIssued self;
+        g.effects->render_effects(queue->get_immediate_command_list(), rtv, resource_view {});
+    }
+    dev->destroy_resource_view(rtv);
+    if (!g.loggedEffectsFirst)
+    {
+        g.loggedEffectsFirst = true;
+        Log("effects: AMD_Neural_Feed is on, so ReShade's chain now runs before the network "
+            "each frame and the guides it hands over are this frame's, not last frame's.");
+    }
+}
+
 void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_view *rtvs,
                         resource_view dsv)
 {
@@ -4196,23 +4525,23 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
 // Flushing per frame is not enough on its own: the documented sequence is ClearState and then
 // Flush, and ClearState is only safe here.
 // Everything sized to the swapchain, dropped together. Ensure rebuilds each one on demand.
-#if DLSS5_WITH_VULKAN
+#if AMDNR_WITH_VULKAN
 namespace vkroute { void ReleaseSwapchainSized(); }
 #endif
-#if DLSS5_WITH_OPENGL
+#if AMDNR_WITH_OPENGL
 namespace glroute { void ReleaseSwapchainSized(); }
 #endif
 
 void ReleaseSwapchainSized()
 {
     WaitForWorkQueue(g.completion);
-#if DLSS5_WITH_OPENGL
+#if AMDNR_WITH_OPENGL
     // The imported GL textures and their FBOs have the same lifetime as the D3D12 resources
     // below. Unlike the Vulkan route this one may be called with no GL context on the thread --
     // a swapchain can be destroyed from anywhere -- and it checks for that itself.
     glroute::ReleaseSwapchainSized();
 #endif
-#if DLSS5_WITH_VULKAN
+#if AMDNR_WITH_VULKAN
     // The imported VkImages have the same lifetime as the D3D12 resources below. Invalidate the
     // route even when the replacement swapchain keeps the same size and format, otherwise its
     // fast path returns with crossLocal already released.
@@ -4404,6 +4733,24 @@ float EffectiveGuard()
 // The neutral value of all three slots is zero, so the runtime's (value - neutral) * t + neutral
 // reduces to value * t. Returns whether anything is actually being applied, so Style=0 and
 // StyleStrength=0 both skip the work instead of running an identity.
+// There is no style input on this runtime. 97b3c ("Scale", default 1/32) was taken for one on
+// 21/09 because it sits right after the four control floats in the engine object
+// (0x96F98..0x96FA4: tone, structure, skinEff, structEff) and the NVIDIA forward takes a fifth
+// value, style/128. It is not: the engine's own dump line prints "ctl (%.2f %.2f %.2f %.2f)",
+// four values, and the fifth float (0x96FA8, object+48) goes to the post kernel that writes the
+// output, not to the network. Writing style/128 there made Model A (0) return the input
+// unchanged -- measured in ETS2: residual mean 0.00024 against an input mean of 0.45 -- and cut
+// Models B and C to a quarter and a half. So on AMD a Model is its grade and nothing else; the
+// network half of it has no slot to reach.
+//
+// How much of the model's grade is applied. The NVIDIA DLL scales a style's coefficients by
+// LocalToneStrength clamped to [0,1]; Model Strength sits on top of that, so at 1 the grade is
+// exactly what the runtime would do with the same Tone.
+float StyleGradeStrength()
+{
+    return g.styleStrength.load() * std::clamp(g.tone.load(), 0.0f, 1.0f);
+}
+
 bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat)
 {
     expo = con = sat = 0.0f;
@@ -4442,6 +4789,26 @@ PassTune TuningFor(UINT pass)
     if (pass > 0 && g.passTaper.load())
         t.structure *= std::pow(0.5f, static_cast<float>(pass));
     return t;
+}
+
+// Whether the controls a pass is about to receive differ from the ones it received last time.
+// This is CG2R_ResetTemporalHistoryOnControlChange, measured on the ETS2 trace rather than read:
+// the NVIDIA DLL drops the history when Style, UseAutoMask, LocalTone, LocalStructure or Skin
+// change -- ints exactly, floats beyond 1e-5 -- and keeps it when Intensity does. Checked where
+// the values are written, so every road to them (overlay, ini reload, per-pass profile, taper,
+// the override) is one comparison instead of a reset in every handler. The first observation
+// only records; there is no history to drop yet.
+bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
+{
+    struct Ctl { float tone, structure, skin, scale; int mask; bool seen; };
+    static Ctl last[State::kMaxPasses] {};
+    Ctl &l = last[std::min(slot, State::kMaxPasses - 1)];
+    const auto moved = [](float a, float b) { return std::fabs(a - b) > 1e-5f; };
+    const bool changed = l.seen && (moved(l.tone, t.tone) || moved(l.structure, t.structure) ||
+                                    moved(l.skin, t.skin) || moved(l.scale, outScale) ||
+                                    l.mask != autoMask);
+    l = { t.tone, t.structure, t.skin, outScale, autoMask, true };
+    return changed;
 }
 
 // Everything the network does in one frame, recorded into whatever command list it is handed.
@@ -4485,8 +4852,10 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // building a composition. Reusing it rather than adding a second one means the mode cannot
     // drift away from the picture that was actually tested. An explicit Debug View still wins,
     // so the diagnostics stay usable with the mode on.
-    const int dbg = g.debugView.load() != 0 ? g.debugView.load() : (g.networkOutput.load() ? 2 : 0);
-    if (dbg == 2)
+    // 6 rather than 2 so the shader can tell the mode from the debug view: same buffer, but the
+    // mode takes the Model's grade and the view does not.
+    const int dbg = g.debugView.load() != 0 ? g.debugView.load() : (g.networkOutput.load() ? 6 : 0);
+    if (dbg == 2 || dbg == 6)
     {
         g.device->CreateShaderResourceView(g.netColour.Get(), &srv, slot(10));
     }
@@ -4622,7 +4991,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             Log("motion: %s, %llux%u -> %ux%u, scale %.3f. The estimator is "
                 "off. Check Debug View \"Motion vectors\" while panning: the field should follow "
                 "the camera, and MotionScale flips or rescales it if it does not.",
-                g.guideMotion.external ? "an optical-flow shader, through DLSS5_Neural_Feed.fx"
+                g.guideMotion.external ? "an optical-flow shader, through AMD_Neural_Feed.fx"
                                        : "the game's own vectors",
                 static_cast<unsigned long long>(md.Width), md.Height, nw, nh,
                 static_cast<double>(mscale));
@@ -4913,7 +5282,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     bool nativeFailure = false;
     for (UINT i = 0; i < wanted; ++i)
     {
-        HMODULE r = g.runtime;
+        const UINT slot = std::min(i, State::kMaxPasses - 1);
+        HMODULE r = RuntimeFor(slot);
         // Temporal history. The network is a denoiser: without a previous result to carry
         // forward it starts from nothing every frame, and a motion vector -- which says where a
         // pixel *was* -- has nothing to point at. This is the pair that turns motion from an
@@ -4922,7 +5292,20 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // Off by default because these are hardcoded offsets into one specific build: a wrong
         // pointer here does not fail, it hangs the game.
         // This pass's own previous output, not the chain's. See the declaration of history[].
-        const UINT slot = std::min(i, State::kMaxPasses - 1);
+        //
+        // Decided before the history is looked at, so a control that changed this frame drops
+        // it now and not one frame late. See ControlsChanged for which controls and why.
+        const PassTune tune = TuningFor(i);
+        const float outScale = g.engineScale.load();
+        const int autoMask = g.autoMask.load();
+        if (ControlsChanged(slot, tune, outScale, autoMask))
+        {
+            g.historyValid.store(0);
+            Log("pass %u: reset temporal history after control change (tone %.2f, structure %.2f, "
+                "skin %.2f, automask %d, output scale %.5f)",
+                i + 1, static_cast<double>(tune.tone), static_cast<double>(tune.structure),
+                static_cast<double>(tune.skin), autoMask, static_cast<double>(outScale));
+        }
         const bool wantHistory = g.useHistory.load() &&
                                  (g.historyValid.load() & (1u << slot)) != 0 &&
                                  g.history[slot] != nullptr;
@@ -4948,7 +5331,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // Never written before. UseAutoMask is the engine's own character masking -- the same
         // field RenoDX exposes as "Character Mask" -- and it defaults to 1, so the add-on was
         // silently relying on the default. ToneChannels and Scale were not known to exist.
-        At<int>(r, rt::kUseAutoMask) = g.autoMask.load();
+        At<int>(r, rt::kUseAutoMask) = autoMask;
         // Bits 2 and 4 of ToneChannels stopped being tone channels in v0.2.17. The apply shader
         // now reads them as the timeout policy, in one line:
         //
@@ -4963,23 +5346,37 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // keep the current frame and never paste a stale correction. Upstream has since made the
         // same choice available as a flag, so the patch is gone and these two bits carry it. Bit 1
         // is the only one left that means what the name says.
+        //
+        // Bit 4 also has to be set for another reason, read in the worker (0x180019070): when the
+        // whole ToneChannels word is 0 the runtime zeroes LocalTone and LocalStructure before they
+        // reach the network. Writing this field as 0 would silently run the network with no tone
+        // and no structure control, whatever the sliders say.
         At<int>(r, rt::kToneChannels) = (g.toneChannels.load() & ~2) | 4;
-        At<float>(r, rt::kScale) = g.engineScale.load();
+        // 97b3c IS a scale, and it is not a control of the network. It lands at object+48
+        // (0x96FA8), right after the four control floats, and from there it goes to the post
+        // kernel that writes the output (sub_18002D2D0, the second off_18006BC68 launch, argument
+        // after the history pointer), not to the pre kernel that feeds the network. Between 21/09
+        // 22:24 and 22/09 00:04 this line wrote style/128 here, on the reading that it was the
+        // NVIDIA forward's fifth control. Measured in ETS2 with Model A (0 here): the network
+        // returned its input, residual mean 0.00024 against an input of 0.45, and nothing on
+        // screen changed with the effect, the Model or the pass count. Model B and C were at a
+        // quarter and a half of the effect. The runtime's own default, 1/32, is what goes here;
+        // LoadSettings refuses anything near zero.
+        At<float>(r, rt::kScale) = outScale;
         At<int>(r, rt::kTonemap) = RuntimeTonemap();
         At<uint8_t>(r, rt::kInlineMode) = g.inlineMode.load() ? 1 : 0;
         At<uint8_t>(r, rt::kUseDepth) = haveDepth ? 1 : 0;
-        // 97b10 DepthInverted, pinned to the engine's own default. Both runtimes boot this at
-        // 1 -- the NVIDIA DLL writes options+260 = 1 when the parameter is absent, and the AMD
-        // port's static initialiser sets dword_180076E10 = 1 -- and no run here ever produced a
-        // reading that told the two settings apart. It was a switch that could only be wrong, so
-        // it is written, not exposed.
-        At<UINT>(r, rt::kDepthInverted) = 1u;
+        // 97b10 DepthInverted. Both runtimes boot this at 1 -- the NVIDIA DLL writes options+260
+        // = 1 when the parameter is absent, and the AMD port's static initialiser sets
+        // dword_180076E10 = 1. RenoDX sends 0 explicitly, measured on ETS2 where its depth was a
+        // dummy, so neither value has been shown right for a real buffer yet. Default 1, exposed
+        // under Depth so the comparison can be made.
+        At<UINT>(r, rt::kDepthInverted) = g.depthInverted.load() != 0 ? 1u : 0u;
         At<uint8_t>(r, rt::kFsrFlagsSeen) = 1;
         // All three come from one place now, and that place is per-pass. Local Tone is written on
         // the first pass only -- which is what the original `i == 0 ? tone : 0.0f` here did, and
         // last session removed it as an asymmetry nobody had chosen. Somebody had: the reference
         // fork's PassProfiles.h makes exactly that choice, in one line, deliberately.
-        const PassTune tune = TuningFor(i);
         At<float>(r, rt::kLocalTone) = tune.tone;
         At<float>(r, rt::kLocalStructure) = tune.structure;
         At<float>(r, rt::kSkinStructure) = tune.skin;
@@ -5020,6 +5417,10 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             break;
         }
         g.lastJob = jobAfter;
+        for (UINT m = 0; m < State::kMaxPasses; ++m)
+            if (g.runtimes[m] == r)
+                g.lastJobs[m] = jobAfter;
+        g.recordedMask |= 1u << (r == g.runtime ? 0 : slot);
         // v0.3.0: 0x97950 and 0x97954 are two watchdog job counters, NOT a
         // host pointer to an abort word. Its watchdog (0x1b27a/0x1b281) writes
         // a job id to each DWORD when a timeout occurs. Interpreting the pair
@@ -5142,8 +5543,11 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // on a black boot screen, and measuring there reports a black input and a zero residual
     // for a setup that is actually fine. Keep trying every 240 frames until the input has
     // something in it, then stop.
-    if (!g.measured && g.activePasses != 0 &&
-        (g.measureNow.exchange(false) || (g.frame >= 240 && g.frame % 240 == 0)))
+    // Once in full at frame 240 (or on request), then silently every 1800 frames for the inert
+    // watchdog, which only speaks when its verdict changes.
+    if (g.activePasses != 0 &&
+        ((!g.measured && (g.measureNow.exchange(false) || (g.frame >= 240 && g.frame % 240 == 0))) ||
+         (g.measured && g.frame % 1800 == 0)))
     {
         const UINT rowPitch = (nw * 8 + 255) & ~255u;
         const UINT64 size = static_cast<UINT64>(rowPitch) * nh;
@@ -5194,7 +5598,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     ctable.ptr += 8 * inc;
     cmd->SetComputeRootDescriptorTable(0, ctable);
     float gexp = 0.0f, gcon = 0.0f, gsat = 0.0f;
-    StyleCoefficients(g.style.load(), g.styleStrength.load(), gexp, gcon, gsat);
+    StyleCoefficients(g.style.load(), StyleGradeStrength(), gexp, gcon, gsat);
     // On a frame the network sat out, the residual still holds the last one's answer. Compose
     // runs anyway -- a selected style has to reach every frame that is shown, or it flickers --
     // but with no correction, because one aimed at where the picture used to be reads as a trail.
@@ -5264,16 +5668,41 @@ UINT WantedPasses()
         std::clamp(g.passes.load(), 1, static_cast<int>(State::kMaxPasses)));
 }
 
-// One engine, recorded once per pass. Nothing to fall back to and no extra files to install.
-bool BringUpEngines(UINT &)
+// The first engine, plus one copy per further pass. Copies only in serial inline mode: that is
+// the only mode in which each pass is submitted and finished on its own, which is what lets
+// each module be told about exactly the list it recorded. The legacy batch and async paths keep
+// the single shared module they always had. A copy that fails to come up clamps the pass count
+// to what did, and says so once, rather than silently running that pass through pass 1's state.
+bool BringUpEngines(UINT &wanted)
 {
-    return InitPipeline() && InitEngine();
+    if (!InitPipeline() || !InitEngine())
+        return false;
+    if (!(g.serialPasses.load() && g.inlineMode.load()))
+        return true;
+    for (UINT slot = 1; slot < wanted; ++slot)
+    {
+        if (g.runtimes[slot] != nullptr)
+            continue;
+        if (!LoadExtraRuntime(slot))
+        {
+            static UINT saidFor = 0;
+            if (saidFor != wanted)
+            {
+                saidFor = wanted;
+                Log("pass count clamped to %u: no separate runtime for pass %u. See the lines "
+                    "above for why.", slot, slot + 1);
+            }
+            wanted = slot;
+            break;
+        }
+    }
+    return true;
 }
 
-#if DLSS5_WITH_VULKAN
+#if AMDNR_WITH_VULKAN
 #include "vk_route.inc"
 #endif
-#if DLSS5_WITH_OPENGL
+#if AMDNR_WITH_OPENGL
 #include "gl_route.inc"
 #endif
 
@@ -5495,7 +5924,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             "is carried into the new frame.");
     }
 
-#if DLSS5_WITH_VULKAN
+#if AMDNR_WITH_VULKAN
     // Vulkan. The host -- RPCS3 is the one this was built for -- never makes a D3D12 call, so
     // the network cannot run on its device. Same answer as D3D11: a second D3D12 device of our
     // own, and shared textures between the two. The crossing runs the other way round, because
@@ -5515,7 +5944,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     }
 #endif
 
-#if DLSS5_WITH_OPENGL
+#if AMDNR_WITH_OPENGL
     // OpenGL. Same answer again -- our own D3D12 device, shared textures imported into the host --
     // with the crossing rebuilt around a framebuffer blit, because ReShade hands an OpenGL add-on
     // the default framebuffer rather than a texture and there is nothing to copy. See
@@ -5556,7 +5985,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         else if (++g.presentsSinceFrame > 600)
         {
             g.unavailable = true;
-            g.reason = "the bridge stopped completing frames; see dlss5-neural.log";
+            g.reason = "the bridge stopped completing frames; see amd-nr.log";
             Log("600 presents without the bridge finishing a frame. Something is stuck, so the "
                 "add-on is standing down and leaving the game's own image alone. The last lines "
                 "above this one say how far it got.");
@@ -5570,7 +5999,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             if (++g.bridgeRetries > State::kMaxBridgeRetries)
             {
                 g.unavailable = true;
-                g.reason = "the bridge kept failing to rebuild; see dlss5-neural.log";
+                g.reason = "the bridge kept failing to rebuild; see amd-nr.log";
                 Log("bridge: %u rebuilds in a row did not take. Standing down and leaving the "
                     "game's own image alone.", g.bridgeRetries - 1);
                 return;
@@ -5609,8 +6038,8 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         {
             g.loggedWrongApi = true;
             Log("unsupported graphics API %u; transports compiled into this build: Vulkan %d, "
-                "OpenGL %d", static_cast<unsigned>(dev->get_api()), DLSS5_WITH_VULKAN,
-                DLSS5_WITH_OPENGL);
+                "OpenGL %d", static_cast<unsigned>(dev->get_api()), AMDNR_WITH_VULKAN,
+                AMDNR_WITH_OPENGL);
         }
         return;
     }
@@ -5654,7 +6083,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     {
         g.unavailable = true;
         if (*g.reason == '\0')
-            g.reason = "could not create the working textures; see dlss5-neural.log";
+            g.reason = "could not create the working textures; see amd-nr.log";
         return;
     }
 
@@ -5669,9 +6098,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     bool runNetwork = true;
     const bool jobPending =
         g.fence->GetCompletedValue() < g.completion ||
-        static_cast<UINT>(InterlockedCompareExchange(
-            reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kJobCounter)), 0, 0)) <
-            g.lastJob;
+        RuntimeBusy();
     if (!jobPending && g.jobRunning)
     {
         g.jobRunning = false;
@@ -5694,7 +6121,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             if (g.skipped % 600 == 0)
                 Log("previous job did not finish in 500 ms; continuing anyway (%llu skipped)",
                     static_cast<unsigned long long>(g.skipped));
-            g.lastJob = 0;
+            ResetJobs();
         }
     }
 
@@ -5706,8 +6133,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     }
     if (!RecordNetwork(cmd, backbuffer, bd.Format, nullptr, runNetwork, wanted, [&]() {
         ID3D12CommandList *submitted[] {cmd};
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
-            g.queue.Get(), 1, submitted);
+        NotifyRuntimes(g.queue.Get(), 1, submitted);
         queue->flush_immediate_command_list();
         if (!FinishSubmittedPass())
             return false;
@@ -5748,8 +6174,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     const UINT nw = g.netWidth, nh = g.netHeight;
     ID3D12CommandList *submitted[] { cmd };
     if (g.activePasses != 0)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
-            g.queue.Get(), 1, submitted);
+        NotifyRuntimes(g.queue.Get(), 1, submitted);
     queue->flush_immediate_command_list();
     DrainReadbacks(nw, nh);
     g.completion = ++g.serial;
@@ -5780,8 +6205,48 @@ void Note(const ImVec4 &colour, const char *text)
     ImGui::PopStyleColor();
 }
 
-const ImVec4 kWarn { 1.0f, 0.80f, 0.30f, 1.0f };
-const ImVec4 kDanger { 1.0f, 0.45f, 0.35f, 1.0f };
+// The panel's colour rule, in one place, because a hue that means two things means nothing.
+//
+// TWO FAMILIES, AND THEY NEVER MIX.
+//
+//   STATE is a report on what is true right now, and it is always earned by a measurement or by
+//   a documented failure -- never by a threshold on a slider. The old panel painted Timing,
+//   Scale and Passes amber the moment Scale went over 0.50 or Passes over 1, which is most of a
+//   working configuration: amber that is on whenever somebody is using the add-on teaches people
+//   to ignore amber, and then the one that matters goes unread. Scale 0.75 with every frame
+//   finishing on time is not a warning about anything. So amber now comes from the skip rate,
+//   from the card's own cap having fired, or from a switch whose off state was seen to break the
+//   picture -- things the add-on observed, not things it assumed.
+//
+//   SECTION is an identity, not a judgement. Each header carries its own hue so a thin panel
+//   reads as regions instead of as one long list, and nothing inside a section is tinted by it.
+//   Blue is the picture, green is speed, violet is instrumentation, amber is provisional, teal
+//   is what feeds the network, salmon is somebody else's struct.
+const ImVec4 kWarn { 1.00f, 0.80f, 0.30f, 1.00f };
+const ImVec4 kDanger { 1.00f, 0.45f, 0.35f, 1.00f };
+const ImVec4 kOk { 0.38f, 0.86f, 0.48f, 1.00f };
+
+//
+// The hues are held near full brightness and away from each other, and none of them is allowed
+// to drop towards the header's own fill: a muted tint on a mid-grey header band is a hue you
+// have to look for, and a label you have to look for is not doing the job of telling you which
+// region you are in. Read at a glance from across the room, or it is decoration.
+const ImVec4 kHueImage { 0.40f, 0.78f, 1.00f, 1.00f };          // blue -- the picture
+const ImVec4 kHuePerf { 0.35f, 1.00f, 0.55f, 1.00f };           // green -- speed
+const ImVec4 kHueDebug { 0.78f, 0.60f, 1.00f, 1.00f };          // violet -- instrumentation
+const ImVec4 kHueExperimental { 1.00f, 0.72f, 0.22f, 1.00f };   // amber -- provisional
+const ImVec4 kHueGuides { 0.25f, 0.95f, 0.95f, 1.00f };         // cyan -- what feeds the network
+const ImVec4 kHueEngine { 1.00f, 0.55f, 0.42f, 1.00f };         // salmon -- somebody else's struct
+
+// A section header in its own hue. ImGui draws a header's label with ImGuiCol_Text, so this is
+// the whole of it -- no style var, nothing to restore beyond the one push.
+bool SectionHeader(const ImVec4 &hue, const char *title, bool defaultOpen = false)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, hue);
+    const bool open = ImGui::CollapsingHeader(title, defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+    ImGui::PopStyleColor();
+    return open;
+}
 
 // Every user-visible string in the overlay goes through this. Two literals at the call site
 // instead of an id, a table and a lookup: the translation is then impossible to get out of sync
@@ -5809,30 +6274,16 @@ void Help(const char *en, const char *pt)
     ImGui::EndTooltip();
 }
 
-// How well each control is actually known, printed next to it. The question "which of these
-// does anything in the game" had to be answered by reading the source or three handoffs, and
-// the honest answer is not the same for any two controls. So it goes in the panel:
-//
-//   MEASURED  a 'measure, residual' reading moved when this changed. It does something.
-//   TRACED    the write reaches a consumer -- a decompiled reader, or our own shader -- but no
-//             reading here has ever separated it from its default.
-//   UNKNOWN   written into a real engine field whose effect nobody here has established.
-//   INERT     swept and measured to change nothing. Kept only to be re-checked elsewhere.
-enum Known { kMeasured, kTraced, kUnknown, kInert };
-void Tag(Known k)
-{
-    static const ImVec4 colours[] { { 0.4f, 1.0f, 0.4f, 1.0f },  { 0.55f, 0.75f, 1.0f, 1.0f },
-                                    { 1.0f, 0.80f, 0.30f, 1.0f }, { 0.6f, 0.6f, 0.6f, 1.0f } };
-    static const char *en[] { "MEASURED", "TRACED", "UNKNOWN", "INERT" };
-    static const char *pt[] { "MEDIDO", "RASTREADO", "DESCONHECIDO", "INERTE" };
-    ImGui::SameLine();
-    ImGui::TextColored(colours[k], "%s", T(en[k], pt[k]));
-}
-
 // Paints a control red or amber while its CURRENT VALUE is one that has caused trouble. Scoped
 // so it can be declared in an if-init and still wrap the widget:
 //     if (Risk r(kDanger, cond); ImGui::SliderFloat(...))
 // ImGui draws a widget's label with ImGuiCol_Text, so pushing the colour colours the control.
+//
+// This is the only marking left on a control. The MEASURED / TRACED / UNKNOWN / INERT tags that
+// used to follow every label are gone: they were provenance, which belongs in the handoffs and
+// in the comments here, and they cost eight to twelve characters on every row of a panel that
+// has to stay narrow. Red and amber stay because they are about the value in front of you rather
+// than about how the control came to be known.
 struct Risk
 {
     bool on;
@@ -5855,24 +6306,184 @@ void StatusLine()
     if (g.unavailable)
         ImGui::TextColored(kDanger, T("Unavailable: %s", "Indisponível: %s"), g.reason);
     else if (g.failed)
-        ImGui::TextColored(kDanger, T("Stopped after an error. See the log.",
-                                      "Parou depois de um erro. Veja o log."));
+        ImGui::TextColored(kDanger, T("Error -- see the log.", "Erro -- veja o log."));
     else if (!g.enabled.load())
-        ImGui::TextDisabled(T("Off.", "Desligado."));
+        ImGui::TextDisabled(T("off", "desligado"));
     else if (g.frame == 0)
-        ImGui::TextColored(kWarn, T("No frames processed yet.", "Nenhum quadro processado ainda."));
+        ImGui::TextColored(kWarn, T("no frames yet", "nenhum quadro ainda"));
     else
     {
         const uint64_t seen = g.frame + g.skipped;
         const double pct = seen != 0 ? 100.0 * static_cast<double>(g.skipped) / seen : 0.0;
-        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
-                           T("Running: %llu processed, %llu skipped (%.0f%%)",
-                             "Rodando: %llu processados, %llu pulados (%.0f%%)"),
-                           static_cast<unsigned long long>(g.frame),
-                           static_cast<unsigned long long>(g.skipped), pct);
+        ImGui::TextColored(pct >= 10.0 ? kWarn : ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
+                           T("%llu frames, %.0f%% skipped", "%llu quadros, %.0f%% pulados"),
+                           static_cast<unsigned long long>(g.frame), pct);
     }
 }
 
+// Copies this run's logs and the settings that produced them to a dated folder on the desktop.
+//
+// Every question worth asking about a run needs the same four files, and asking somebody to find
+// them means asking them to find the emulator's install directory first. The ini goes with them
+// because a log without the settings that produced it cannot be compared against anything.
+//
+// SHGetKnownFolderPath rather than %USERPROFILE%\Desktop: a desktop redirected into OneDrive is
+// ordinary now, and the guessed path would silently write somewhere nobody looks.
+//
+// The addon log is open while this runs. It was opened through the CRT, which shares for reading,
+// and every line is flushed as it is written, so the copy is the log up to this moment.
+std::wstring ExportLogs()
+{
+    PWSTR desktop = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktop)))
+        return L"";
+    std::filesystem::path out(desktop);
+    CoTaskMemFree(desktop);
+
+    wchar_t stamp[32] {};
+    SYSTEMTIME now {};
+    GetLocalTime(&now);
+    std::swprintf(stamp, 32, L"amd-nr-logs-%04u%02u%02u-%02u%02u%02u", now.wYear, now.wMonth,
+                  now.wDay, now.wHour, now.wMinute, now.wSecond);
+    out /= stamp;
+
+    std::error_code ec;
+    std::filesystem::create_directories(out, ec);
+    if (ec)
+        return L"";
+
+    // The add-on's own log first: it is the one that always exists and the one that carries the
+    // 'measure, residual' lines. The runtime's is next to it when the engine got far enough to
+    // open one, and ReShade's explains an add-on that never loaded at all.
+    const wchar_t *wanted[] { L"amd-nr.log", L"dlssnr_on_amd.log", L"ReShade.log",
+                              L"amd-nr.ini" };
+    const std::filesystem::path here = ExeDirectory();
+    int copied = 0;
+    for (const wchar_t *name : wanted)
+    {
+        const std::filesystem::path from = here / name;
+        if (!std::filesystem::exists(from, ec))
+            continue;
+        std::filesystem::copy_file(from, out / name,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (!ec)
+            ++copied;
+    }
+    if (copied == 0)
+    {
+        std::filesystem::remove(out, ec);
+        return L"";
+    }
+    Log("menu: exported %d file(s) to %ls", copied, out.c_str());
+    return out.wstring();
+}
+
+// Which header a row belongs under, in the cascade and in the panel alike.
+enum OptGroup { kGrpPerf, kGrpImage, kGrpDebug, kGrpGuides, kGrpEngine, kGrpCount };
+const char *OptGroupName(int grp)
+{
+    static const char *en[] { "Performance", "Image", "Debug", "Guides", "Engine" };
+    static const char *pt[] { "Desempenho", "Imagem", "Debug", "Guias", "Motor" };
+    return T(en[grp], pt[grp]);
+}
+
+struct OptRow
+{
+    uint32_t bit;
+    int group;
+    const char *en, *pt;
+};
+const OptRow kOpts[] {
+    { kOptCompose,      kGrpImage,  "Composition",       "Composição" },
+    { kOptGuard,        kGrpImage,  "Highlight guard",   "Trava de realce" },
+    { kOptGuardPerPass, kGrpImage,  "Guard per pass",    "Trava por passe" },
+    { kOptLocalTone,    kGrpImage,  "Local tone",        "Tom local" },
+    { kOptTaper,        kGrpPerf,   "Taper passes",      "Diminuir passes" },
+    { kOptPerPass,      kGrpPerf,   "Per-pass settings", "Ajustes por passe" },
+    { kOptBicubic,      kGrpPerf,   "Bicubic upsample",  "Upsample bicúbico" },
+    { kOptMeasure,      kGrpDebug,  "Measure residual",  "Medir resíduo" },
+    { kOptFeed,         kGrpGuides, "Use Feed.fx",       "Usar o Feed.fx" },
+    { kOptGameGuides,   kGrpGuides, "Read from the game","Ler do jogo" },
+    { kOptDepth,        kGrpGuides, "Depth",             "Profundidade" },
+    { kOptDepthInv,     kGrpGuides, "Depth inverted",    "Profundidade invertida" },
+    { kOptDepthStretch, kGrpGuides, "Stretch depth",     "Esticar profundidade" },
+    { kOptHistory,      kGrpGuides, "History",           "Histórico" },
+    { kOptMotion,       kGrpGuides, "Motion",            "Movimento" },
+    { kOptMotionScale,  kGrpGuides, "Motion scale",      "Escala do movimento" },
+    { kOptFlowGate,     kGrpGuides, "Flow gate",         "Portão do fluxo" },
+    { kOptFlowAccept,   kGrpGuides, "Flow accept",       "Aceite do fluxo" },
+    { kOptMask,         kGrpEngine, "Character mask",    "Máscara de personagem" },
+    { kOptTemporal,     kGrpEngine, "Temporal",          "Temporal" },
+    { kOptTonemap,      kGrpEngine, "Tonemap",           "Tonemap" },
+    { kOptToneChannels, kGrpEngine, "Tone channels",     "Canais de tom" },
+    { kOptOutputScale,  kGrpEngine, "Output scale",      "Escala de saída" },
+};
+
+bool Shown(uint32_t bit)
+{
+    return (g.optional.load() & bit) != 0;
+}
+
+// Whether a whole group has anything turned on, which is what decides if its header is drawn.
+bool GroupShown(int grp)
+{
+    const uint32_t on = g.optional.load();
+    for (const OptRow &r : kOpts)
+        if (r.group == grp && (on & r.bit) != 0)
+            return true;
+    return false;
+}
+
+// Status, run-state and what the network is being fed, printed down the right edge opposite the
+// switches on the left. It used to be a collapsing section of its own, which spent a header and
+// a click on four lines of text that never need a click. Right-aligned into space the rows on
+// the left already occupy, so it costs no height at all.
+//
+// On a panel too thin to hold both, the line is drawn on its own row underneath instead of
+// overlapping the control to its left: thin is the normal case here, so it has to degrade rather
+// than collide.
+void RightLine(const ImVec4 *colour, const char *fmt, ...)
+{
+    char text[192];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+
+    // Measured off what is left on the line rather than off the window: ReShade's add-on ImGui is
+    // a function table and GetWindowContentRegionMax is not in it, so this uses the three calls
+    // that are -- and they give the same answer without needing to know the indent.
+    const float width = ImGui::CalcTextSize(text).x;
+    ImGui::SameLine();
+    if (const float avail = ImGui::GetContentRegionAvail().x; avail >= width)
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - width);
+    else
+        ImGui::NewLine();
+    // Not TextDisabled: this column is the only place the run reports itself, so it reads at
+    // full weight rather than at the 50% grey a hint gets.
+    ImGui::TextColored(colour != nullptr ? *colour : ImVec4(0.72f, 0.78f, 0.86f, 1.00f),
+                       "%s", text);
+}
+
+// The overlay, rebuilt 22/09/2026. It used to carry 47 controls across eight headers; it carries
+// fifteen across five now. Nothing was deleted: every atomic, every LoadSettings line and every
+// SaveSettings line is untouched, so each hidden control still reads its key out of
+// amd-nr.ini and still writes it back. What went is the widget, and with it the chance of
+// somebody dragging a slider whose effect nobody here has established into a state that makes the
+// add-on look broken.
+//
+// It is written for a NARROW panel, because that is how this is used: the overlay is kept thin so
+// the game stays visible behind it. Three consequences, and they are the whole layout rule here:
+//
+//   * Labels are short. A checkbox label is not wrapped or clipped by ImGui, it simply runs off
+//     the right edge, so "Ligado desde o primeiro quadro" is a horizontal overflow waiting for a
+//     thin panel. What the control means goes in its (?), which has room.
+//   * No PushItemWidth. ImGui's default is 65% of the window, which tracks the width on its own;
+//     any fixed number of ems is right at one width and wrong at every other.
+//   * Anything that is a sentence goes through TextWrapped. ImGui::Text does not wrap.
+//
+// ponytail: no custom style, no indent, no section wrapper. ReShade's own look, which is what
+// every other add-on in the same overlay uses, and one less thing to be wrong on a light theme.
 void OnOverlay(effect_runtime *runtime)
 {
     bool on = g.enabled.load();
@@ -5882,71 +6493,47 @@ void OnOverlay(effect_runtime *runtime)
         Log("menu: %s", on ? "on" : "off");
     }
     ImGui::SameLine();
-    const std::string hotkey = HotkeyName();
-    ImGui::TextDisabled("(%s)", hotkey.c_str());
-    ImGui::SameLine();
     StatusLine();
 
+    bool start = g.startOn.load();
+    if (ImGui::Checkbox(T("On at startup", "Ligar ao abrir o jogo"), &start))
     {
-        bool start = g.startOn.load();
-        if (ImGui::Checkbox(T("Enabled from the first frame", "Ligado desde o primeiro quadro"),
-                            &start))
-        {
-            g.startOn.store(start);
-            Log("menu: start enabled %d", start ? 1 : 0);
-        }
-        Help("Whether Enabled above is already ticked when the game opens, instead of waiting "
-             "for the hotkey every time. `StartOn=1` in dlss5-neural.ini.\n\n"
-             "For a game that takes a while to get back into, pressing a key every launch is "
-             "work for nothing. Set this once and it stays set.",
+        g.startOn.store(start);
+        Log("menu: start enabled %d", start ? 1 : 0);
+    }
+    Help("Whether Enabled is already ticked when the game opens, instead of waiting for the "
+         "hotkey every time.",
+         "Se o Ligado já vem marcado quando o jogo abre, em vez de esperar a tecla de atalho "
+         "toda vez.");
 
-             "Se o Ligado aí em cima já vem marcado quando o jogo abre, em vez de esperar a "
-             "tecla de atalho toda vez. `StartOn=1` no dlss5-neural.ini.\n\n"
-             "Em jogo que dá trabalho pra voltar, apertar tecla todo lançamento é trabalho à "
-             "toa. Marque uma vez e fica.");
+    bool altTab = g.disableOnAltTab.load();
+    if (ImGui::Checkbox(T("Off on alt-tab", "Desligar no alt-tab"), &altTab))
+    {
+        g.disableOnAltTab.store(altTab);
+        Log("menu: disable on alt-tab %d", altTab ? 1 : 0);
+    }
+    Help("Switches the effect off when the game stops being the window in front, and leaves it "
+         "off -- turn it back on with the hotkey. A minimised window is always sat out, "
+         "separately, and that one does resume on its own.",
 
-        bool altTab = g.disableOnAltTab.load();
-        if (ImGui::Checkbox(T("Disable the effect on alt-tab",
-                              "Desativar o efeito ao dar alt-tab"), &altTab))
-        {
-            g.disableOnAltTab.store(altTab);
-            Log("menu: disable on alt-tab %d", altTab ? 1 : 0);
-        }
-        Help("Switch the effect off the moment the game stops being the window in front, and "
-             "leave it off. Coming back to the game, it is still off: turn it on with the hotkey "
-             "or the box above when you want it. `DisableOnAltTab=1` in dlss5-neural.ini.\n\n"
-             "This does not resume by itself, on purpose. Sitting out a minimised window is a "
-             "separate safety that is always on and does resume, because frames nobody can see "
-             "are not a decision anyone needs to make.",
+         "Desliga o efeito quando o jogo deixa de ser a janela da frente, e deixa desligado -- "
+         "religue na tecla de atalho. Janela minimizada é outra coisa: sempre pulada, e essa "
+         "volta sozinha.");
 
-             "Desliga o efeito no instante em que o jogo deixa de ser a janela da frente, e "
-             "deixa desligado. Ao voltar pro jogo ele continua desligado: você liga na tecla de "
-             "atalho ou na caixa aí em cima quando quiser. `DisableOnAltTab=1` no "
-             "dlss5-neural.ini.\n\n"
-             "Não volta sozinho, de propósito. Pular quadros de janela minimizada é outra coisa, "
-             "uma proteção que está sempre ligada e essa sim volta sozinha — quadro que ninguém "
-             "vê não é decisão de usuário.");
-
+    {
         // Rebinding by capturing a real keypress, rather than by typing a virtual-key code.
         // Only advances while the overlay is open, which is where the button is.
         static hotkey::Capture capture;
-        ImGui::TextUnformatted(T("Toggle hotkey", "Tecla de atalho"));
-        ImGui::SameLine();
-        if (ImGui::Button(capture.armed
-                              ? T("press a key (Esc cancels)", "aperte uma tecla (Esc cancela)")
-                              : hotkey.c_str()))
+        const std::string hotkey = HotkeyName();
+        if (ImGui::Button(capture.armed ? T("press a key", "aperte uma tecla") : hotkey.c_str(),
+                          ImVec2(ImGui::GetFontSize() * 7.0f, 0.0f)))
             capture.Toggle();
-        Help("Click, then press the combination you want. Modifiers held at that moment are part "
-             "of the binding. Esc cancels and keeps the current one.\n\n"
-             "Saved to the ini as ToggleKey (a virtual-key code) and ToggleMods (1 Ctrl, 2 Alt, "
-             "4 Shift, added together). A key with no modifier is allowed and will fire during "
-             "normal play, so pick one the game does not use.",
-
-             "Clique e aperte a combinação que quiser. Os modificadores segurados nesse momento "
-             "fazem parte do atalho. Esc cancela e mantém o atual.\n\n"
-             "Salvo no ini como ToggleKey (código de tecla virtual) e ToggleMods (1 Ctrl, 2 Alt, "
-             "4 Shift, somados). Uma tecla sem modificador é permitida e vai disparar durante o "
-             "jogo normal, então escolha uma que o jogo não use.");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(T("Hotkey", "Tecla"));
+        Help("Click, then press the combination you want. Esc cancels. A key with no modifier "
+             "fires during normal play, so pick one the game does not use.",
+             "Clique e aperte a combinação que quiser. Esc cancela. Uma tecla sem modificador "
+             "dispara durante o jogo, então escolha uma que o jogo não use.");
 
         // ReShade's key state, never GetAsyncKeyState: it hooks that one and answers 0 for every
         // key while the overlay is blocking the keyboard, which is the whole time this panel is
@@ -5962,374 +6549,87 @@ void OnOverlay(effect_runtime *runtime)
     }
 
     int lang = g.language.load();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-    if (ImGui::Combo(T("Language", "Idioma"), &lang, "English\0Português (Brasil)\0"))
+    if (ImGui::Combo(T("Language", "Idioma"), &lang, "English\0Português\0"))
     {
         g.language.store(lang);
         Log("menu: language %d", lang);
     }
 
-    if (ImGui::CollapsingHeader(T("Image", "Imagem"), ImGuiTreeNodeFlags_DefaultOpen))
+    // The status column. It used to be a collapsing section of its own, which spent a header and
+    // a click on five lines of text that never need either -- and which, being at the bottom,
+    // reported the skip rate somewhere you would only look after you already suspected it.
+    //
+    // Now it runs down the right edge, opposite the switches, in vertical space those rows
+    // already occupy. Reading order is the point: the left column is what you change, the right
+    // column is what happened, and the two are side by side.
     {
-        int enc = g.encoding.load();
-        if (ImGui::Combo(T("Encoding", "Codificação"), &enc, "sRGB\0Linear\0scRGB-nl\0"))
-        {
-            g.encoding.store(enc);
-            Log("menu: encoding %d", enc);
-        }
-        Help("Conversion applied before the runtime and reversed during composition.\n\n"
-             "Use sRGB for an SDR frame: it passes the code values through unchanged, and "
-             "automatic Tonemap stays off even though the transport texture is FP16. "
-             "Diffuse White has no effect in this mode. Linear and scRGB-nl are experimental "
-             "conversion paths, not evidence of the model's training domain.\n\n"
-             "Restart the game after changing Encoding or Tonemap; the runtime caches its "
-             "input conversion when it creates staging resources.",
-
-             "Conversão aplicada antes do runtime e revertida na composição.\n\n"
-             "Use sRGB para um quadro SDR: os valores passam sem conversão, e o Tonemap "
-             "automático fica desligado mesmo com transporte em FP16. Branco Difuso não "
-             "tem efeito nesse modo. Linear e scRGB-nl são conversões experimentais; não "
-             "comprovam o domínio em que o modelo foi treinado.\n\n"
-             "Reinicie o jogo após alterar Codificação ou Tonemap; o runtime guarda a "
-             "conversão ao criar os recursos de entrada.");
-        Tag(kMeasured);
-
-        // Live, and deliberately so: judging three looks by editing an ini and restarting is
-        // three restarts, and on a host whose swapchain is in a child window Ctrl+Home cannot
-        // reload the file at all. Here it is one click and the frame changes under you.
-        int style = g.style.load();
-        // Both namings, because both are in circulation for the same three values of the same
-        // NGX field: RenoDX calls them Model A/B/C, Deep Fried Chicken calls them Default,
-        // Natural and Cinematic. A guide written against one and an overlay showing the other
-        // is a person changing the wrong control.
-        if (ImGui::Combo(T("Neural Rendering Model", "Modelo de Renderização Neural"), &style,
-                         T("Model A - Default\0Model B - Natural\0Model C - Cinematic\0",
-                           "Modelo A - Default\0Modelo B - Natural\0Modelo C - Cinematic\0")))
-        {
-            g.style.store(std::clamp(style, 0, 2));
-            Log("menu: style %d", style);
-        }
-        Help("The same three models DLSSNR.Style selects on NVIDIA. They are not three "
-             "networks -- there is one set of weights, and a model is a short vector of colour "
-             "coefficients applied to the finished frame.\n\n"
-             "Two names for each, both in use for the same value: RenoDX writes Model A, B and "
-             "C; Deep Fried Chicken writes Default, Natural and Cinematic. Natural is Model B "
-             "and Cinematic is Model C. Its NR Preset control is a different field -- that one "
-             "picks a set of weights, and the shipping DLL carries only one.\n\n"
-             "Model A is the neutral vector and is what every release so far has drawn, so it "
-             "changes nothing. Model B darkens by 0.1 stop, flattens contrast a quarter of the "
-             "way off its S-curve, and removes a tenth of the saturation. Model C only removes "
-             "15 percent of the saturation.\n\n"
-             "The coefficients are read out of nvngx_dlssnr.dll, not invented: the descriptor "
-             "table at record+108 and record+176, feeding slots 75, 77 and 78 of the style "
-             "vector. What each slot does was read from the post-process kernel's own "
-             "disassembly. Whether this matches NVIDIA's output pixel for pixel has not been "
-             "checked against NVIDIA hardware.",
-
-             "Os mesmos tres modelos que DLSSNR.Style seleciona na NVIDIA. Nao sao tres redes "
-             "-- ha um unico conjunto de pesos, e um modelo e um vetor curto de coeficientes de "
-             "cor aplicado ao quadro pronto.\n\n"
-             "Dois nomes para cada um, os dois em uso para o mesmo valor: o RenoDX escreve "
-             "Model A, B e C; o Deep Fried Chicken escreve Default, Natural e Cinematic. "
-             "Natural e o Modelo B e Cinematic e o Modelo C. O controle NR Preset dele e outro "
-             "campo -- aquele escolhe um conjunto de pesos, e a DLL que a NVIDIA publica tem "
-             "so um.\n\n"
-             "O Modelo A e o vetor neutro e e o que toda release desenhou ate agora, entao nao "
-             "muda nada. O Modelo B escurece 0,1 stop, achata o contraste um quarto do caminho "
-             "para fora da curva S, e tira um decimo da saturacao. O Modelo C so tira 15 por "
-             "cento da saturacao.\n\n"
-             "Os coeficientes foram lidos do nvngx_dlssnr.dll, nao inventados: a tabela de "
-             "descritores em record+108 e record+176, alimentando os slots 75, 77 e 78 do vetor "
-             "de estilo. O que cada slot faz veio da desmontagem do proprio kernel de "
-             "pos-processamento. Se isso bate com a saida da NVIDIA pixel a pixel nao foi "
-             "verificado contra hardware NVIDIA.");
-        Tag(kTraced);
-
-        if (style != 0)
-        {
-            float ss = g.styleStrength.load();
-            if (ImGui::SliderFloat(T("Model Strength", "Força do Modelo"), &ss, 0.0f, 1.0f, "%.2f"))
-                g.styleStrength.store(std::clamp(ss, 0.0f, 1.0f));
-            Help("Scales the selected model towards neutral, the way the runtime's "
-                 "LocalToneStrength scales a style. 1 is the full model; 0 is Model A whatever "
-                 "is selected above.",
-                 "Escalona o modelo selecionado em direcao ao neutro, como o LocalToneStrength "
-                 "do runtime faz com um estilo. 1 e o modelo inteiro; 0 e o Modelo A qualquer "
-                 "que seja a selecao acima.");
-            Tag(kTraced);
-        }
-
-        ImGui::BeginDisabled(g.encoding.load() == 0);
-        float white = g.diffuseWhite.load();
-        if (ImGui::SliderFloat(T("Diffuse White", "Branco Difuso"), &white, 80.0f, 1000.0f,
-                               "%.0f nits", 0))
-            g.diffuseWhite.store(white);
-        ImGui::EndDisabled();
-        Help("How many nits a value of 1.0 means, which sets the scale of the linear image the "
-             "network is handed.\n\n"
-             "The documented automatics are 100 for linear BT.709, 203 for scRGB-nl and 250 for "
-             "PQ or scRGB linear. Anything else is a guess, and a wrong scale here looks like the "
-             "network over- or under-reacting everywhere at once.\n\n"
-             "Inert while Encoding is sRGB.",
-
-             "Quantos nits um valor de 1.0 significa, o que define a escala da imagem linear "
-             "entregue à rede.\n\n"
-             "Os automáticos documentados são 100 para linear BT.709, 203 para scRGB-nl e 250 "
-             "para PQ ou scRGB linear. Qualquer outro valor é chute, e uma escala errada aqui "
-             "parece a rede reagindo demais ou de menos em tudo ao mesmo tempo.\n\n"
-             "Inerte enquanto a Codificação for sRGB.");
-        Tag(kTraced);
-
-        float v = g.intensity.load();
-        if (ImGui::SliderFloat(T("Overall Intensity", "Intensidade Geral"), &v, 0.0f, 2.0f,
-                               "%.2f", 0))
-            g.intensity.store(v);
-        Help("Blends the network's correction over the game's image, after the fact.\n\n"
-             "This is a mix, not a parameter of the network: it can show more or less of what the "
-             "network did, never make it do more. 0.00 is the same picture as switching the "
-             "add-on off, which makes it the fastest A/B there is.",
-
-             "Mistura a correção da rede sobre a imagem do jogo, depois do fato.\n\n"
-             "Isto é uma mistura, não um parâmetro da rede: pode mostrar mais ou menos do que a "
-             "rede fez, nunca fazer ela fazer mais. 0.00 dá a mesma imagem que desligar o add-on, "
-             "o que faz dele o A/B mais rápido que existe.");
-        Tag(kMeasured);
-
-        // How the correction is put back onto the frame. This is the arrangement Pass Count
-        // needed: additive composition made a second pass mean twice the difference, clipped per
-        // channel, and a clipped channel is a hue rotation rather than more detail.
-        {
-            int comp = g.ratioGuard.load() > 0.0f ? 1 : 0;
-            const char *items[] = { T("Additive (old)", "Aditiva (antiga)"),
-                                    T("Ratio (bounded)", "Razão (limitada)") };
-            if (ImGui::Combo(T("Composition", "Composição"), &comp, items, 2))
-            {
-                g.ratioGuard.store(comp == 1 ? 2.0f : 0.0f);
-                Log("menu: composition %s", comp == 1 ? "ratio" : "additive");
-            }
-            Help("How the network's answer is put back onto the frame.\n\n"
-                 "Additive adds the correction to the picture, channel by channel, and clips "
-                 "whatever leaves the range. That is what this add-on always did, and it is why "
-                 "Pass Count was useless: two passes is twice the difference and three is three "
-                 "times it, and a clipped channel is a hue rotation -- so the count did not read "
-                 "as more detail, it read as more saturation and then as a mess.\n\n"
-                 "Ratio turns the answer into a picture of its own, compares its luminance "
-                 "against the frame's as a ratio, bounds that ratio, and blends two finished "
-                 "pictures. A bounded ratio cannot move hue. This is what the OptiScaler DLSS-NR "
-                 "fork does, and RenoDX's DLSS 5 addon before it.\n\n"
-                 "Kept switchable so both can be seen in one session. Ratio is the default.",
-
-                 "Como a resposta da rede volta para o quadro.\n\n"
-                 "Aditiva soma a correção na imagem, canal por canal, e corta o que sair da "
-                 "faixa. É o que este add-on sempre fez, e é por isso que o Número de Passes não "
-                 "servia: dois passes é o dobro da diferença e três é o triplo, e canal cortado é "
-                 "rotação de matiz -- então a contagem não aparecia como mais detalhe, aparecia "
-                 "como mais saturação e depois como sujeira.\n\n"
-                 "Razão transforma a resposta numa imagem própria, compara a luminância dela com "
-                 "a do quadro como razão, limita essa razão, e mistura duas imagens inteiras. Uma "
-                 "razão limitada não move matiz. É o que o fork DLSS-NR do OptiScaler faz, e o "
-                 "addon DLSS 5 do RenoDX antes dele.\n\n"
-                 "Deixado trocável para dar para ver os dois na mesma sessão. Razão é o padrão.");
-            Tag(kTraced);
-        }
-
-        ImGui::BeginDisabled(g.ratioGuard.load() <= 0.0f);
-        v = g.colourStrength.load();
-        if (ImGui::SliderFloat(T("Colour Strength", "Força da Cor"), &v, 0.0f, 1.0f, "%.2f", 0))
-            g.colourStrength.store(v);
-        Help("Whether the network's colour arrives with its light.\n\n"
-             "0 keeps the game's own hue exactly: every pixel is the original colour and only its "
-             "brightness carries what the network decided. This is the setting for \"it changed "
-             "the colours\" -- at 0 it cannot, by construction. 1 brings the network's colour "
-             "with it.\n\n"
-             "It cannot shift hue on its own either way: both ends of the blend carry the same "
-             "luminance, so this moves chroma and nothing else.\n\n"
-             "Inert on Additive composition.",
-
-             "Se a cor da rede vem junto com a luz dela.\n\n"
-             "0 mantém a matiz do jogo exatamente: cada pixel fica com a cor original e só o "
-             "brilho carrega o que a rede decidiu. É este o controle para \"mudou as cores\" -- "
-             "em 0 ele não consegue mudar, por construção. 1 traz a cor da rede junto.\n\n"
-             "Também não desloca matiz sozinho nos dois sentidos: as duas pontas da mistura "
-             "carregam a mesma luminância, então isto mexe em croma e mais nada.\n\n"
-             "Inerte na composição Aditiva.");
-        Tag(kTraced);
-
-        v = g.ratioGuard.load();
-        if (v > 0.0f && ImGui::SliderFloat(T("Highlight Guard", "Trava de Realce"), &v, 1.0f, 8.0f,
-                                           "%.1fx", 0))
-            g.ratioGuard.store(v);
-        Help("The most compose may move any pixel, as a multiple of what it already was, in both "
-             "directions. A pixel may not be brightened past this nor darkened past its "
-             "reciprocal.\n\n"
-             "One scalar, taken from luminance and applied to the whole triple, so it bounds "
-             "brightness without touching hue. Lights are where the network has least to say and "
-             "where an unbounded answer does the most damage.\n\n"
-             "2.0x is the reference fork's default and leaves detail intact. Raise it only if "
-             "bright areas look clipped.",
-
-             "O máximo que a composição pode mover um pixel, como múltiplo do que ele já era, nos "
-             "dois sentidos. Um pixel não pode ser clareado além disto nem escurecido além do "
-             "inverso.\n\n"
-             "Um escalar só, tirado da luminância e aplicado no trio inteiro, então limita brilho "
-             "sem tocar em matiz. Luzes são onde a rede tem menos a dizer e onde uma resposta sem "
-             "limite estraga mais.\n\n"
-             "2.0x é o padrão do fork de referência e não come detalhe. Só aumente se áreas "
-             "claras parecerem estouradas.");
-        Tag(kTraced);
-
-        bool track = g.guardTracksPasses.load();
-        if (ImGui::Checkbox(T("Guard follows Pass Count", "Trava acompanha o Número de Passes"),
-                            &track))
-        {
-            g.guardTracksPasses.store(track);
-            Log("menu: guard follows pass count %d", track ? 1 : 0);
-        }
-        Help("Adds one multiple of headroom per extra pass, so 2.0x becomes 3.0x at two passes "
-             "and 4.0x at three. Off by default.\n\n"
-             "The guard is applied once, to the finished composition, while the passes compound "
-             "the ratio inside it. Left fixed, the third pass spends most of its contribution "
-             "against the clamp -- it costs a whole extra network run and most of it is thrown "
-             "away. The reference fork's tooltip suggests raising the guard by hand with the "
-             "count; this does it for you.\n\n"
-             "It is off because the reference does not actually do it. Nine OptiScaler logs off "
-             "RTX machines carry 254 composition lines across seven games, at one pass and at "
-             "two, and every one of them reads guard 2.0x -- the single 1.5x in the set is "
-             "someone dragging the slider down. Their ini says MaxRatio defaults to 2.0 and "
-             "never mentions the count. A fixed bound is also the honest way to see what an "
-             "extra pass is contributing.",
-
-             "Acrescenta um múltiplo de folga por passe extra, então 2.0x vira 3.0x em dois "
-             "passes e 4.0x em três. Desligado por padrão.\n\n"
-             "A trava é aplicada uma vez, na composição pronta, enquanto os passes acumulam a "
-             "razão dentro dela. Fixa, o terceiro passe gasta quase toda a contribuição dele "
-             "contra o limite -- custa uma rodada inteira da rede e joga a maior parte fora. O "
-             "tooltip do fork de referência sugere subir a trava na mão junto com a contagem; "
-             "isto faz por você.\n\n"
-             "Está desligado porque o fork de referência não faz isso de verdade. Nove logs de "
-             "OptiScaler de máquinas RTX trazem 254 linhas de composição em sete jogos, em um "
-             "passe e em dois, e todas dizem guard 2.0x -- o único 1.5x do conjunto é alguém "
-             "baixando o slider. A ini deles diz que MaxRatio tem padrão 2.0 e nunca cita a "
-             "contagem. Um limite fixo também é o jeito honesto de ver o que um passe extra "
-             "está somando.");
-        Tag(kMeasured);
-        ImGui::EndDisabled();
-
-        v = g.residualLimit.load();
-        if (ImGui::SliderFloat(T("Residual Limit", "Limite do Resíduo"), &v, 0.0f, 0.50f,
-                               v <= 0.0f ? T("off", "desligado") : "%.3f", 0))
-            g.residualLimit.store(v);
-        Help("Caps how far the correction may push a single pixel, as a fraction of white. 0 is "
-             "off and nothing is capped.\n\n"
-             "This is the control for the blown blocks. A measured two-pass run on God of War "
-             "reported a mean correction of 0.072 with a MAXIMUM OF 4.16 -- four times brighter "
-             "than white, in a picture whose own mean is 0.13. That is not something the network "
-             "saw; it is a tile where it extrapolated. Every extra pass then runs on top of that "
-             "blown tile, so it compounds instead of averaging away.\n\n"
-             "The whole correction is scaled, not clamped per channel: clamping one channel of a "
-             "triple is a hue rotation, which turned a blown block into a blown coloured one.\n\n"
-             "0.25 by default, which is over three times the typical correction, so an ordinary "
-             "pixel never meets it. Lower it until the blocks go; too low flattens the whole "
-             "effect, which Residual x8 shows immediately.",
-
-             "Limita o quanto a correção pode empurrar um pixel, como fração do branco. 0 é "
-             "desligado e nada é limitado.\n\n"
-             "É este o controle dos blocos estourados. Uma medição de dois passes no God of War "
-             "deu correção média 0.072 com MÁXIMO DE 4.16 -- quatro vezes mais claro que o "
-             "branco, numa imagem cuja média é 0.13. Isso não é algo que a rede viu; é um bloco "
-             "onde ela extrapolou. Cada passe extra roda em cima desse bloco estourado, então "
-             "acumula em vez de diluir.\n\n"
-             "A correção inteira é escalada, não cortada canal por canal: cortar um canal de um "
-             "trio é rotação de matiz, o que transformava bloco estourado em bloco estourado e "
-             "colorido.\n\n"
-             "0.25 por padrão, que é mais de três vezes a correção típica, então pixel normal "
-             "nunca encosta nele. Baixe até os blocos sumirem; baixo demais achata o efeito "
-             "inteiro, o que o Resíduo x8 mostra na hora.");
-        Tag(kTraced);
-
-        v = g.residualFade.load();
-        if (ImGui::SliderFloat(T("Edge Fade", "Suavizar Bordas"), &v, 0.0f, 0.25f,
-                               v <= 0.0f ? T("off", "desligado") : "%.3f", 0))
-            g.residualFade.store(v);
-        Help("Rolls the correction off to nothing over a band at the frame border, given as a "
-             "fraction of the frame. 0.02 is a 2% band -- about 20 pixels at 1080p. 0 is off.\n\n"
-             "The tiles at the border have no neighbour on one side, so what the network returns "
-             "there is invented rather than seen, and bicubic upsampling rings on top of it. That "
-             "is the glitching in the corners: a corner is inside two border bands at once, so it "
-             "gets both rolloffs and is the first place to go wrong and the first place this "
-             "fixes.\n\n"
-             "Cheaper than turning the whole effect down, because it only touches the band.",
-
-             "Vai apagando a correção até zero numa faixa na borda do quadro, dada como fração do "
-             "quadro. 0.02 é uma faixa de 2% -- uns 20 pixels em 1080p. 0 é desligado.\n\n"
-             "Os blocos da borda não têm vizinho de um lado, então o que a rede devolve ali é "
-             "inventado, não visto, e o upsample bicúbico ainda toca sino em cima. É isso o "
-             "glitch nos cantos: um canto está dentro de duas faixas de borda ao mesmo tempo, "
-             "então leva as duas quedas -- é o primeiro lugar a estragar e o primeiro que isto "
-             "conserta.\n\n"
-             "Mais barato que baixar o efeito inteiro, porque só toca na faixa.");
-        Tag(kTraced);
-
-        v = g.structure.load();
-        if (ImGui::SliderFloat(T("Structure Intensity", "Intensidade de Estrutura"), &v, 0.0f,
-                               3.0f, "%.2f", 0))
-            g.structure.store(v);
-        Help("Written into the engine at a fixed offset, and the one control measured to matter.\n\n"
-             "Measured on God of War 2: at 0 the residual collapses 25x, which is the proof that "
-             "what reaches the screen comes from the network at all. From 1 to 3 the magnitude "
-             "grows about 6% and the structure ratio goes 0.18 to 0.28. It saturates; 3 is the "
-             "useful end of it.",
-
-             "Escrito no motor num offset fixo, e o único controle medido como relevante.\n\n"
-             "Medido no God of War 2: em 0 o resíduo despenca 25x, o que é a prova de que o que "
-             "chega na tela vem da rede. De 1 para 3 a magnitude cresce uns 6% e a razão de "
-             "estrutura vai de 0,18 para 0,28. Satura; 3 é o fim útil dele.");
-        Tag(kMeasured);
-
-        v = g.skin.load();
-        if (ImGui::SliderFloat(T("Skin Structure Strength", "Força de Estrutura na Pele"), &v,
-                               -1.0f, 3.0f, "%.2f", 0))
-            g.skin.store(v);
-        Help("Same kind of offset, aimed at skin. Measured worth about 1.5% of the residual, "
-             "which is close to run-to-run noise.\n\n"
-             "-1.00 is the sentinel the engine itself boots with, and it is the strongest "
-             "evidence anything reads this field at all: it means automatic. Writing 1.00 over "
-             "it, which this add-on used to do on startup, turns the automatic off before you "
-             "ever touch the slider.",
-
-             "Mesmo tipo de offset, mirado na pele. Medido valendo uns 1,5% do resíduo, o que "
-             "está perto do ruído entre execuções.\n\n"
-             "-1.00 é a sentinela com que o próprio motor liga, e é a evidência mais forte de "
-             "que alguém lê esse campo: significa automático. Escrever 1.00 por cima, o que este "
-             "add-on fazia no início, desliga o automático antes de você tocar no slider.");
-        Tag(kMeasured);
+        std::lock_guard guard(g.lock);
+        const uint64_t seen = g.frame + g.skipped;
+        const double pct = seen != 0 ? 100.0 * static_cast<double>(g.skipped) / seen : 0.0;
+        // A skipped frame reuses whatever the network textures hold, and a job still running is
+        // writing them while compose reads them. A few percent is invisible; a third of the
+        // frames is a correction that changes every frame, which reads as flicker.
+        const bool skipping = seen > 300 && pct >= 10.0;
+        RightLine(skipping ? &kWarn : nullptr, "%s", ProfileForThisProcess().note);
+        if (g.outWidth != 0)
+            RightLine(nullptr, T("%ux%u to %ux%u", "%ux%u para %ux%u"), g.outWidth, g.outHeight,
+                      g.netWidth, g.netHeight);
+        // What used to be an eleven-control Guides tab. Every one of those switches is on by
+        // default and picks itself: depth and motion are taken when the game hands them over and
+        // estimated when it does not, the companion effect is used when it is installed. The
+        // switches are still there, one cascade entry away, for a target where the detector picks
+        // the wrong buffer; this line is what a person actually needs, which is what the network
+        // is being fed.
+        RightLine(nullptr, T("depth %s, motion %s", "profundidade %s, movimento %s"),
+                  g.guideDepth.external && g.gameDepthActive ? T("effect", "effect")
+                  : g.gameDepthActive                        ? T("game", "jogo")
+                  : g.depthSnapshot                          ? T("snapshot", "snapshot")
+                                                             : T("none", "nenhuma"),
+                  g.guideMotion.external && g.gameMotionActive ? T("effect", "effect")
+                  : g.gameMotionActive                         ? T("game", "jogo")
+                                                               : T("estimated", "estimado"));
+        if (g.probeStillPct.load() >= 0)
+            RightLine(nullptr, T("depth %.4f..%.4f, %d%% still",
+                                 "profundidade %.4f..%.4f, %d%% parado"),
+                      static_cast<double>(g.probeDepthMin.load()),
+                      static_cast<double>(g.probeDepthMax.load()), g.probeStillPct.load());
+        if (skipping)
+            Note(kWarn, T("The network is not finishing inside a frame, and that is the flicker. "
+                          "Lower Scale and set Passes to 1.",
+                          "A rede não está terminando dentro do quadro, e é isso o piscar. Baixe "
+                          "a Escala e ponha Passes em 1."));
     }
 
-    if (ImGui::CollapsingHeader(T("Performance", "Desempenho"), ImGuiTreeNodeFlags_DefaultOpen))
+    if (SectionHeader(kHuePerf, T("Performance", "Desempenho"), true))
     {
         // Same-frame timing is what turns every other cost into a stall, so it is coloured
         // exactly when there is a cost big enough for that to matter.
         int timing = g.inlineMode.load() ? 0 : 1;
         const float sc = g.scale.load();
         const int np = g.passes.load();
-        const bool inlineHeavy = g.inlineMode.load() && (sc > 0.50f || np > 1);
-        if (Risk r(g.inlineMode.load() && sc > 1.0f ? kDanger : kWarn, inlineHeavy);
+        // Red is the documented device-removal path -- inline, waiting on the GPU, above full
+        // resolution -- and nothing else here earns a colour. The old amber lit whenever Scale
+        // passed 0.50 or Passes passed 1, which is most of a working configuration: a warning
+        // that is on while everything is fine is a warning nobody reads.
+        (void)np;
+        if (Risk r(kDanger, g.inlineMode.load() && sc > 1.0f);
             ImGui::Combo(T("Timing", "Momento"), &timing,
-                         T("Same frame (inline)\0Async (previous frame)\0",
-                           "Mesmo quadro (inline)\0Assíncrono (quadro anterior)\0")))
+                         T("Same frame\0Async\0", "Mesmo quadro\0Assíncrono\0")))
         {
             g.inlineMode.store(timing == 0);
             Log("menu: mode %s", timing == 0 ? "inline" : "async");
         }
-        Help("Same frame waits for the current neural result. More passes increase frame time. "
-             "This preview preserves each pass's parameters in this mode.\n\n"
-             "Async uses an older correction. It retains the legacy pass handoff and can show "
-             "stale detail; use Same frame when comparing per-pass settings.",
-             "Mesmo quadro espera o resultado neural atual. Mais passes aumentam o tempo de quadro. "
-             "Esta preview preserva os parâmetros de cada passe neste modo.\n\n"
-             "Assíncrono usa uma correção anterior. Mantém a execução antiga dos passes e pode "
-             "mostrar detalhes atrasados; use Mesmo quadro para comparar ajustes por passe.");
-        Tag(kMeasured);
+        Help("Same frame waits for this frame's own result: correct, and every millisecond the "
+             "network costs is a millisecond of frame time.\n\n"
+             "Async pastes an older correction instead, which is cheaper and can show the "
+             "correction of a picture that has already moved -- that is what a trail behind "
+             "moving objects is.",
+
+             "Mesmo quadro espera o resultado deste quadro: correto, e cada milissegundo que a "
+             "rede custa é milissegundo de tempo de quadro.\n\n"
+             "Assíncrono cola uma correção anterior, o que é mais barato e pode mostrar a "
+             "correção de uma imagem que já andou -- é isso o rastro atrás de coisa em "
+             "movimento.");
 
         // Keep the value being dragged separate from the value consumed by the render thread.
         // SliderFloat changes on every mouse movement; publishing each intermediate float made
@@ -6340,9 +6640,8 @@ void OnOverlay(effect_runtime *runtime)
         if (!editingScaleActive)
             editingScale = g.scale.load();
         float v = editingScale;
-        if (Risk r(v > 1.0f && g.inlineMode.load() ? kDanger : kWarn, v > 0.50f);
-            ImGui::SliderFloat(T("Resolution Scale", "Escala de Resolução"), &v, 0.25f, 2.0f,
-                               "%.2f", 0))
+        if (Risk r(kDanger, v > 1.0f && g.inlineMode.load());
+            ImGui::SliderFloat(T("Scale", "Escala"), &v, 0.25f, 2.0f, "%.2f", 0))
             editingScale = v;
         if (ImGui::IsItemActive())
             editingScaleActive = true;
@@ -6375,186 +6674,501 @@ void OnOverlay(effect_runtime *runtime)
             }
             editingScaleActive = false;
         }
-        v = editingScale;
-        if (const float cap = g.scaleCap.load(); cap > 0.0f && cap < g.scale.load())
-            ImGui::TextColored(ImVec4(0.93f, 0.72f, 0.36f, 1.0f),
-                T("Held at %.2f, this card's limit here. One network run took %llu ms at the scale "
-                  "above -- long enough to reset the display driver and take the game with it -- "
-                  "so it is running lower. Let go of the slider to ask for it again.",
-                  "Segurado em %.2f, o limite desta placa aqui. Uma passada da rede levou %llu ms "
-                  "na escala acima -- o bastante para resetar o driver de video e levar o jogo "
-                  "junto -- entao esta rodando mais baixo. Solte o slider para pedir de novo."),
-                static_cast<double>(cap),
-                static_cast<unsigned long long>(g.worstJobMs.load()));
-        Help("Network width and height relative to the game frame. 0.50 uses a quarter of the pixels; "
-             "1.00 uses the full frame. Lower scales reduce fine detail and inference cost. "
-             "Materials can still change below 1.00. Measure frame time at the chosen resolution.",
-             "Largura e altura da rede em relação ao quadro do jogo. 0.50 usa um quarto dos pixels; "
-             "1.00 usa o quadro inteiro. Escalas menores reduzem detalhe fino e custo da inferência. "
-             "Materiais ainda podem mudar abaixo de 1.00. Meça o tempo de quadro na resolução escolhida.");
-        Tag(kMeasured);
+        Help("Width and height the network runs at, relative to the game frame. 0.50 uses a "
+             "quarter of the pixels. Lower is faster and the network answers differently, not "
+             "just softer; above 1.00 it costs GPU time and memory for a frame that is already "
+             "at full resolution.",
+
+             "Largura e altura em que a rede roda, em relação ao quadro do jogo. 0.50 usa um "
+             "quarto dos pixels. Menor é mais rápido e a rede responde diferente, não só mais "
+             "suave; acima de 1.00 custa tempo de GPU e memória para um quadro que já está em "
+             "resolução cheia.");
+        // Against what is actually being run at, not what the slider says: under a cap those two
+        // disagree by design, and comparing with the slider reported the raster as "not applied
+        // yet" for ever while it was working exactly as intended.
         if (g.outWidth != 0)
         {
-            // Against what is actually being run at, not what the slider says: under a cap those
-            // two disagree by design, and comparing with the slider reported the raster as "not
-            // applied yet" for ever while it was working exactly as intended.
             const float running = EffectiveScale();
             const UINT wantW = std::max<UINT>(64u, static_cast<UINT>(g.outWidth * running + 0.5f));
             const UINT wantH = std::max<UINT>(64u, static_cast<UINT>(g.outHeight * running + 0.5f));
-            ImGui::Text(T("Network raster: %ux%u", "Raster da rede: %ux%u"), g.netWidth, g.netHeight);
             if (wantW != g.netWidth || wantH != g.netHeight)
-            {
-                ImGui::SameLine();
-                ImGui::TextColored(kWarn, T("(asked for %ux%u -- not applied yet)",
-                                            "(pediu %ux%u -- ainda não aplicado)"), wantW, wantH);
-            }
+                ImGui::TextColored(kWarn, T("%ux%u, asked %ux%u", "%ux%u, pediu %ux%u"),
+                                   g.netWidth, g.netHeight, wantW, wantH);
+            else
+                ImGui::TextDisabled("%ux%u", g.netWidth, g.netHeight);
         }
-        if (v > 1.0f)
-            Note(kWarn, T("Supersampling the neural input increases GPU time and memory use.",
-                          "Supersampling da entrada neural aumenta o tempo de GPU e o uso de memória."));
+        if (const float cap = g.scaleCap.load(); cap > 0.0f && cap < g.scale.load())
+            Note(kWarn,
+                 T("Held below the slider by this card's own limit: one network run took long "
+                   "enough to reset the display driver and take the game with it. Let go of the "
+                   "slider to ask for the full scale again.",
+                   "Segurado abaixo do slider pelo limite desta placa: uma passada da rede levou "
+                   "tempo bastante para resetar o driver de vídeo e levar o jogo junto. Solte o "
+                   "slider para pedir a escala cheia de novo."));
 
         int passes = g.passes.load();
-        const bool passDanger = g.inlineMode.load() && passes > 1 && sc > 1.0f;
-        if (Risk r(passDanger ? kDanger : kWarn, passes > 1);
-            ImGui::SliderInt(T("Pass Count", "Número de Passes"), &passes, 1,
+        if (Risk r(kDanger, g.inlineMode.load() && passes > 1 && sc > 1.0f);
+            ImGui::SliderInt(T("Passes", "Passes"), &passes, 1,
                              static_cast<int>(State::kMaxPasses), "%d", 0))
         {
             g.passes.store(passes);
             Log("menu: pass count %d", passes);
         }
-        Help("Runs the network over its own output one to three times. The final correction is "
-             "measured against the original input. Later passes default to zero Local Tone; "
-             "use Per pass or Taper to reduce Structure.\n\n"
-             "More passes can strengthen material changes, grain and halos. GPU cost grows roughly "
-             "with the pass count. Two and three inline passes were exercised on a saved NFS frame; "
-             "quality in motion still needs validation.",
-             "Roda a rede sobre a própria saída de uma a três vezes. A correção final é medida "
-             "contra a entrada original. Os passes seguintes usam Tom Local zero por padrão; "
-             "use Por passe ou Diminuir passes seguintes para reduzir Estrutura.\n\n"
-             "Mais passes podem intensificar mudanças de material, granulado e halos. O custo de GPU "
-             "cresce aproximadamente com a contagem. Dois e três passes inline foram executados "
-             "num quadro salvo do NFS; a qualidade em movimento ainda precisa de validação.");
-        Tag(kMeasured);
-        if (passes > 1)
-            Note(kWarn, T("Each extra pass costs another inference. Compare detail and frame time.",
-                          "Cada passe extra custa outra inferência. Compare detalhe e tempo de quadro."));
+        Help("Runs the network over its own output one to three times, and each run costs another "
+             "inference. It can strengthen material detail; it also compounds grain and halos, "
+             "because each pass is editing the last one's work.\n\n"
+             "1 is the default. Watch the skipped percentage at the top when you raise it: a "
+             "network that stops finishing inside a frame is the flicker.",
 
-        if (passes > 1)
+             "Roda a rede sobre a própria saída de uma a três vezes, e cada rodada custa outra "
+             "inferência. Pode reforçar detalhe de material; também acumula granulado e halo, "
+             "porque cada passe está editando o trabalho do anterior.\n\n"
+             "1 é o padrão. Olhe a porcentagem de pulados lá em cima ao subir: rede que para de "
+             "terminar dentro do quadro é o piscar.");
         {
-            bool taper = g.passTaper.load();
-            if (ImGui::Checkbox(T("Taper later passes", "Diminuir passes seguintes"), &taper))
+            if (Shown(kOptTaper) && passes > 1)
             {
-                g.passTaper.store(taper);
-                Log("menu: pass taper %s", taper ? "on" : "off");
-            }
-            Help("Halves Structure on each later pass: 1.0, 0.5, 0.25. Local Tone already defaults "
-                 "to zero after pass 1. Skin keeps its selected mode. Explicit per-pass overrides "
-                 "take precedence. This can reduce accumulated grain and outlines; compare in your scene.",
-                 "Reduz Estrutura pela metade a cada passe: 1.0, 0.5, 0.25. Tom Local já usa zero "
-                 "depois do primeiro passe. Pele mantém o modo escolhido. Ajustes explícitos por passe "
-                 "têm prioridade. Pode reduzir granulado e contornos acumulados; compare na sua cena.");
-            Tag(kTraced);
-        }
-
-        // Per-pass profiles, the reference fork's "Per pass" tree. A later pass is looking at a
-        // picture an earlier one already edited, so the same numbers again ask it to sharpen its
-        // own sharpening -- and that is the half of "3 passes looks deep fried" that the
-        // composition cannot reach from outside, because it happens inside the network.
-        if (passes > 1 && ImGui::TreeNode(T("Per pass", "Por passe")))
-        {
-            ImGui::TextUnformatted(T("What each run of the network is told, where it should "
-                                     "differ from the values below.",
-                                     "O que cada rodada da rede recebe, onde deve diferir dos "
-                                     "valores abaixo."));
-            for (int i = 0; i < passes; ++i)
-            {
-                char label[32];
-                snprintf(label, sizeof(label), T("Pass %d", "Passe %d"), i + 1);
-                if (!ImGui::TreeNode(label))
-                    continue;
-                ImGui::PushID(i);
-                bool own = g.passOverride[i].load();
-                if (ImGui::Checkbox(T("Own settings", "Ajustes próprios"), &own))
+                bool taper = g.passTaper.load();
+                if (ImGui::Checkbox(T("Taper passes", "Diminuir passes"), &taper))
                 {
-                    g.passOverride[i].store(own);
-                    Log("menu: pass %d profile %s", i + 1, own ? "on" : "off");
+                    g.passTaper.store(taper);
+                    Log("menu: pass taper %s", taper ? "on" : "off");
                 }
-                ImGui::BeginDisabled(!own);
-                float pv = g.passStructure[i].load();
-                if (ImGui::SliderFloat(T("Structure", "Estrutura"), &pv, 0.0f, 3.0f, "%.2f", 0))
-                    g.passStructure[i].store(pv);
-                pv = g.passTone[i].load();
-                if (ImGui::SliderFloat(T("Local Tone", "Tom Local"), &pv, 0.0f, 3.0f, "%.2f", 0))
-                    g.passTone[i].store(pv);
-                pv = g.passSkin[i].load();
-                if (ImGui::SliderFloat(T("Skin", "Pele"), &pv, 0.0f, 3.0f, "%.2f", 0))
-                    g.passSkin[i].store(pv);
-                ImGui::EndDisabled();
-                ImGui::PopID();
+                Help("Halves Structure on each later pass: 1.0, 0.5, 0.25. Local tone already "
+                     "drops to zero after pass 1. Per-pass overrides win over this. Can reduce "
+                     "accumulated grain and outlines; compare in your scene.",
+                     "Reduz Estrutura pela metade a cada passe: 1.0, 0.5, 0.25. Tom local já cai "
+                     "a zero depois do passe 1. Ajustes por passe têm prioridade sobre isto. Pode "
+                     "reduzir granulado e contorno acumulados; compare na sua cena.");
+            }
+
+            // Per-pass profiles, the reference fork's "Per pass" tree. A later pass is looking at
+            // a picture an earlier one already edited, so the same numbers again ask it to sharpen
+            // its own sharpening -- and that is the half of "3 passes looks deep fried" that the
+            // composition cannot reach from outside, because it happens inside the network.
+            if (Shown(kOptPerPass) && passes > 1 && ImGui::TreeNode(T("Per pass", "Por passe")))
+            {
+                for (int i = 0; i < passes; ++i)
+                {
+                    char label[32];
+                    snprintf(label, sizeof(label), T("Pass %d", "Passe %d"), i + 1);
+                    if (!ImGui::TreeNode(label))
+                        continue;
+                    ImGui::PushID(i);
+                    bool own = g.passOverride[i].load();
+                    if (ImGui::Checkbox(T("Own settings", "Ajustes próprios"), &own))
+                    {
+                        g.passOverride[i].store(own);
+                        Log("menu: pass %d profile %s", i + 1, own ? "on" : "off");
+                    }
+                    ImGui::BeginDisabled(!own);
+                    float pv = g.passStructure[i].load();
+                    if (ImGui::SliderFloat(T("Structure", "Estrutura"), &pv, 0.0f, 3.0f, "%.2f", 0))
+                        g.passStructure[i].store(pv);
+                    pv = g.passTone[i].load();
+                    if (ImGui::SliderFloat(T("Tone", "Tom"), &pv, 0.0f, 3.0f, "%.2f", 0))
+                        g.passTone[i].store(pv);
+                    pv = g.passSkin[i].load();
+                    if (ImGui::SliderFloat(T("Skin", "Pele"), &pv, -1.0f, 3.0f, "%.2f", 0))
+                        g.passSkin[i].store(pv);
+                    ImGui::EndDisabled();
+                    ImGui::PopID();
+                    ImGui::TreePop();
+                }
+                Note(kWarn, T("A pass without its own settings follows the values above. The "
+                              "useful shape is a taper, because each pass edits the last one's "
+                              "work. -1 Skin is the engine's automatic.",
+                              "Um passe sem ajustes próprios segue os valores acima. O formato "
+                              "útil é uma queda, porque cada passe edita o trabalho do anterior. "
+                              "Pele -1 é o automático do motor."));
                 ImGui::TreePop();
             }
-            Note(kWarn, T("A pass with its own settings off follows the Engine tab, exactly as "
-                          "before. The useful shape is a taper -- full on pass 1, less on 2, "
-                          "less again on 3 -- because each pass is editing the last one's work.",
-                          "Um passe com os ajustes próprios desligados segue a aba Motor, "
-                          "exatamente como antes. O formato útil é uma queda -- cheio no passe "
-                          "1, menos no 2, menos ainda no 3 -- porque cada passe está editando o "
-                          "trabalho do anterior."));
-            ImGui::TreePop();
-        }
 
-        bool bic = g.bicubic.load();
-        if (ImGui::Checkbox(T("Bicubic Residual Upsample", "Upsample Bicúbico do Resíduo"), &bic))
-        {
-            g.bicubic.store(bic);
-            Log("menu: residual upsample %s", bic ? "bicubic" : "bilinear");
-        }
-        Help("Below Resolution Scale 1.00 only the correction comes back up to full resolution. "
-             "Stretching it bilinearly is a blur, which throws away everything but the "
-             "low-frequency part -- colour and brightness -- and that alone was enough to make "
-             "the whole effect look like a colour filter. Catmull-Rom keeps the rest.\n\n"
-             "Turn it off if hard edges ring. No effect at all at Resolution Scale 1.00.",
+            if (Shown(kOptBicubic))
+            {
+            bool bic = g.bicubic.load();
+            if (ImGui::Checkbox(T("Bicubic upsample", "Upsample bicúbico"), &bic))
+            {
+                g.bicubic.store(bic);
+                Log("menu: residual upsample %s", bic ? "bicubic" : "bilinear");
+            }
+            Help("Below Scale 1.00 only the correction comes back up to full resolution. "
+                 "Stretching it bilinearly is a blur that throws away everything but colour and "
+                 "brightness, which alone made the whole effect look like a colour filter. "
+                 "Catmull-Rom keeps the rest. Turn it off if hard edges ring. Nothing at all at "
+                 "Scale 1.00.",
 
-             "Abaixo de Escala de Resolução 1.00, só a correção volta para a resolução cheia. "
-             "Esticar ela bilinearmente é um borrão, que joga fora tudo menos a parte de baixa "
-             "frequência -- cor e brilho -- e isso sozinho já bastava para o efeito inteiro "
-             "parecer um filtro de cor. Catmull-Rom mantém o resto.\n\n"
-             "Desligue se arestas duras ficarem com halo. Nenhum efeito em Escala 1.00.");
-        Tag(kMeasured);
+                 "Abaixo de Escala 1.00 só a correção volta para a resolução cheia. Esticar ela "
+                 "bilinearmente é um borrão que joga fora tudo menos cor e brilho, e isso sozinho "
+                 "já fazia o efeito inteiro parecer um filtro de cor. Catmull-Rom mantém o resto. "
+                 "Desligue se arestas duras ficarem com halo. Nada em Escala 1.00.");
+            }
+        }
     }
 
-    if (ImGui::CollapsingHeader(T("Guides", "Guias"), ImGuiTreeNodeFlags_DefaultOpen))
+    if (SectionHeader(kHueImage, T("Image", "Imagem"), true))
     {
-        // What is actually feeding the four Packet slots this frame. The most useful line in the
-        // overlay: the network's ceiling is set here, not by any slider above it.
-        ImGui::Text(T("Colour %s   Depth %s   Motion %s   Exposure not fed",
-                      "Cor %s   Profundidade %s   Movimento %s   Exposição não alimentada"),
-                    T("from the swapchain", "da swapchain"),
-                    g.guideDepth.external && g.gameDepthActive
-                        ? T("FROM THE EFFECT", "DO EFFECT")
-                    : g.gameDepthActive ? T("FROM THE GAME", "DO JOGO")
-                    : g.depthSnapshot   ? T("pre-clear snapshot", "snapshot antes do clear")
-                                        : T("none", "nenhuma"),
-                    g.guideMotion.external && g.gameMotionActive
-                        ? T("FROM THE EFFECT", "DO EFFECT")
-                    : g.gameMotionActive ? T("FROM THE GAME", "DO JOGO")
-                                         : T("estimated", "estimado"));
-        Help("The four inputs the engine takes. This line, not any slider above it, sets the "
-             "ceiling on what the network can do.\n\n"
-             "On PCSX2 it is colour only: a PS2 never computed per-pixel motion, and its depth "
-             "exists only between a bind and a clear. A modern engine on D3D11 hands over depth "
-             "and motion both, and they are taken when they are there.",
+        int enc = g.encoding.load();
+        if (ImGui::Combo(T("Encoding", "Codificação"), &enc, "sRGB\0Linear\0scRGB-nl\0"))
+        {
+            g.encoding.store(enc);
+            Log("menu: encoding %d", enc);
+        }
+        Help("sRGB for an ordinary SDR game, and that is nearly always the right answer. Linear "
+             "and scRGB-nl are experimental conversion paths for an HDR frame.\n\n"
+             "Restart the game after changing this: the runtime caches its input conversion when "
+             "it creates its staging resources.",
 
-             "As quatro entradas que o motor aceita. Esta linha, e não um slider acima dela, "
-             "define o teto do que a rede consegue fazer.\n\n"
-             "No PCSX2 é só cor: o PS2 nunca calculou movimento por pixel, e a profundidade dele "
-             "existe só entre um bind e um clear. Um motor moderno em D3D11 entrega profundidade "
-             "e movimento, e os dois são pegos quando estão lá.");
+             "sRGB para jogo SDR comum, e essa é quase sempre a resposta certa. Linear e scRGB-nl "
+             "são conversões experimentais, para quadro HDR.\n\n"
+             "Reinicie o jogo depois de mudar: o runtime guarda a conversão de entrada quando "
+             "cria os recursos dele.");
 
+        // Greyed out and meaningless on sRGB, which is the default, so it used to be a permanent
+        // dead slider for nearly every user. It only exists once the frame is linear.
+        if (g.encoding.load() != 0)
+        {
+            float white = g.diffuseWhite.load();
+            if (ImGui::SliderFloat(T("Diffuse white", "Branco difuso"), &white, 80.0f, 1000.0f,
+                                   "%.0f nits", 0))
+                g.diffuseWhite.store(white);
+            Help("How many nits a value of 1.0 means, which sets the scale of the linear image "
+                 "the network is handed. 100 for linear BT.709, 203 for scRGB-nl, 250 for PQ. A "
+                 "wrong scale here looks like the network over- or under-reacting everywhere at "
+                 "once.",
+
+                 "Quantos nits um valor de 1.0 significa, o que define a escala da imagem linear "
+                 "entregue à rede. 100 para linear BT.709, 203 para scRGB-nl, 250 para PQ. Escala "
+                 "errada aqui parece a rede reagindo demais ou de menos em tudo ao mesmo tempo.");
+        }
+
+        float v = g.intensity.load();
+        if (ImGui::SliderFloat(T("Intensity", "Intensidade"), &v, 0.0f, 2.0f, "%.2f", 0))
+            g.intensity.store(v);
+        Help("The weight of the whole effect. 0.00 is the same picture as switching the add-on "
+             "off, which makes it the fastest A/B there is; 1.00 is the network at full strength. "
+             "Above 1 it pushes past what the network returned, still bounded, so it cannot "
+             "rotate hue.\n\n"
+             "It is a mix, not a parameter of the network: it shows more or less of what the "
+             "network did, it never makes it do more.",
+
+             "O peso do efeito inteiro. 0.00 dá a mesma imagem que desligar o add-on, o que faz "
+             "dele o A/B mais rápido que existe; 1.00 é a rede em força cheia. Acima de 1 empurra "
+             "além do que a rede devolveu, ainda limitado, então não consegue rodar matiz.\n\n"
+             "É uma mistura, não um parâmetro da rede: mostra mais ou menos do que a rede fez, "
+             "nunca faz ela fazer mais.");
+
+        v = g.colourStrength.load();
+        if (ImGui::SliderFloat(T("Colour", "Cor"), &v, 0.0f, 1.0f, "%.2f", 0))
+            g.colourStrength.store(v);
+        Help("Whether the network's colour arrives with its light. This is the control for \"it "
+             "changed the colours\": at 0 every pixel keeps the game's own hue and only its "
+             "brightness carries what the network decided -- by construction, it cannot change "
+             "colour there. 1 brings the network's colour with it.",
+
+             "Se a cor da rede vem junto com a luz dela. É este o controle para \"mudou as "
+             "cores\": em 0 cada pixel fica com a matiz do próprio jogo e só o brilho carrega o "
+             "que a rede decidiu -- por construção, ali ele não consegue mudar cor. 1 traz a cor "
+             "da rede junto.");
+
+        v = g.structure.load();
+        if (ImGui::SliderFloat(T("Structure", "Estrutura"), &v, 0.0f, 3.0f, "%.2f", 0))
+            g.structure.store(v);
+        Help("How much detail the network is asked to put back, and the one control measured to "
+             "matter: at 0 the correction collapses 25x, which is the proof that what reaches the "
+             "screen comes from the network at all.\n\n"
+             "1.00 is the engine's own default. It saturates above that -- 1 to 3 is about 6% "
+             "more correction -- so 3 is the end of it, not the middle.",
+
+             "Quanto detalhe a rede é pedida para devolver, e o único controle medido como "
+             "relevante: em 0 a correção despenca 25x, o que é a prova de que o que chega na tela "
+             "vem da rede.\n\n"
+             "1.00 é o padrão do próprio motor. Satura acima disso -- de 1 para 3 é uns 6% mais "
+             "correção -- então 3 é o fim dele, não o meio.");
+
+        // -1 is the value the engine boots with and it is a MODE -- "derive it from local
+        // structure" -- not a strength, so it never belonged on the same axis as 0..3: every
+        // position between -1 and 0 was a number with no meaning. Worse, this add-on's own default
+        // was 1.0, so it wrote the automatic off on startup before anybody touched the slider --
+        // which the old tooltip described in the past tense while the code was still doing it.
+        bool skinAuto = g.skin.load() < 0.0f;
+        if (ImGui::Checkbox(T("Auto skin", "Pele automática"), &skinAuto))
+        {
+            g.skin.store(skinAuto ? -1.0f : 1.0f);
+            Log("menu: skin structure %s", skinAuto ? "automatic (-1)" : "manual (1.0)");
+        }
+        Help("Structure aimed at skin, through the engine's own character mask. Ticked is the "
+             "engine deriving it from Structure, which is what it boots doing.\n\n"
+             "Untick to set it by hand. Measured worth about 1.5% of the correction, which is "
+             "inside the +/-6% run-to-run noise on this bench -- so do not expect to see this one "
+             "move the picture.",
+
+             "Estrutura mirada na pele, através da máscara de personagem do próprio motor. "
+             "Marcada é o motor derivando da Estrutura, que é como ele liga.\n\n"
+             "Desmarque para ajustar na mão. Medido valendo uns 1,5% da correção, o que está "
+             "dentro do ruído de +/-6% entre execuções desta bancada -- então não espere ver este "
+             "mover a imagem.");
+        if (!skinAuto)
+        {
+            float sk = g.skin.load();
+            if (ImGui::SliderFloat(T("Skin", "Pele"), &sk, 0.0f, 3.0f, "%.2f", 0))
+                g.skin.store(std::max(sk, 0.0f));
+        }
+        // The composition's own bounds. Real controls with real effects, but their defaults are
+        // what seven games' worth of reference logs agree on, so the ordinary reason to touch one
+        // is to answer a question rather than to tune a picture -- which is why each waits for
+        // somebody to ask for it in the cascade at the bottom of the panel.
+        if (Shown(kOptCompose))
+        {
+            int comp = g.ratioGuard.load() > 0.0f ? 1 : 0;
+            const char *items[] = { T("Additive", "Aditiva"), T("Ratio", "Razão") };
+            if (ImGui::Combo(T("Compose", "Composição"), &comp, items, 2))
+            {
+                g.ratioGuard.store(comp == 1 ? 2.0f : 0.0f);
+                Log("menu: composition %s", comp == 1 ? "ratio" : "additive");
+            }
+            Help("How the network's answer is put back onto the frame. Ratio is the default and "
+                 "the only one that survives more than one pass.\n\n"
+                 "Additive adds the correction channel by channel and clips what leaves the "
+                 "range, and a clipped channel is a hue rotation -- which is why two passes read "
+                 "as more saturation rather than more detail. Ratio compares luminance as a "
+                 "bounded ratio and blends two finished pictures, which cannot move hue. Kept "
+                 "switchable so both can be seen in one session.",
+
+                 "Como a resposta da rede volta para o quadro. Razão é o padrão e a única que "
+                 "sobrevive a mais de um passe.\n\n"
+                 "Aditiva soma a correção canal por canal e corta o que sai da faixa, e canal "
+                 "cortado é rotação de matiz -- por isso dois passes aparecem como mais saturação "
+                 "em vez de mais detalhe. Razão compara luminância como razão limitada e mistura "
+                 "duas imagens inteiras, o que não consegue mover matiz. Deixado trocável para "
+                 "dar para ver os dois na mesma sessão.");
+
+        }
+        // Both live inside the same BeginDisabled, because neither means anything on the
+        // additive composition -- which is what the guard being 0 is.
+        ImGui::BeginDisabled(g.ratioGuard.load() <= 0.0f);
+        if (Shown(kOptGuard))
+        {
+            float gv = g.ratioGuard.load();
+            if (gv > 0.0f && ImGui::SliderFloat(T("Guard", "Trava"), &gv, 1.0f, 8.0f, "%.1fx", 0))
+                g.ratioGuard.store(gv);
+            Help("The most compose may move a pixel, as a multiple of what it already was, in "
+                 "both directions. One scalar taken from luminance and applied to the whole "
+                 "triple, so it bounds brightness without touching hue.\n\n"
+                 "2.0x is the reference fork's default and leaves detail intact -- 254 "
+                 "composition lines across seven games and nine machines all read 2.0x. Raise it "
+                 "only if bright areas look clipped.",
+
+                 "O máximo que a composição pode mover um pixel, como múltiplo do que ele já era, "
+                 "nos dois sentidos. Um escalar só, tirado da luminância e aplicado no trio "
+                 "inteiro, então limita brilho sem tocar em matiz.\n\n"
+                 "2.0x é o padrão do fork de referência e não come detalhe -- 254 linhas de "
+                 "composição em sete jogos e nove máquinas todas dizem 2.0x. Só aumente se áreas "
+                 "claras parecerem estouradas.");
+        }
+        if (Shown(kOptGuardPerPass))
+        {
+            bool track = g.guardTracksPasses.load();
+            if (ImGui::Checkbox(T("Guard per pass", "Trava por passe"), &track))
+            {
+                g.guardTracksPasses.store(track);
+                Log("menu: guard follows pass count %d", track ? 1 : 0);
+            }
+            Help("Adds one multiple of headroom per extra pass, so 2.0x becomes 3.0x at two "
+                 "passes. Off, because the reference fork does not actually do it: their ini says "
+                 "MaxRatio defaults to 2.0 and never mentions the count. A fixed bound is also "
+                 "the honest way to see what an extra pass is contributing.",
+
+                 "Acrescenta um múltiplo de folga por passe extra, então 2.0x vira 3.0x em dois "
+                 "passes. Desligado, porque o fork de referência não faz isso: a ini deles diz "
+                 "que MaxRatio tem padrão 2.0 e nunca cita a contagem. Um limite fixo também é o "
+                 "jeito honesto de ver o que um passe extra está somando.");
+        }
+        ImGui::EndDisabled();
+        if (Shown(kOptLocalTone))
+        {
+            float tv = g.tone.load();
+            if (ImGui::SliderFloat(T("Local tone", "Tom local"), &tv, 0.0f, 3.0f, "%.2f", 0))
+                g.tone.store(tv);
+            Help("LocalToneStrength, the first control slot of the network, and -- clamped to "
+                 "0..1 -- the scale of the Model's grade. RenoDX ships it at 1.\n\n"
+                 "An earlier sweep on God of War 2 measured it inert on the network side, byte "
+                 "for byte. That reading was taken with the fifth control slot at an off-menu "
+                 "value and has not been repeated since.",
+
+                 "LocalToneStrength, o primeiro slot de controle da rede e -- limitado a 0..1 -- "
+                 "a escala do grade do Modelo. O RenoDX manda 1.\n\n"
+                 "Uma varredura anterior no God of War 2 mediu isto inerte do lado da rede, byte "
+                 "a byte. Essa leitura foi feita com o quinto slot de controle num valor fora do "
+                 "menu e não foi repetida desde então.");
+        }
+    }
+
+
+    // Diagnostics, and the two controls that answer "my picture has artefacts". They live here
+    // rather than under Image because Residual x8 is how you see what either one did.
+    if (SectionHeader(kHueDebug, "Debug"))
+    {
+        int dbg = g.debugView.load();
+        if (ImGui::Combo(T("View", "Visão"), &dbg,
+                         T("Off\0Network input\0Network output\0Residual x8\0Motion\0Depth x500\0",
+                           "Desligado\0Entrada da rede\0Saída da rede\0Resíduo x8\0Movimento\0Profundidade x500\0")))
+        {
+            g.debugView.store(dbg);
+            Log("menu: debug view %d", dbg);
+        }
+        Help("Replaces the screen with one stage of the pipeline.\n\n"
+             "Residual x8 is the one that answers \"is it doing anything\": the correction alone "
+             "against mid grey. Flat grey means the network changed nothing; structure following "
+             "edges and texture means it is working.\n\n"
+             "Network input black means nothing downstream can work. Network output identical to "
+             "the input means the network handed back what it was given.",
+
+             "Substitui a tela por um estágio do pipeline.\n\n"
+             "Resíduo x8 é a que responde \"está fazendo alguma coisa\": a correção sozinha "
+             "contra cinza médio. Cinza chapado significa que a rede não mudou nada; estrutura "
+             "seguindo arestas e textura significa que está funcionando.\n\n"
+             "Entrada da rede preta significa que nada depois disso pode funcionar. Saída da rede "
+             "idêntica à entrada significa que a rede devolveu o que recebeu.");
+
+        float v = g.residualLimit.load();
+        if (ImGui::SliderFloat(T("Limit", "Limite"), &v, 0.0f, 0.50f,
+                               v <= 0.0f ? T("off", "desligado") : "%.3f", 0))
+            g.residualLimit.store(v);
+        Help("The control for blown blocks. Caps how far the correction may push one pixel, as a "
+             "fraction of white -- a measured run came back with a mean of 0.072 and a maximum of "
+             "4.16, and that maximum is a tile where the network extrapolated rather than saw.\n\n"
+             "0.25 by default, over three times the typical correction, so an ordinary pixel "
+             "never meets it. Lower it until the blocks go; too low flattens everything, which "
+             "Residual x8 shows immediately.",
+
+             "O controle dos blocos estourados. Limita o quanto a correção pode empurrar um "
+             "pixel, como fração do branco -- uma medição deu média 0,072 com máximo de 4,16, e "
+             "esse máximo é um bloco onde a rede extrapolou em vez de ver.\n\n"
+             "0,25 por padrão, mais de três vezes a correção típica, então pixel normal nunca "
+             "encosta. Baixe até os blocos sumirem; baixo demais achata tudo, o que o Resíduo x8 "
+             "mostra na hora.");
+
+        v = g.residualFade.load();
+        if (ImGui::SliderFloat(T("Edges", "Bordas"), &v, 0.0f, 0.25f,
+                               v <= 0.0f ? T("off", "desligado") : "%.3f", 0))
+            g.residualFade.store(v);
+        Help("The control for glitching corners. Rolls the correction off over a band at the "
+             "frame border, as a fraction of the frame: 0.02 is about 20 pixels at 1080p.\n\n"
+             "Border tiles have no neighbour on one side, so what the network returns there is "
+             "invented rather than seen. A corner sits inside two bands at once, which is why it "
+             "goes first. Off by default -- turn it on only if you see it.",
+
+             "O controle dos cantos com glitch. Vai apagando a correção numa faixa na borda do "
+             "quadro, como fração do quadro: 0,02 é uns 20 pixels em 1080p.\n\n"
+             "Bloco de borda não tem vizinho de um lado, então o que a rede devolve ali é "
+             "inventado, não visto. Um canto está dentro de duas faixas ao mesmo tempo, por isso "
+             "estraga primeiro. Desligado por padrão -- ligue só se você vir.");
+
+        if (Shown(kOptMeasure) && ImGui::Button(T("Measure residual", "Medir resíduo")))
+        {
+            g.measured = false;
+            g.measureTries = 0;
+            g.measureNow.store(true);
+            Log("menu: residual measurement re-armed");
+        }
+        if (Shown(kOptMeasure))
+            Help("Writes a 'measure, residual' line to the log: the size of the correction, and how "
+             "much of it follows the image's own detail. Change one control, press this, compare "
+             "the two numbers. It is the only way to tell a control that does something from one "
+             "that does not.",
+
+             "Escreve uma linha 'measure, residual' no log: o tamanho da correção, e quanto dela "
+             "segue o detalhe da própria imagem. Mude um controle, aperte isto, compare os dois "
+                 "números. É o único jeito de separar um controle que faz algo de um que não "
+                 "faz.");
+    }
+
+    if (SectionHeader(kHueExperimental, "Experimental"))
+    {
+        Note(kWarn, T("Work in progress -- not yet behaving the way they do on NVIDIA.",
+                      "Em desenvolvimento -- ainda não se comportam como na NVIDIA."));
+
+        // Live, and deliberately so: judging three looks by editing an ini and restarting is
+        // three restarts, and on a host whose swapchain is in a child window Ctrl+Home cannot
+        // reload the file at all. Here it is one click and the frame changes under you.
+        //
+        // Both namings, because both are in circulation for the same three values of the same
+        // NGX field: RenoDX calls them Model A/B/C, Deep Fried Chicken calls them Default,
+        // Natural and Cinematic. A guide written against one and an overlay showing the other
+        // is a person changing the wrong control.
+        int style = g.style.load();
+        if (ImGui::Combo(T("Model", "Modelo"), &style,
+                         T("A - Default\0B - Natural\0C - Cinematic\0",
+                           "A - Default\0B - Natural\0C - Cinematic\0")))
+        {
+            g.style.store(std::clamp(style, 0, 2));
+            Log("menu: style %d (grade on the composed frame; this runtime has no style input)",
+                style);
+        }
+        Help("The Neural Rendering Model -- the same three DLSSNR.Style selects on NVIDIA, but "
+             "not yet doing the same thing here, which is why it sits under Experimental.\n\n"
+             "On NVIDIA a model is two things: an input of the network, which is what moves "
+             "lighting and detail, and a grade on the finished frame. This runtime has no slot "
+             "for the first that anything here can reach, so a model is its grade only: B darkens "
+             "slightly, flattens contrast and removes a tenth of the saturation; C removes 15 "
+             "percent of the saturation. A colour change rather than a detail change, and a "
+             "smaller difference than on NVIDIA.\n\n"
+             "Two names for each: RenoDX writes Model A, B and C; Deep Fried Chicken writes "
+             "Default, Natural and Cinematic, in that order.",
+
+             "O Modelo de Renderização Neural -- os mesmos três que o DLSSNR.Style seleciona na "
+             "NVIDIA, mas ainda não fazendo a mesma coisa aqui, e é por isso que está em "
+             "Experimental.\n\n"
+             "Na NVIDIA um modelo é duas coisas: uma entrada da rede, que é o que move iluminação "
+             "e detalhe, e um grade no quadro pronto. Este runtime não tem slot para a primeira "
+             "que alguma coisa daqui alcance, então um modelo é só o grade dele: B escurece de "
+             "leve, achata o contraste e tira um décimo da saturação; C tira 15 por cento da "
+             "saturação. Mudança de cor em vez de mudança de detalhe, e diferença menor que na "
+             "NVIDIA.\n\n"
+             "Dois nomes para cada um: o RenoDX escreve Model A, B e C; o Deep Fried Chicken "
+             "escreve Default, Natural e Cinematic, nessa ordem.");
+
+        if (style != 0)
+        {
+            float ss = g.styleStrength.load();
+            if (ImGui::SliderFloat(T("Strength", "Força"), &ss, 0.0f, 1.0f, "%.2f"))
+                g.styleStrength.store(std::clamp(ss, 0.0f, 1.0f));
+            Help("Scales the model's grade towards neutral. 1 is the full grade, 0 removes the "
+                 "colour change entirely. Ours -- NVIDIA has no separate knob for this.",
+                 "Escalona o grade do modelo em direção ao neutro. 1 é o grade inteiro, 0 tira a "
+                 "mudança de cor por completo. É nosso -- a NVIDIA não tem controle separado para "
+                 "isto.");
+        }
+
+        bool raw = g.networkOutput.load();
+        if (ImGui::Checkbox(T("Network output", "Saída da rede"), &raw))
+        {
+            g.networkOutput.store(raw);
+            Log("menu: network output mode %d", raw ? 1 : 0);
+        }
+        Help("Shows the network's answer directly instead of composing it onto the game's frame. "
+             "Preferred by eye in one game -- GTA V Enhanced, where the composition trailed "
+             "behind fast movement -- and never measured against the composition anywhere else.\n\n"
+             "It turns off every bound on the correction: nothing limits how far a pixel may "
+             "move, and hue is whatever the network returned. That is the trade.",
+
+             "Mostra a resposta da rede direto, em vez de compô-la sobre o quadro do jogo. "
+             "Preferido a olho em um jogo -- GTA V Enhanced, onde a composição deixava rastro "
+             "atrás de movimento rápido -- e nunca medido contra a composição em nenhum outro "
+             "lugar.\n\n"
+             "Desliga todo limite sobre a correção: nada limita o quanto um pixel pode andar, e o "
+             "matiz é o que a rede devolveu. Essa é a troca.");
+    }
+
+    // The two sections that only exist under Advanced. Everything in them is automatic, or ships
+    // at the engine's own default, or is a question waiting for a measurement -- which is exactly
+    // why they are not on screen by default, and exactly why they are still here. Status shows
+    // what the guides ended up being; this is where they can be overruled.
+    if (GroupShown(kGrpGuides) && SectionHeader(kHueGuides, T("Guides", "Guias")))
+    {
         bool feed = g.useFeedEffect.load();
-        if (ImGui::Checkbox(T("Take the guides from DLSS5_Neural_Feed.fx",
-                              "Pegar as guias do DLSS5_Neural_Feed.fx"),
-                            &feed))
+        if (ImGui::Checkbox(T("Use Feed.fx", "Usar o Feed.fx"), &feed))
         {
             g.useFeedEffect.store(feed);
             g.feedSignature = -1;
@@ -6562,81 +7176,35 @@ void OnOverlay(effect_runtime *runtime)
         }
         Help("The companion effect in shaders/. It hands over a real optical-flow field from a "
              "motion-vector shader -- iMMERSE Launchpad, VORT, LumeniteFX -- and ReShade's own "
-             "depth buffer.\n\n"
-             "This matters most where the add-on has nothing: on an emulator the PS2 computed no "
-             "motion at all, so the only alternative is this add-on's own estimator, which is two "
-             "levels of block matching with a search radius of four because it has to share the "
-             "frame with the network. Launchpad runs eight levels and filters between each one.\n\n"
-             "A game that renders its own velocity buffer still wins over both, and that is what "
-             "the line above reports. Install the effect, enable the provider's technique above "
-             "it, and this line changes on its own.",
+             "depth buffer. That beats this add-on's own estimator, which is two levels of block "
+             "matching with a search radius of four because it shares the frame with the network; "
+             "Launchpad runs eight levels. A game that renders its own velocity buffer still "
+             "beats both.",
 
              "O effect companheiro, em shaders/. Ele entrega um campo de fluxo óptico de verdade, "
              "vindo de um shader de vetores de movimento -- iMMERSE Launchpad, VORT, LumeniteFX -- "
-             "e o depth buffer do próprio ReShade.\n\n"
-             "Isso pesa mais onde o add-on não tem nada: num emulador o PS2 nunca calculou "
-             "movimento, então a única alternativa é o estimador do próprio add-on, que são dois "
-             "níveis de block matching com raio de busca quatro porque ele divide o frame com a "
-             "rede. O Launchpad roda oito níveis e filtra entre cada um.\n\n"
-             "Um jogo que desenha o próprio velocity buffer ainda ganha dos dois, e é isso que a "
-             "linha acima informa. Instale o effect, ligue a técnica do provider acima dele, e "
-             "essa linha muda sozinha.");
+             "e o depth buffer do próprio ReShade. Isso ganha do estimador deste add-on, que são "
+             "dois níveis de block matching com raio quatro porque divide o frame com a rede; o "
+             "Launchpad roda oito. Um jogo que desenha o próprio velocity buffer ainda ganha dos "
+             "dois.");
         if (g.feedStatus[0] != '\0')
-            ImGui::TextDisabled("%s", g.feedStatus);
-
-        // A buffer can be crossed, bound and fed and still be a cleared constant, which looks
-        // identical from the outside and is worth nothing to the network.
-        if (g.probeStillPct.load() >= 0)
-        {
-            const float lo = g.probeDepthMin.load(), hi = g.probeDepthMax.load();
-            const bool depthReal = (hi - lo) > 1e-6f;
-            const int still = g.probeStillPct.load();
-            ImGui::Text(T("Measured  depth %.4f..%.4f   motion %d%% still, mean %.2f px, max %.2f px",
-                          "Medido  profundidade %.4f..%.4f   movimento %d%% parado, média %.2f px, "
-                          "máx %.2f px"),
-                        static_cast<double>(lo), static_cast<double>(hi), still,
-                        static_cast<double>(g.probeMotionMean.load()),
-                        static_cast<double>(g.probeMotionMax.load()));
-            Help("What the guides actually contain, not just whether they were handed over.\n\n"
-                 "Read it while playing, not on a menu: a 2D screen genuinely has no depth and "
-                 "nothing on it moves. In a real scene depth should have a spread and motion a "
-                 "non-zero mean. If it stays flat while you drive, the guide picked the wrong "
-                 "buffer and the network is still working from colour alone.",
-
-                 "O que os guias realmente contêm, não só se foram entregues.\n\n"
-                 "Leia jogando, não no menu: uma tela 2D genuinamente não tem profundidade e "
-                 "nada nela se move. Numa cena de verdade a profundidade tem que ter espalhamento "
-                 "e o movimento uma média diferente de zero. Se ficar chapado enquanto você "
-                 "dirige, o guia pegou o buffer errado e a rede continua trabalhando só com cor.");
-            if (!depthReal || still >= 100)
-                Note(kWarn, T("A guide is carrying nothing. Expected on a menu -- check it while "
-                              "driving.",
-                              "Um guia não está carregando nada. Esperado no menu -- confira "
-                              "dirigindo."));
-        }
-        else if (g.gameDepthActive || g.gameMotionActive)
-            ImGui::TextDisabled(T("Measuring the guides...", "Medindo os guias..."));
-
-        if (!g.gameDepthActive && !g.gameMotionActive)
-            Note(kWarn, T("The network is running on colour alone.",
-                          "A rede está rodando só com cor."));
+            ImGui::TextWrapped("%s", g.feedStatus);
 
         bool guides = g.useGameGuides.load();
-        if (ImGui::Checkbox(T("Read Guides From The Game", "Ler Guias do Jogo"), &guides))
+        if (ImGui::Checkbox(T("Read from the game", "Ler do jogo"), &guides))
         {
             g.useGameGuides.store(guides);
             Log("menu: game guides %s", guides ? "on" : "off");
         }
         Help("D3D11 only. Watches which depth-stencil and which two-channel float target the game "
-             "binds most often, copies each once a frame and carries them over the bridge to the "
-             "network's device.\n\n"
-             "Turn it off to fall back to estimated motion and no depth.",
+             "binds most often, copies each once a frame and carries them to the network's "
+             "device. Turn it off to fall back to estimated motion and no depth -- which is what "
+             "you want when the detector picked the wrong buffer.",
 
              "Só D3D11. Observa qual depth-stencil e qual render target float de dois canais o "
-             "jogo mais liga, copia cada um uma vez por quadro e leva pela ponte até o device da "
-             "rede.\n\n"
-             "Desligue para voltar a movimento estimado e nenhuma profundidade.");
-        Tag(kMeasured);
+             "jogo mais liga, copia cada um uma vez por quadro e leva até o device da rede. "
+             "Desligue para voltar a movimento estimado e nenhuma profundidade -- que é o que "
+             "você quer quando o detector pegou o buffer errado.");
 
         bool depth = g.useDepth.load();
         if (ImGui::Checkbox(T("Depth", "Profundidade"), &depth))
@@ -6644,54 +7212,57 @@ void OnOverlay(effect_runtime *runtime)
             g.useDepth.store(depth);
             Log("menu: depth %s", depth ? "on" : "off");
         }
-        Help("Hands the depth buffer to the engine and sets the flag that says it is valid.\n\n"
-             "Depth is what stops the network guessing at geometry. It mainly buys stability and "
-             "disocclusion, not sharper texture -- do not expect this one to transform the image.",
-
-             "Entrega o buffer de profundidade ao motor e liga a flag que diz que ele é válido.\n\n"
-             "Profundidade é o que faz a rede parar de chutar geometria. Compra principalmente "
-             "estabilidade e desoclusão, não textura mais afiada -- não espere que este "
-             "transforme a imagem.");
-        Tag(kTraced);
+        Help("Hands the depth buffer to the engine and sets the flag that says it is valid. Depth "
+             "mainly buys stability and disocclusion, not sharper texture.",
+             "Entrega o buffer de profundidade ao motor e liga a flag que diz que ele é válido. "
+             "Profundidade compra estabilidade e desoclusão, não textura mais afiada.");
 
         if (depth)
         {
+            bool inv = g.depthInverted.load() != 0;
+            if (ImGui::Checkbox(T("Depth inverted", "Profundidade invertida"), &inv))
+            {
+                g.depthInverted.store(inv ? 1 : 0);
+                g.historyValid.store(0);
+                Log("menu: depth inverted %d", inv ? 1 : 0);
+            }
+            Help("Which way round the buffer grows. 1 is the runtime's own default. RenoDX sends "
+                 "0, measured on ETS2 with a dummy depth, so that 0 says nothing about any real "
+                 "game. Nothing here has told the two apart on a real buffer yet -- try both on a "
+                 "scene with depth and watch the residual.",
+
+                 "De que lado o buffer cresce. 1 é o padrão do próprio runtime. O RenoDX manda 0, "
+                 "medido no ETS2 com profundidade falsa, então esse 0 não diz nada sobre jogo "
+                 "nenhum. Nada aqui ainda separou os dois num buffer real -- teste os dois numa "
+                 "cena com profundidade e olhe o resíduo.");
+
             bool dn = g.depthNormalise.load();
-            if (Risk r(kWarn, dn); ImGui::Checkbox(T("Stretch depth to fill 0..1",
-                                                     "Esticar profundidade para 0..1"), &dn))
+            if (Risk r(kWarn, dn);
+                ImGui::Checkbox(T("Stretch depth", "Esticar profundidade"), &dn))
             {
                 g.depthNormalise.store(dn);
                 Log("menu: depth normalise %s", dn ? "on" : "off");
             }
-            Help("Multiplies the depth guide by 1/max, measured by the guide probe, so a buffer "
-                 "that occupies a fraction of 0..1 fills the range instead.\n\n"
-                 "It is a knob and not a fix, and on this bench it reads as the wrong operation: "
-                 "PCSX2's depth has its bulk already sitting at the top of its own tiny range "
-                 "(probe: mean 0.00197 against max 0.00200), so scaling by 1/max lands almost "
-                 "every pixel at 0.99 rather than spreading anything out. The geometry still "
-                 "occupies about one percent of the range, only now at the ceiling -- which under "
-                 "the engine's inverted convention reads as 'the whole scene is against the "
-                 "camera'.\n\n"
+            Help("Multiplies the depth guide by 1/max so a buffer occupying a fraction of 0..1 "
+                 "fills the range instead. It shipped ON and it is off now, because on this bench "
+                 "it reads as the wrong operation: PCSX2's depth already has its bulk at the top "
+                 "of its own tiny range (probe: mean 0.00197 against max 0.00200), so scaling by "
+                 "1/max lands nearly every pixel at 0.99 rather than spreading anything out -- "
+                 "which under the engine's inverted convention reads as \"the whole scene is "
+                 "against the camera\".\n\n"
                  "Compare the 'measure, residual' line with it on and off before trusting it.",
 
-                 "Multiplica a guia de profundidade por 1/max, medido pelo probe, para que um "
-                 "buffer que ocupa uma fracao de 0..1 passe a preencher a faixa.\n\n"
-                 "E um botao, nao uma correcao, e nesta bancada ele parece ser a operacao errada: "
-                 "a profundidade do PCSX2 ja tem o grosso dos pixels no topo da propria faixa "
-                 "minuscula (probe: media 0,00197 contra maximo 0,00200), entao escalar por 1/max "
-                 "joga quase todo pixel em 0,99 em vez de espalhar alguma coisa. A geometria "
-                 "continua ocupando cerca de um por cento da faixa, so que agora no teto -- o que "
-                 "sob a convencao invertida do motor le como 'a cena inteira esta colada na "
-                 "camera'.\n\n"
-                 "Compare a linha 'measure, residual' com ele ligado e desligado antes de "
-                 "confiar nele.");
-            Tag(kUnknown);
+                 "Multiplica a guia de profundidade por 1/max, para que um buffer que ocupa uma "
+                 "fração de 0..1 passe a preencher a faixa. Vinha LIGADA e agora vem desligada, "
+                 "porque nesta bancada parece ser a operação errada: a profundidade do PCSX2 já "
+                 "tem o grosso dos pixels no topo da própria faixa minúscula (probe: média "
+                 "0,00197 contra máximo 0,00200), então escalar por 1/max joga quase todo pixel "
+                 "em 0,99 em vez de espalhar -- o que sob a convenção invertida do motor lê como "
+                 "\"a cena inteira está colada na câmera\".\n\n"
+                 "Compare a linha 'measure, residual' com ela ligada e desligada antes de "
+                 "confiar.");
         }
 
-        // Depth Inverted used to be a checkbox here. It is gone: 97b10 is pinned to the
-        // engine's own default of 1 in the record path. No run on either target ever
-        // produced a reading that told the two settings apart, so the only thing the switch
-        // could do was be set wrong.
         bool hist = g.useHistory.load();
         if (Risk r(kWarn, hist); ImGui::Checkbox(T("History", "Histórico"), &hist))
         {
@@ -6699,29 +7270,20 @@ void OnOverlay(effect_runtime *runtime)
             g.historyValid.store(0);
             Log("menu: history %s", hist ? "on" : "off");
         }
-        Help("Hands the engine last frame's output to carry forward.\n\n"
-             "Motion vectors say where a pixel was. Without history there is nothing for them to "
-             "point at, so this is the switch that turns motion from a number the engine reports "
-             "into one it can use.\n\n"
+        Help("Hands the engine last frame's output to carry forward. Motion vectors say where a "
+             "pixel was; without history there is nothing for them to point at.\n\n"
              "Experimental: it writes a pointer into the runtime at a fixed offset, and a wrong "
              "one there hangs the game rather than failing. If the picture smears or the game "
              "stops responding, this is the first thing to turn off.",
 
-             "Entrega ao motor a saída do quadro anterior para carregar adiante.\n\n"
-             "Vetores de movimento dizem onde um pixel estava. Sem histórico não há para onde "
-             "eles apontarem, então esta é a chave que transforma movimento de um número que o "
-             "motor reporta em um que ele consegue usar.\n\n"
+             "Entrega ao motor a saída do quadro anterior. Vetores de movimento dizem onde um "
+             "pixel estava; sem histórico não há para onde eles apontarem.\n\n"
              "Experimental: escreve um ponteiro no runtime num offset fixo, e um ponteiro errado "
              "ali congela o jogo em vez de falhar. Se a imagem borrar ou o jogo parar de "
              "responder, esta é a primeira coisa a desligar.");
-        Tag(kTraced);
-        if (hist)
-            Note(kWarn, T("Experimental -- first thing to turn off if the game hangs or smears.",
-                          "Experimental -- primeira coisa a desligar se o jogo congelar ou "
-                          "borrar."));
 
         bool mv = g.useMotion.load();
-        if (ImGui::Checkbox(T("Motion Vectors", "Vetores de Movimento"), &mv))
+        if (ImGui::Checkbox(T("Motion", "Movimento"), &mv))
         {
             g.useMotion.store(mv);
             Log("menu: motion %s", mv ? "on" : "off");
@@ -6731,573 +7293,313 @@ void OnOverlay(effect_runtime *runtime)
                  "Lidos do próprio buffer de velocidade do jogo -- a coisa real, por pixel.");
         else
             Help("Estimated by comparing consecutive frames, because this target has no velocity "
-                 "buffer to read. It is wrong wherever pixels move without the geometry moving: "
-                 "reflections, fire, moving shadows, and anything appearing from behind something "
+                 "buffer. It is wrong wherever pixels move without the geometry moving: "
+                 "reflections, fire, moving shadows, anything appearing from behind something "
                  "else. The NVIDIA route does the same thing here.",
 
                  "Estimados comparando quadros consecutivos, porque este alvo não tem buffer de "
-                 "velocidade para ler. É errado onde pixels se movem sem a geometria se mover: "
-                 "reflexos, fogo, sombras em movimento, e qualquer coisa que aparece de trás de "
-                 "outra. A rota da NVIDIA faz o mesmo aqui.");
-        Tag(kMeasured);
+                 "velocidade. É errado onde pixels se movem sem a geometria se mover: reflexos, "
+                 "fogo, sombras em movimento, e qualquer coisa que aparece de trás de outra. A "
+                 "rota da NVIDIA faz o mesmo aqui.");
 
         if (mv)
         {
             float v = g.motionScale.load();
-            if (ImGui::SliderFloat(T("Motion Scale", "Escala do Movimento"), &v, -2.0f, 2.0f,
-                                   "%.2f", 0))
+            if (ImGui::SliderFloat(T("Motion scale", "Escala do mov."), &v, -2.0f, 2.0f, "%.2f", 0))
                 g.motionScale.store(v);
-            Help("How much motion the network is told there is. It multiplies the field on its "
-                 "way into the engine, whichever field that is -- the game's own velocity buffer "
-                 "or the estimated one. 0.00 says nothing moved, 1.00 is as measured, -1.00 "
-                 "flips the direction, 0.50 suits a buffer stored in NDC.\n\n"
-                 "It used to apply to the game's vectors only, and it was hidden on every target "
-                 "without them -- so the estimated field, the one that is a guess and the one "
-                 "most in need of turning down, had no control at all. Both go through it now.\n\n"
-                 "Set it by eye: put Debug View on 'Motion vectors' and pan the camera. The field "
-                 "should follow the camera steadily. Shimmer means it is too high -- turn it down "
-                 "rather than turning motion off, which is the blunt version of the same thing.",
+            Help("Multiplies the motion field on its way into the engine, whichever field that "
+                 "is. 0 says nothing moved, 1 is as measured, -1 flips the direction, 0.5 suits a "
+                 "buffer stored in NDC.\n\n"
+                 "Set it by eye: put the Debug view on Motion and pan the camera. The field "
+                 "should follow steadily. Shimmer means it is too high -- turn it down rather "
+                 "than turning motion off, which is the blunt version of the same thing.",
 
-                 "Quanto movimento a rede é informada que existe. Multiplica o campo no caminho "
-                 "para o motor, seja qual for o campo -- o buffer de velocidade do próprio jogo "
-                 "ou o estimado. 0.00 diz que nada se moveu, 1.00 é como foi medido, -1.00 "
-                 "inverte a direção, 0.50 serve para um buffer guardado em NDC.\n\n"
-                 "Antes valia só para os vetores do jogo, e ficava escondido em todo alvo sem "
-                 "eles -- então o campo estimado, que é um chute e é o que mais precisa ser "
-                 "baixado, não tinha controle nenhum. Agora os dois passam por ele.\n\n"
-                 "Ajuste no olho: ponha a Visão de Debug em 'Vetores de movimento' e gire a "
-                 "câmera. O campo tem que acompanhar a câmera, firme. Cintilar quer dizer alto "
-                 "demais -- baixe, em vez de desligar o movimento, que é a versão bruta da mesma "
-                 "coisa.");
-            Tag(kTraced);
+                 "Multiplica o campo de movimento no caminho para o motor, seja qual for o campo. "
+                 "0 diz que nada se moveu, 1 é como foi medido, -1 inverte a direção, 0,5 serve "
+                 "para um buffer em NDC.\n\n"
+                 "Ajuste no olho: ponha a Visão de debug em Movimento e gire a câmera. O campo "
+                 "tem que acompanhar, firme. Cintilar quer dizer alto demais -- baixe, em vez de "
+                 "desligar o movimento, que é a versão bruta da mesma coisa.");
         }
         if (mv && !g.gameMotionActive)
         {
             float v = g.flowGate.load();
-            if (ImGui::SliderFloat(T("Flow Contrast Gate", "Portão de Contraste do Fluxo"), &v,
-                                   0.002f, 0.10f, "%.3f", 0))
+            if (ImGui::SliderFloat(T("Flow gate", "Portão do fluxo"), &v, 0.002f, 0.10f, "%.3f", 0))
                 g.flowGate.store(v);
-            Help("The first of two filters that decide which pixels are allowed to move.\n\n"
-                 "Before searching anything, the estimator measures the brightest and darkest "
-                 "luma in the 3x3 block around the pixel. If the difference is below this number "
-                 "the pixel is declared still and no search happens at all.\n\n"
-                 "Why: a flat block -- clear sky, a painted wall -- matches equally well at every "
-                 "offset, so the winner is simply whichever offset the loop tried first. That is "
-                 "the aperture problem, and it is why widening the search made the field wilder "
-                 "instead of better. There is nothing to track, so do not pretend to track it.\n\n"
-                 "RAISE it and more of the screen is frozen: cleaner, but the network is told "
-                 "nothing moved. 0.020 froze 99% of a dark God of War 2 scene. LOWER it and "
-                 "flatter blocks get tracked: more coverage, noisier vectors.\n\n"
-                 "The number is a luma difference on a 0..1 scale, so 0.020 means 2% contrast.\n\n"
-                 "Only used when motion is estimated. With a game that hands over real velocity "
-                 "vectors this does nothing, which is why it is hidden then.",
+            Help("The first of two filters deciding which pixels may move, applied BEFORE the "
+                 "search. If the brightest and darkest luma in the 3x3 block differ by less than "
+                 "this, the pixel is declared still and no search happens.\n\n"
+                 "A flat block -- clear sky, a painted wall -- matches equally well at every "
+                 "offset, so the winner is whichever the loop tried first. That is the aperture "
+                 "problem, and it is why widening the search made the field wilder instead of "
+                 "better.\n\n"
+                 "Raise it and more of the screen is frozen: cleaner, but the network is told "
+                 "nothing moved. 0.020 froze 99% of a dark God of War 2 scene. The number is a "
+                 "luma difference on 0..1, so 0.020 is 2% contrast. Estimated motion only.",
 
-                 "O primeiro de dois filtros que decidem quais pixels têm permissão de se mover.\n\n"
-                 "Antes de procurar qualquer coisa, o estimador mede a luma mais clara e a mais "
-                 "escura no bloco 3x3 em volta do pixel. Se a diferença for menor que este "
-                 "número, o pixel é declarado parado e nenhuma busca acontece.\n\n"
-                 "Por quê: um bloco chapado -- céu limpo, uma parede pintada -- casa igualmente "
-                 "bem em todo deslocamento, então o vencedor é simplesmente o primeiro que o laço "
-                 "testou. Isso é o problema da abertura, e é por isso que alargar a busca deixou "
-                 "o campo mais doido em vez de melhor. Não há o que rastrear, então não finja que "
-                 "há.\n\n"
-                 "AUMENTE e mais da tela fica congelada: mais limpo, mas a rede é informada de "
-                 "que nada se moveu. 0,020 congelou 99% de uma cena escura do God of War 2. "
-                 "DIMINUA e blocos mais chapados passam a ser rastreados: mais cobertura, vetores "
-                 "mais ruidosos.\n\n"
-                 "O número é uma diferença de luma na escala 0..1, então 0,020 quer dizer 2% de "
-                 "contraste.\n\n"
-                 "Só é usado quando o movimento é estimado. Num jogo que entrega vetores de "
-                 "velocidade de verdade isto não faz nada, por isso fica escondido.");
-            Tag(kMeasured);
+                 "O primeiro de dois filtros que decidem quais pixels podem se mover, aplicado "
+                 "ANTES da busca. Se a luma mais clara e a mais escura do bloco 3x3 diferem menos "
+                 "que isto, o pixel é declarado parado e nenhuma busca acontece.\n\n"
+                 "Um bloco chapado -- céu limpo, parede pintada -- casa igualmente bem em todo "
+                 "deslocamento, então o vencedor é o primeiro que o laço testou. É o problema da "
+                 "abertura, e é por isso que alargar a busca deixou o campo mais doido em vez de "
+                 "melhor.\n\n"
+                 "Aumente e mais da tela fica congelada: mais limpo, mas a rede é informada de "
+                 "que nada se moveu. 0,020 congelou 99% de uma cena escura do God of War 2. O "
+                 "número é diferença de luma em 0..1, então 0,020 é 2% de contraste. Só vale para "
+                 "movimento estimado.");
+
             v = g.flowRatio.load();
-            if (ImGui::SliderFloat(T("Flow Accept Ratio", "Razão de Aceite do Fluxo"), &v, 0.50f,
-                                   1.00f, "%.2f", 0))
+            if (ImGui::SliderFloat(T("Flow accept", "Aceite do fluxo"), &v, 0.50f, 1.00f, "%.2f", 0))
                 g.flowRatio.store(v);
-            Help("The second filter, applied after the search instead of before it.\n\n"
-                 "The estimator compares the 3x3 block against 81 candidate offsets in the "
-                 "previous frame and keeps the one with the lowest error. It also records the "
-                 "error of not moving at all. The winner is only believed if its error is below "
-                 "the standing-still error times this number.\n\n"
-                 "So the slider runs backwards from what you would guess: 1.00 is the most "
-                 "PERMISSIVE -- any winner at least as good as standing still is accepted -- and "
-                 "0.50 is the strictest, demanding a match that explains the block with half the "
-                 "error of not moving. Lower means more of the screen is forced still.\n\n"
-                 "Gate rejects a block before searching, on the grounds that there is nothing in "
-                 "it. Ratio rejects a result after searching, on the grounds that the answer is "
-                 "not convincing. Between them they are what stop the field being noise.\n\n"
-                 "The flow probe at frame 300 prints what a pair actually did: look for the "
-                 "percentage of blocks reported still.\n\n"
-                 "Only used when motion is estimated.",
+            Help("The second filter, applied AFTER the search. The estimator keeps the best of 81 "
+                 "candidate offsets and also records the error of not moving at all; the winner "
+                 "is believed only if its error is below the standing-still error times this.\n\n"
+                 "So it runs backwards from what you would guess: 1.00 is the most PERMISSIVE and "
+                 "0.50 is the strictest. Lower means more of the screen is forced still.\n\n"
+                 "Gate rejects a block before searching, on the grounds there is nothing in it. "
+                 "Accept rejects a result after searching, on the grounds the answer is not "
+                 "convincing. Estimated motion only.",
 
-                 "O segundo filtro, aplicado depois da busca em vez de antes.\n\n"
-                 "O estimador compara o bloco 3x3 contra 81 deslocamentos candidatos no quadro "
-                 "anterior e fica com o de menor erro. Ele também guarda o erro de não se mover. "
-                 "O vencedor só é aceito se o erro dele for menor que o erro de ficar parado "
-                 "vezes este número.\n\n"
-                 "Ou seja, o slider anda ao contrário do que se imagina: 1.00 é o mais "
-                 "PERMISSIVO -- qualquer vencedor tão bom quanto ficar parado é aceito -- e 0.50 "
-                 "é o mais rígido, exigindo um casamento que explique o bloco com metade do erro "
-                 "de não se mover. Mais baixo significa mais tela forçada a parada.\n\n"
+                 "O segundo filtro, aplicado DEPOIS da busca. O estimador fica com o melhor de 81 "
+                 "deslocamentos candidatos e também guarda o erro de não se mover; o vencedor só "
+                 "é aceito se o erro dele for menor que o erro de ficar parado vezes isto.\n\n"
+                 "Ou seja, anda ao contrário do que se imagina: 1.00 é o mais PERMISSIVO e 0,50 é "
+                 "o mais rígido. Mais baixo significa mais tela forçada a parada.\n\n"
                  "O Portão rejeita um bloco antes de buscar, com o argumento de que não há nada "
-                 "nele. A Razão rejeita um resultado depois de buscar, com o argumento de que a "
-                 "resposta não convence. Juntos, são o que impede o campo de virar ruído.\n\n"
-                 "A sonda de fluxo no quadro 300 imprime o que um par realmente fez: procure a "
-                 "porcentagem de blocos reportados parados.\n\n"
-                 "Só é usado quando o movimento é estimado.");
-            Tag(kMeasured);
+                 "nele. O Aceite rejeita um resultado depois de buscar, com o argumento de que a "
+                 "resposta não convence. Só vale para movimento estimado.");
         }
     }
 
-    if (ImGui::CollapsingHeader(T("Debug", "Depuração")))
+    if (GroupShown(kGrpEngine) && SectionHeader(kHueEngine, T("Engine", "Motor")))
     {
-        int dbg = g.debugView.load();
-        if (ImGui::Combo(T("Debug View", "Visão de Debug"), &dbg,
-                         T("Off\0Network input\0Network output\0Residual x8\0Motion vectors\0Depth x500\0",
-                           "Desligado\0Entrada da rede\0Saída da rede\0Resíduo x8\0Vetores de movimento\0Profundidade x500\0")))
-        {
-            g.debugView.store(dbg);
-            Log("menu: debug view %d", dbg);
-        }
-        Help("Replaces the screen with one stage of the pipeline.\n\n"
-             "Network input: what the network was handed, stretched back up. Black here means "
-             "nothing downstream can work.\n\n"
-             "Network output: what it gave back. Identical to the input means the network is "
-             "returning what it was given.\n\n"
-             "Residual x8: the correction alone against mid grey. This is the one that answers "
-             "'is it doing anything'. Flat grey means it changed nothing; structure that follows "
-             "edges and texture means it is working -- and how much of that survives is exactly "
-             "what Resolution Scale decides.\n\n"
-             "Motion vectors: red is horizontal, green vertical, mid grey is still. Flat grey "
-             "while the camera moves means the flow is gated off -- lower Flow Contrast Gate.\n\n"
-             "Depth x500: multiplied because PS2 depth peaks around 0.002 and is otherwise solid "
-             "black. Overall Intensity scales this view.",
+        ImGui::TextWrapped(T("The engine's own option struct. Every offset came from decompiling "
+                             "the runtime's ini reader, not from guesswork -- but an offset being "
+                             "real says nothing about what writing it does. Every default here is "
+                             "the engine's own, so an untouched section changes nothing.",
 
-             "Substitui a tela por um estágio do pipeline.\n\n"
-             "Entrada da rede: o que foi entregue à rede, esticado de volta. Preto aqui significa "
-             "que nada depois disso pode funcionar.\n\n"
-             "Saída da rede: o que ela devolveu. Idêntica à entrada significa que a rede está "
-             "devolvendo o que recebeu.\n\n"
-             "Resíduo x8: a correção sozinha contra cinza médio. Esta é a que responde 'está "
-             "fazendo alguma coisa'. Cinza chapado significa que a rede não mudou nada; estrutura "
-             "que segue arestas e textura significa que está funcionando -- e quanto disso "
-             "sobrevive é exatamente o que a Escala de Resolução decide.\n\n"
-             "Vetores de movimento: vermelho é horizontal, verde é vertical, cinza médio é "
-             "parado. Cinza chapado com a câmera se movendo significa fluxo bloqueado -- baixe o "
-             "Portão de Contraste do Fluxo.\n\n"
-             "Profundidade x500: multiplicada porque a profundidade do PS2 chega a uns 0,002 e é "
-             "preto puro fora isso. A Intensidade Geral escala esta visão.");
-        Tag(kMeasured);
-
-        if (ImGui::Button(T("Measure Residual Again", "Medir Resíduo de Novo")))
-        {
-            g.measured = false;
-            g.measureTries = 0;
-            g.measureNow.store(true);
-            Log("menu: residual measurement re-armed");
-        }
-        Help("Writes a 'measure, residual' line to dlss5-neural.log: the size of the correction, "
-             "and how much of it follows the image's own detail rather than being a flat shift.\n\n"
-             "Change one control, press this, compare the two numbers. It is the only way to tell "
-             "a control that does something from one that does not.",
-
-             "Escreve uma linha 'measure, residual' no dlss5-neural.log: o tamanho da correção, e "
-             "quanto dela segue o detalhe da própria imagem em vez de ser um deslocamento "
-             "chapado.\n\n"
-             "Mude um controle, aperte isto, compare os dois números. É o único jeito de separar "
-             "um controle que faz algo de um que não faz.");
-    }
-
-    if (ImGui::CollapsingHeader(T("Engine", "Motor")))
-    {
-        ImGui::TextDisabled(T("The engine's own option struct. Every offset below came from "
-                              "decompiling the runtime's ini reader, not from guesswork -- but "
-                              "an offset being real says nothing about what writing it does. "
-                              "The tag after each control says how far that is actually known.",
-                              "A struct de opções do próprio motor. Todo offset abaixo veio de "
-                              "decompilar o leitor de ini do runtime, não de chute -- mas um "
-                              "offset ser real não diz nada sobre o que escrever nele faz. A "
-                              "etiqueta depois de cada controle diz até onde isso é sabido."));
-        ImGui::TextDisabled(T("Every default here is the engine's own, so an untouched tab "
-                              "changes nothing.",
-                              "Todo padrão aqui é o do próprio motor, então esta aba intocada "
-                              "não muda nada."));
-        ImGui::Separator();
+                             "A struct de opções do próprio motor. Todo offset veio de decompilar "
+                             "o leitor de ini do runtime, não de chute -- mas um offset ser real "
+                             "não diz nada sobre o que escrever nele faz. Todo padrão aqui é o do "
+                             "próprio motor, então esta seção intocada não muda nada."));
 
         bool mask = g.autoMask.load() != 0;
         if (Risk r(kDanger, !mask);
-            ImGui::Checkbox(T("Character Mask", "Máscara de Personagem"), &mask))
+            ImGui::Checkbox(T("Character mask", "Máscara de personagem"), &mask))
         {
             g.autoMask.store(mask ? 1 : 0);
             Log("menu: automask %d", mask ? 1 : 0);
         }
-        Help("UseAutoMask, at 97b40. The engine's semantic character mask: it is what makes Skin "
-             "Structure Strength apply to characters rather than to the whole frame. This is the "
-             "same control RenoDX exposes as Character Mask.\n\n"
-             "It defaults to 1 and this add-on never wrote it, so it has always been on by "
-             "default. Turning it off is a real test: if Skin stops doing even its measured 1.5%, "
-             "the mask is what was carrying it.",
-
-             "UseAutoMask, em 97b40. A máscara semântica de personagem do motor: é o que faz a "
-             "Força de Estrutura na Pele se aplicar a personagens em vez do quadro inteiro. É o "
-             "mesmo controle que o RenoDX expõe como Character Mask.\n\n"
-             "O padrão é 1 e este add-on nunca escrevia esse campo, então sempre esteve ligado "
-             "por omissão. Desligar é um teste de verdade: se a Pele parar de fazer até os 1,5% "
-             "medidos, era a máscara que carregava aquilo.");
-        Tag(kMeasured);
+        Help("UseAutoMask. The engine's semantic character mask, and what makes skin structure "
+             "apply to characters rather than to the whole frame. Defaults to 1; this add-on "
+             "never used to write it, so it has always been on.",
+             "UseAutoMask. A máscara semântica de personagem do motor, e o que faz a estrutura da "
+             "pele valer para personagens em vez do quadro inteiro. Padrão 1; este add-on nunca "
+             "escrevia esse campo, então sempre esteve ligado.");
         if (!mask)
             Note(kDanger, T("Off removes the effect from the whole frame, not just from "
                             "characters -- seen in game. The engine derives its structure and "
                             "tone parameters through this mask, so with it off there is nothing "
-                            "left to derive them from. Turn it back on unless you are measuring.",
-                            "Desligado tira o efeito do quadro inteiro, não só dos personagens "
+                            "left to derive them from.",
+                            "Desligada tira o efeito do quadro inteiro, não só dos personagens "
                             "-- visto no jogo. O motor deriva os parâmetros de estrutura e tom "
-                            "através desta máscara, então com ela desligada não sobra de onde "
-                            "derivar. Religue, a não ser que esteja medindo."));
+                            "através dela, então desligada não sobra de onde derivar."));
 
         int tmode = g.temporalMode.load();
         if (ImGui::Combo(T("Temporal", "Temporal"), &tmode,
-                         T("Auto (follow the guides)\0Off\0On\0",
-                           "Automático (segue os guias)\0Desligado\0Ligado\0")))
+                         T("Auto\0Off\0On\0", "Automático\0Desligado\0Ligado\0")))
         {
             g.temporalMode.store(tmode);
             Log("menu: temporal %d", tmode);
         }
-        Help("Temporal accumulation, at 97b1d. This add-on had the byte labelled 'motion is "
-             "valid' -- a guess that turned out wrong. The engine's ini reader reads the key "
-             "Temporal into it.\n\n"
-             "That explains a measurement nobody could account for: Temporal=1 was the only run "
-             "where the engine reported non-zero motion. Not a coincidence -- accumulating over "
-             "time is what gives a motion vector something to point at.\n\n"
-             "Auto turns it on whenever a motion field exists, which is the old behaviour. Off "
-             "and On are explicit, for A/B.",
+        Help("Temporal accumulation. This add-on had the byte labelled 'motion is valid' -- a "
+             "guess that turned out wrong; the engine's ini reader reads the key Temporal into "
+             "it. That explains a measurement nobody could account for: Temporal=1 was the only "
+             "run where the engine reported non-zero motion, which is what accumulating over time "
+             "is for. Auto turns it on whenever a motion field exists.",
 
-             "Acumulação temporal, em 97b1d. Este add-on rotulava esse byte como 'movimento "
-             "válido' -- um chute que estava errado. O leitor de ini do motor lê a chave "
-             "Temporal para ele.\n\n"
-             "Isso explica uma medição que ninguém conseguia justificar: Temporal=1 foi a única "
-             "execução em que o motor reportou movimento diferente de zero. Não é coincidência "
-             "-- acumular ao longo do tempo é o que dá a um vetor de movimento algo para onde "
-             "apontar.\n\n"
-             "Automático liga sempre que existe campo de movimento, que é o comportamento "
-             "antigo. Desligado e Ligado são explícitos, para A/B.");
-        Tag(kTraced);
+             "Acumulação temporal. Este add-on rotulava esse byte como 'movimento válido' -- um "
+             "chute errado; o leitor de ini do motor lê a chave Temporal nele. Isso explica uma "
+             "medição que ninguém justificava: Temporal=1 foi a única execução em que o motor "
+             "reportou movimento diferente de zero, que é para isso que acumular no tempo serve. "
+             "Automático liga sempre que existe campo de movimento.");
 
         int tone = g.tonemap.load();
         if (ImGui::SliderInt(T("Tonemap", "Tonemap"), &tone, -1, 3, "%d", 0))
             g.tonemap.store(tone);
-        Help("-1: automatic for the selected encoding. With sRGB, sends 0 (off); other "
-             "encodings keep the runtime's automatic detection. 0..3: explicit runtime "
-             "override. 1 reproduces the old automatic behaviour on an SDR FP16 input.\n\n"
-             "Restart the game after changing this setting.",
+        Help("-1 is automatic for the selected Encoding: with sRGB it sends 0 (off), other "
+             "encodings keep the runtime's own detection. 0..3 override it explicitly.\n\n"
+             "Restart the game after changing this.",
+             "-1 é automático pela Codificação escolhida: em sRGB manda 0 (desligado), as outras "
+             "mantêm a detecção do próprio runtime. 0..3 forçam um valor.\n\n"
+             "Reinicie o jogo depois de mudar.");
 
-             "-1: automático pela codificação escolhida. Em sRGB, envia 0 (desligado); "
-             "as outras codificações mantêm a detecção do runtime. 0..3: valor explícito "
-             "para o runtime. 1 reproduz o automático antigo na entrada SDR em FP16.\n\n"
-             "Reinicie o jogo após alterar esta opção.");
-        Tag(kMeasured);
+        // The slider is 0..1 and not 0..3 because of what the write actually does. Bits 2 and 4
+        // stopped being tone channels in v0.2.17: bit 4 is the timeout guard and bit 2 chooses
+        // last frame's residual over nothing, so the record path writes `(value & ~2) | 4` and
+        // four slider positions collapsed to two -- 2 was byte-for-byte identical to 0, and 3 to
+        // 1. A control where half the range is a duplicate of the other half is a control that
+        // teaches you the wrong thing about the field.
+        //
+        // Bit 4 also has to stay set for a second reason, read in the worker: when the whole word
+        // is 0 the runtime zeroes LocalTone and LocalStructure before they reach the network.
+        int ch = g.toneChannels.load() & 1;
+        if (ImGui::SliderInt(T("Tone channels", "Canais de tom"), &ch, 0, 1, "%d", 0))
+            g.toneChannels.store(ch & 1);
+        Help("ToneChannels bit 0, the only bit of this field left that means what the name says. "
+             "An ini key of the engine that nothing here knew existed until the reader was "
+             "decompiled. Default 0, effect unknown -- it is here to be A/B'd against the "
+             "residual.\n\n"
+             "The field is four bits wide but the other two are spoken for: the record path holds "
+             "bit 4 set, because with the whole word at 0 the runtime zeroes local tone and local "
+             "structure before they reach the network, whatever the sliders above say.",
 
-        int ch = g.toneChannels.load();
-        if (ImGui::SliderInt(T("Tone Channels", "Canais de Tom"), &ch, 0, 3, "%d", 0))
-            g.toneChannels.store(ch);
-        Help("ToneChannels, at 97b44. An ini key of the engine that nothing in this project knew "
-             "existed until the reader was decompiled. Default 0. What it does is unknown -- it "
-             "is here to be A/B'd against the residual, like everything else with an unknown "
-             "effect.",
-
-             "ToneChannels, em 97b44. Uma chave de ini do motor que ninguém neste projeto sabia "
-             "que existia até o leitor ser decompilado. Padrão 0. O que ela faz é desconhecido "
-             "-- está aqui para ser testada em A/B contra o resíduo, como tudo que tem efeito "
-             "desconhecido.");
-        Tag(kUnknown);
+             "ToneChannels bit 0, o único bit deste campo que ainda quer dizer o que o nome diz. "
+             "Uma chave de ini do motor que ninguém aqui sabia que existia até o leitor ser "
+             "decompilado. Padrão 0, efeito desconhecido -- está aqui para ser testada em A/B "
+             "contra o resíduo.\n\n"
+             "O campo tem quatro bits mas os outros dois têm dono: o caminho de gravação segura o "
+             "bit 4 ligado, porque com a palavra inteira em 0 o runtime zera tom local e "
+             "estrutura local antes deles chegarem na rede, digam o que disserem os sliders.");
 
         float es = g.engineScale.load();
-        if (ImGui::SliderFloat(T("Engine Scale", "Escala do Motor"), &es, 0.0f, 1.0f, "%.5f", 0))
-            g.engineScale.store(es);
-        Help("Scale, at 97b3c, default 0.03125. This is the 0.031 that showed up in the startup "
-             "float dump and was written down as 'a live value we never wrote' -- it is an ini "
-             "key of the engine named Scale, and 0.03125 is exactly 1/32.\n\n"
-             "Unrelated to Resolution Scale under Performance, which is ours. Nothing is known "
-             "about what this one scales. Move it in small steps and watch the residual.",
-
-             "Scale, em 97b3c, padrão 0.03125. É o 0,031 que apareceu no despejo de floats da "
-             "inicialização e foi anotado como 'valor vivo que nunca escrevemos' -- é uma chave "
-             "de ini do motor chamada Scale, e 0,03125 é exatamente 1/32.\n\n"
-             "Nada a ver com a Escala de Resolução em Desempenho, que é nossa. Nada se sabe "
-             "sobre o que esta escala. Mexa em passos pequenos e olhe o resíduo.");
-        Tag(kUnknown);
+        if (Risk r(kDanger, std::fabs(es - 0.03125f) > 1e-6f);
+            ImGui::SliderFloat(T("Output scale", "Escala de saída"), &es, 0.0001f, 1.0f, "%.5f", 0))
+            g.engineScale.store(std::max(es, 0.0001f));
         ImGui::SameLine();
-        // A 0..1 slider at five decimals cannot be dragged back onto exactly 1/32, and this is a
-        // field nobody knows the effect of -- so leaving it a hair off its default is a way to
-        // change the picture and never find out why.
-        if (ImGui::SmallButton(T("Reset to 1/32", "Voltar para 1/32")))
+        // A 0..1 slider at five decimals cannot be dragged back onto exactly 1/32.
+        if (ImGui::SmallButton("1/32"))
         {
             g.engineScale.store(0.03125f);
-            Log("menu: engine scale back to the default 0.03125");
+            Log("menu: output scale back to the runtime's default 0.03125");
         }
+        Help("The runtime's ini key 'Scale', default 1/32. Not a control of the network: it sits "
+             "after the four control floats and goes to the post kernel that writes the output.\n\n"
+             "Near 0 the network's answer never reaches the frame -- measured in ETS2, residual "
+             "mean 0.00024 against an input of 0.45, with enabled and disabled identical and "
+             "every frame reported as processed. That is what a day of writing style/128 here did "
+             "to Model A. The slider will not go to 0 and the ini refuses it too; Intensity 0 is "
+             "the way to see the game's own frame.",
 
-        ImGui::Separator();
-        ImGui::TextDisabled(T("Model A / B / C: not portable to this runtime. Closed.",
-                              "Model A / B / C: não é portável para este runtime. Encerrado."));
-        Help("Model A/B/C is real and it does change the picture -- on NVIDIA. It is DLSSNR.Style, "
-             "an int at options offset 236 in nvngx_dlssnr.dll. Style 0 is Model A and is the "
-             "literal baseline: it has no table entry and overwrites nothing. Style 1 and 2 pick "
-             "a row out of an 8x68-byte table and lerp fourteen floats into options+292..+344, "
-             "scaled by LocalToneStrength. Three of those fourteen are non-zero across both rows. "
-             "It is one weight set, not three networks.~~"
-             "It cannot be ported here, and this was chased to the end rather than assumed. The "
-             "three constants -0.10, -0.25 and -0.15 do not exist in the AMD binary. The AMD "
-             "option block is mapped field by field and no slot is Style. Nothing in that binary "
-             "writes a span of fourteen floats. And the HIP kernels on the appearance path are "
-             "too small to take them: the style vector is 56 bytes, while k_final_head and "
-             "k_post_block each receive a 32-byte struct by value.~~"
-             "Whoever did the port compiled the network with the neutral style baked in. The "
-             "kernels are precompiled GCN code objects inside the DLL with no source, so adding "
-             "the fields means recompiling them. Model A is the only one that exists on this "
-             "side. Not reopening it.",
+             "A chave 'Scale' do ini do runtime, padrão 1/32. Não é controle da rede: fica depois "
+             "dos quatro floats de controle e vai para o kernel de pós que escreve a saída.\n\n"
+             "Perto de 0 a resposta da rede nunca chega no quadro -- medido no ETS2, resíduo "
+             "médio 0,00024 contra entrada de 0,45, com ligado e desligado idênticos e todo "
+             "quadro dado como processado. Foi isso que um dia escrevendo style/128 aqui fez com "
+             "o Modelo A. O slider não vai a 0, e o ini também recusa; Intensidade 0 é o jeito de "
+             "ver o quadro do próprio jogo.");
 
-             "Model A/B/C é real e muda a imagem sim -- na NVIDIA. É o DLSSNR.Style, um int no "
-             "offset 236 da struct de opções do nvngx_dlssnr.dll. Style 0 é o Model A e é o "
-             "baseline literal: não tem entrada na tabela e não sobrescreve nada. Style 1 e 2 "
-             "pegam uma linha de uma tabela de 8x68 bytes e interpolam catorze floats para "
-             "options+292..+344, escalados pelo LocalToneStrength. Três desses catorze são "
-             "diferentes de zero nas duas linhas. É um conjunto de pesos só, não três redes.~~"
-             "Não dá para portar para cá, e isso foi perseguido até o fim, não assumido. As três "
-             "constantes -0,10, -0,25 e -0,15 não existem no binário AMD. O bloco de opções do "
-             "AMD está mapeado campo a campo e nenhum slot é Style. Nada naquele binário escreve "
-             "uma sequência de catorze floats. E os kernels HIP do caminho de aparência não têm "
-             "espaço: o vetor de style são 56 bytes, e o k_final_head e o k_post_block recebem um "
-             "struct de 32 bytes por valor.~~"
-             "Quem portou compilou a rede com o style neutro embutido. Os kernels são code "
-             "objects GCN pré-compilados dentro da DLL, sem fonte, então acrescentar os campos "
-             "significa recompilar os kernels. Model A é o único que existe deste lado. Não "
-             "vamos reabrir.");
-    }
-
-    if (ImGui::CollapsingHeader(T("Advanced", "Avançado")))
-    {
-        float v = g.tone.load();
-        if (ImGui::SliderFloat(T("Local Tone Strength", "Força de Tom Local"), &v, 0.0f, 3.0f,
-                               "%.2f", 0))
-            g.tone.store(v);
-        Help("Measured inert. A full sweep produced numbers byte-for-byte identical to the "
-             "baseline, which matches the RenoDX note that Global Tone is not visible on the "
-             "recovered NGX path. It is here to be re-checked on a different target, not to be "
-             "used. Left at 1.",
-
-             "Medido inerte. Uma varredura completa produziu números byte a byte idênticos ao "
-             "baseline, o que bate com a nota do RenoDX de que Global Tone não é visível no "
-             "caminho NGX recuperado. Está aqui para ser reconferido num alvo diferente, não "
-             "para ser usado. Deixado em 1.");
-        Tag(kInert);
-
-        ImGui::Text(T("Engine offsets written: 97b30 tone, 97b34 structure, 97b38 skin",
-                      "Offsets escritos no motor: 97b30 tom, 97b34 estrutura, 97b38 pele"));
-        Help("These three are hardcoded RVAs into one specific build of the runtime, found by "
-             "matching strings in the binary. That the binary contains the words does not prove "
-             "it reads these fields -- an offset written but never read looks identical from out "
-             "here. The log dumps the float window around them at startup.",
-
-             "Estes três são RVAs hardcoded numa build específica do runtime, achados casando "
-             "strings no binário. Que o binário contenha as palavras não prova que ele lê estes "
-             "campos -- um offset escrito e nunca lido é idêntico visto daqui. O log despeja a "
-             "janela de floats em volta deles na inicialização.");
-
-        ImGui::Separator();
-        ImGui::Text(T("Restart-only: Stage=%d  Events=%d  NoBridge=%d  NoBackBuffer=%d",
-                      "Só na reinicialização: Stage=%d  Events=%d  NoBridge=%d  NoBackBuffer=%d"),
-                    g.stage.load(), g.events, g.noBridge.load() ? 1 : 0,
-                    g.noBackBuffer.load() ? 1 : 0);
+        ImGui::TextDisabled(T("Restart-only: Stage=%d Events=%d NoBridge=%d NoBackBuffer=%d",
+                              "Só na reinicialização: Stage=%d Events=%d NoBridge=%d "
+                              "NoBackBuffer=%d"),
+                            g.stage.load(), g.events, g.noBridge.load() ? 1 : 0,
+                            g.noBackBuffer.load() ? 1 : 0);
         Help("Diagnostics that decide what gets built at startup, so they cannot be changed live "
-             "-- set them in dlss5-neural.ini.\n\n"
-             "Stage=1 stops before D3D12 loads, 2 before the engine, 3 is everything. Events is a "
-             "bitmask: 1 bind, 2 draw, 4 clear, 8 destroy_swapchain, 16 overlay. These are what "
-             "found the DXGI resize failure.",
+             "-- set them in amd-nr.ini. Stage=1 stops before D3D12 loads, 2 before the "
+             "engine, 3 is everything. Events is a bitmask: 1 bind, 2 draw, 4 clear, 8 "
+             "destroy_swapchain, 16 overlay.",
 
-             "Diagnósticos que decidem o que é construído na inicialização, então não podem ser "
-             "mudados ao vivo -- ajuste no dlss5-neural.ini.\n\n"
-             "Stage=1 para antes da D3D12 carregar, 2 antes do motor, 3 é tudo. Events é uma "
-             "máscara de bits: 1 bind, 2 draw, 4 clear, 8 destroy_swapchain, 16 overlay. Foram "
-             "eles que acharam a falha de resize da DXGI.");
+             "Diagnósticos que decidem o que é construído na inicialização, então não mudam ao "
+             "vivo -- ajuste no amd-nr.ini. Stage=1 para antes da D3D12 carregar, 2 antes "
+             "do motor, 3 é tudo. Events é máscara de bits: 1 bind, 2 draw, 4 clear, 8 "
+             "destroy_swapchain, 16 overlay.");
     }
 
-    // Experimental. Things that work, were measured on one route, and are not the shipped
-    // arrangement. New entries go above Network Output, which stays at the bottom.
-    if (ImGui::CollapsingHeader(T("Experimental", "Experimental")))
+    // The cascade. Everything this panel leaves off is one tick away, one control at a time,
+    // under the header it will appear beneath -- so turning something on tells you where to look
+    // for it. Nothing here is a second copy of anything: the same atomics, the same ini keys, the
+    // same per-frame writes. The only thing a bit decides is whether a widget is drawn.
+    if (ImGui::TreeNode(T("More settings", "Mais ajustes")))
     {
-        ImGui::TextDisabled(T("Proof of concept. Measured on one route each, and not the shipped "
-                              "arrangement.",
-                              "Prova de conceito. Medidos numa rota cada, e não são o arranjo "
-                              "padrão."));
-        ImGui::Separator();
+        ImGui::TextWrapped(T("Off screen by default, not off. Each of these reads and writes its "
+                             "own key in amd-nr.ini either way; ticking one only puts a "
+                             "control for it in the panel.",
 
-        bool raw = g.networkOutput.load();
-        if (ImGui::Checkbox(T("Network Output (bypass composition) -- proof of concept",
-                              "Saída da Rede (ignora a composição) -- prova de conceito"), &raw))
+                             "Fora da tela por padrão, não desligados. Cada um destes lê e "
+                             "escreve a chave dele no amd-nr.ini de qualquer jeito; marcar "
+                             "um só põe um controle para ele no painel."));
+
+        uint32_t bits = g.optional.load();
+        const uint32_t before = bits;
+        for (int grp = 0; grp < kGrpCount; ++grp)
         {
-            g.networkOutput.store(raw);
-            Log("menu: network output mode %d", raw ? 1 : 0);
+            ImGui::SeparatorText(OptGroupName(grp));
+            for (const OptRow &row : kOpts)
+            {
+                if (row.group != grp)
+                    continue;
+                bool onNow = (bits & row.bit) != 0;
+                if (ImGui::Checkbox(T(row.en, row.pt), &onNow))
+                    bits = onNow ? (bits | row.bit) : (bits & ~row.bit);
+            }
         }
-        Help(
-            "A PROOF OF CONCEPT. It is here because it was preferred by eye in one game, not "
-            "because it is finished or because it is known to be better. Treat it as something "
-            "to try and report on, not as a setting to leave on and forget.\n\n"
-            "Show the network's answer directly instead of composing it onto the game's frame.\n\n"
-            "WHAT IT TURNS OFF. There is no residual in this mode, so Highlight Guard, Colour "
-            "Strength, Residual Limit and Edge Fade all do nothing. Nothing bounds how far a "
-            "pixel may move, and hue is whatever the network returned. That is the trade.\n\n"
-            "WHERE IT COMES FROM. Tested on D3D12, in GTA V Enhanced. There the ratio "
-            "composition showed a heavy trail behind everything while driving. The cause was "
-            "measured: the network costs about 29 ms at full Resolution Scale and the game "
-            "presents faster, so 37% of frames (13,921 of 37,584) were skipped with the previous "
-            "evaluation still on the GPU -- and the correction being pasted on belonged to a "
-            "picture that had already moved. This mode has no correction to misplace, so the "
-            "trail cannot happen.\n\n"
-            "ON A SKIPPED FRAME. You see the previous network output, a whole picture, which "
-            "reads as a held frame rather than as a trail. It is deliberately not gated on "
-            "freshness: gating it would flicker between two different pictures instead.\n\n"
-            "WHAT IS NOT KNOWN. It was preferred by eye on one game, on one route, at Pass Count "
-            "2 and full Resolution Scale. Nothing here has measured it against the composition on "
-            "a slow scene, in HDR, or on the D3D11 and Vulkan routes.",
-
-            "UMA PROVA DE CONCEITO. Está aqui porque foi preferido a olho em um jogo, não porque "
-            "esteja pronto nem porque se saiba que é melhor. Trate como algo para experimentar e "
-            "relatar, não como ajuste para deixar ligado e esquecer.\n\n"
-            "Mostra a resposta da rede direto, em vez de compô-la sobre o quadro do jogo.\n\n"
-            "O QUE ISTO DESLIGA. Não existe resíduo neste modo, então Trava de Realce, Força da "
-            "Cor, Limite do Resíduo e Esmaecimento de Borda não fazem nada. Nada limita o quanto "
-            "um pixel pode andar, e o matiz é o que a rede devolveu. Essa é a troca.\n\n"
-            "DE ONDE VEIO. Testado em D3D12, no GTA V Enhanced. Lá a composição por razão deixava "
-            "um rastro pesado atrás de tudo ao dirigir. A causa foi medida: a rede custa cerca de "
-            "29 ms na Escala de Resolução cheia e o jogo apresenta mais rápido, então 37% dos "
-            "quadros (13.921 de 37.584) foram pulados com a avaliação anterior ainda na GPU -- e "
-            "a correção colada vinha de uma imagem que já tinha andado. Este modo não tem "
-            "correção para colar no lugar errado, então o rastro não acontece.\n\n"
-            "NUM QUADRO PULADO. Você vê a saída anterior da rede, uma imagem inteira, que lê como "
-            "quadro segurado e não como rastro. É de propósito que ele não é cortado por "
-            "atualidade: cortar faria piscar entre duas imagens diferentes.\n\n"
-            "O QUE NÃO SE SABE. Foi preferido a olho em um jogo, numa rota, com Número de Passes "
-            "2 e Escala de Resolução cheia. Nada aqui mediu ele contra a composição em cena lenta, "
-            "em HDR, nem nas rotas D3D11 e Vulkan.");
-    }
-
-    if (ImGui::CollapsingHeader(T("Status", "Estado"), ImGuiTreeNodeFlags_DefaultOpen))
-    {
-        const Profile &profile = ProfileForThisProcess();
-        std::lock_guard guard(g.lock);
-        const uint64_t seen = g.frame + g.skipped;
-        const double pct = seen != 0 ? 100.0 * static_cast<double>(g.skipped) / seen : 0.0;
-        // A skipped frame reuses whatever the network textures hold, and a job still running is
-        // writing them while compose reads them. A few percent is invisible; a third of the
-        // frames is a correction that changes every frame, which reads as flicker.
-        if (seen > 300 && pct >= 10.0)
-            Note(kWarn, T("High skip rate. The network is not finishing inside a frame, so what "
-                          "is on screen is stale or half-written and changes frame to frame -- "
-                          "that is the flicker. Lower Resolution Scale, set Pass Count to 1, and "
-                          "lower the emulator's own upscale multiplier: it competes for the same "
-                          "GPU.",
-                          "Taxa de pulo alta. A rede não está terminando dentro de um quadro, "
-                          "então o que está na tela é velho ou escrito pela metade e muda de "
-                          "quadro a quadro -- é isso o piscar. Baixe a Escala de Resolução, ponha "
-                          "o Número de Passes em 1, e baixe o multiplicador de upscale do próprio "
-                          "emulador: ele disputa a mesma GPU."));
-        ImGui::Text(T("Target: %s", "Alvo: %s"), profile.note);
-        if (g.outWidth != 0)
-            ImGui::Text(T("Back buffer %ux%u  ->  network %ux%u",
-                          "Back buffer %ux%u  ->  rede %ux%u"),
-                        g.outWidth, g.outHeight, g.netWidth, g.netHeight);
-        if (g.depthBest != nullptr)
-            ImGui::Text(T("Depth candidate: %ux%u format %d, %llu binds%s",
-                          "Candidato a profundidade: %ux%u formato %d, %llu binds%s"),
-                        g.depthWidth, g.depthHeight, static_cast<int>(g.depthFormat),
-                        static_cast<unsigned long long>(g.depthBinds),
-                        g.useDepth.load() ? T(", feeding it", ", alimentando")
-                                          : T(" (Depth switch is off)",
-                                              " (chave de Profundidade desligada)"));
-        else if (g.depthEvents.load() == 0)
-            ImGui::TextDisabled(T("Depth: no depth-stencil bind delivered on this API.",
-                                  "Profundidade: nenhum bind de depth-stencil entregue nesta API."));
-        else
-            ImGui::TextDisabled(T("Depth: %llu binds seen, none usable.",
-                                  "Profundidade: %llu binds vistos, nenhum usável."),
-                                static_cast<unsigned long long>(g.depthEvents.load()));
-        ImGui::TextDisabled(T("Log: dlss5-neural.log", "Log: dlss5-neural.log"));
+        ImGui::Separator();
+        if (ImGui::Button(T("All", "Todos")))
+            bits = kOptAll;
+        ImGui::SameLine();
+        if (ImGui::Button(T("None", "Nenhum")))
+            bits = 0;
+        if (bits != before)
+        {
+            g.optional.store(bits);
+            Log("menu: optional controls now 0x%06x", bits);
+        }
+        ImGui::TreePop();
     }
 
     ImGui::Separator();
-    ImGui::TextColored(kDanger, T("Red", "Vermelho"));
-    ImGui::SameLine();
-    ImGui::TextWrapped(T("- this setting, at the value it is holding right now, can take the "
-                         "display driver down with it. The game dies on DXGI_ERROR_DEVICE_REMOVED "
-                         "and the desktop goes with it, with nothing in any log pointing back "
-                         "here. Change it before you go further.",
-
-                         "- este ajuste, no valor em que está agora, pode levar o driver de vídeo "
-                         "junto. O jogo morre com DXGI_ERROR_DEVICE_REMOVED e o desktop vai "
-                         "junto, sem nada em log nenhum apontando de volta para cá. Mude antes de "
-                         "seguir."));
-    ImGui::TextColored(kWarn, T("Amber", "Âmbar"));
-    ImGui::SameLine();
-    ImGui::TextWrapped(T("- past what has actually been measured on this machine. Not known to "
-                         "break, not known to work either. Change one thing at a time, save "
-                         "first, and watch the skip rate under Status: if it climbs, back off.",
-
-                         "- passou do que realmente foi medido nesta máquina. Não se sabe que "
-                         "quebra, nem que funciona. Mude uma coisa por vez, salve antes, e olhe a "
-                         "taxa de pulo em Estado: se subir, recue."));
-    ImGui::TextDisabled(T("A control is coloured only for the value it currently holds, so "
-                          "turning it back down clears it. Hover any (?) for what a control does "
-                          "and what was measured about it.",
-
-                          "Um controle só fica colorido pelo valor que está segurando, então "
-                          "baixar o valor limpa a cor. Passe o mouse em qualquer (?) para o que "
-                          "um controle faz e o que foi medido sobre ele."));
-    // The other legend. "Which of these actually does something in the game" was a question you
-    // could only answer by reading the source, so the answer is printed next to each control and
-    // spelled out once here.
-    ImGui::TextDisabled(T("Tags:", "Etiquetas:"));
-    ImGui::SameLine();
-    Tag(kMeasured);
-    ImGui::SameLine();
-    ImGui::TextDisabled(T("a residual reading moved when it changed.", "uma leitura de resíduo "
-                          "mudou quando ele mudou."));
-    ImGui::TextDisabled(" ");
-    ImGui::SameLine();
-    Tag(kTraced);
-    ImGui::SameLine();
-    ImGui::TextDisabled(T("reaches a consumer, never separated from its default here.",
-                          "chega num consumidor, mas nunca foi separado do padrão dele aqui."));
-    ImGui::TextDisabled(" ");
-    ImGui::SameLine();
-    Tag(kUnknown);
-    ImGui::SameLine();
-    ImGui::TextDisabled(T("a real engine field whose effect nobody here has established.",
-                          "um campo real do motor cujo efeito ninguém aqui estabeleceu."));
-    ImGui::TextDisabled(" ");
-    ImGui::SameLine();
-    Tag(kInert);
-    ImGui::SameLine();
-    ImGui::TextDisabled(T("swept and measured to change nothing.",
-                          "varrido e medido como não mudando nada."));
-
-    ImGui::Separator();
-    if (ImGui::Button(T("Save Settings", "Salvar Ajustes")))
+    if (ImGui::Button(T("Save", "Salvar")))
         SaveSettings();
-    Help("Writes everything above to dlss5-neural.ini next to the exe, so it survives a restart.\n\n"
-         "You do not have to press it: every control saves itself the moment you let go of it. This "
-         "is here to write now, and to put a line in the log saying it happened.",
-
-         "Escreve tudo acima no dlss5-neural.ini ao lado do exe, para sobreviver a um restart.\n\n"
-         "Você não precisa apertar: cada controle se salva sozinho assim que você solta. Isto serve "
-         "para escrever agora, e para deixar uma linha no log dizendo que aconteceu.");
+    Help("Writes everything to amd-nr.ini next to the exe. You do not have to press it -- "
+         "every control saves itself when you let go. This writes now, and logs that it happened.",
+         "Escreve tudo no amd-nr.ini ao lado do exe. Você não precisa apertar -- cada "
+         "controle se salva sozinho quando você solta. Isto escreve agora, e deixa registro no "
+         "log.");
     ImGui::SameLine();
-    if (ImGui::Button(T("Reload Settings", "Recarregar Ajustes")))
+    if (ImGui::Button(T("Reload", "Recarregar")))
     {
         LoadSettings();
         Log("menu: settings reloaded from the ini");
     }
-    Help("Re-reads dlss5-neural.ini, discarding anything changed here since the last save.",
-         "Relê o dlss5-neural.ini, descartando qualquer coisa mudada aqui desde o último salvamento.");
+    Help("Re-reads amd-nr.ini, discarding anything changed here since the last save. This "
+         "is how a setting edited in the file is picked up without restarting the game.",
+         "Relê o amd-nr.ini, descartando qualquer coisa mudada aqui desde o último "
+         "salvamento. É assim que um ajuste editado no arquivo é aplicado sem reiniciar o jogo.");
+
+    // Asking somebody for a log means asking them to find the emulator's install directory first.
+    // This puts the four files that answer any question about a run -- the add-on's log, the
+    // runtime's, ReShade's, and the ini that produced them -- in a dated folder on the desktop.
+    ImGui::SameLine();
+    static std::wstring exported;
+    static bool exportFailed = false;
+    if (ImGui::Button(T("Export logs to desktop", "Exportar logs pra área de trabalho")))
+    {
+        SaveSettings(/*quiet=*/true);   // so the ini beside the logs is the run they describe
+        exported = ExportLogs();
+        exportFailed = exported.empty();
+    }
+    Help("Copies amd-nr.log, the runtime's dlssnr_on_amd.log, ReShade.log and "
+         "amd-nr.ini into a dated folder on your desktop. The settings go with them because "
+         "a log without them cannot be compared against anything.\n\n"
+         "The logs are truncated every time the game starts, so export before relaunching.",
+
+         "Copia o amd-nr.log, o dlssnr_on_amd.log do runtime, o ReShade.log e o "
+         "amd-nr.ini para uma pasta datada na sua área de trabalho. Os ajustes vão junto "
+         "porque um log sem eles não dá para comparar com nada.\n\n"
+         "Os logs são truncados toda vez que o jogo abre, então exporte antes de relançar.");
+    if (exportFailed)
+        ImGui::TextColored(kDanger, T("Could not write to the desktop.",
+                                      "Não deu para escrever na área de trabalho."));
+    else if (!exported.empty())
+        ImGui::TextColored(kOk, T("Exported to %ls", "Exportado para %ls"), exported.c_str());
+
+    // The legend, which used to be six paragraphs and a four-entry tag table. One wrapped line:
+    // the tags are gone, and red and amber are the only marks a control can carry now.
+    ImGui::TextDisabled(T("Red: risks the display driver at this value. Amber: past what was "
+                          "measured here.",
+                          "Vermelho: neste valor arrisca o driver de vídeo. Âmbar: além do que "
+                          "foi medido aqui."));
 
     // Autosave. The button above stays -- it is still the only thing that says out loud that a write
     // happened -- but nothing should be lost because somebody never scrolled this far. Written when a
@@ -7311,7 +7613,7 @@ void OnOverlay(effect_runtime *runtime)
         static bool said = false;
         if (!said)
         {
-            Log("settings autosaved to dlss5-neural.ini; every later change saves itself the same way.");
+            Log("settings autosaved to amd-nr.ini; every later change saves itself the same way.");
             said = true;
         }
     }
@@ -7319,13 +7621,13 @@ void OnOverlay(effect_runtime *runtime)
 
 }
 
-extern "C" __declspec(dllexport) const char *NAME = "dlss5 neural";
+extern "C" __declspec(dllexport) const char *NAME = "AMD Neural Rendering";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "Runs DLSS-NR on AMD with HIP 7. D3D11/D3D12"
-#if DLSS5_WITH_VULKAN
+#if AMDNR_WITH_VULKAN
     ", experimental Vulkan"
 #endif
-#if DLSS5_WITH_OPENGL
+#if AMDNR_WITH_OPENGL
     ", experimental OpenGL"
 #endif
     ". SDR and serialized inline multipass preview.";
@@ -7338,11 +7640,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         if (!reshade::register_addon(module))
             return FALSE;
         {
-            const auto log = ExeDirectory() / L"dlss5-neural.log";
+            const auto log = ExeDirectory() / L"amd-nr.log";
             g_log = _wfopen(log.c_str(), L"w");
-            Log("dlss5 neural: %s", ProfileForThisProcess().note);
+            Log("AMD Neural Rendering: %s", ProfileForThisProcess().note);
             Log("preview 2026-09-10: SDR input contract, serialized inline passes; Vulkan %d, "
-                "OpenGL %d", DLSS5_WITH_VULKAN, DLSS5_WITH_OPENGL);
+                "OpenGL %d", AMDNR_WITH_VULKAN, AMDNR_WITH_OPENGL);
             // Before the read, so a first run has a documented file to read and the user has
             // something to edit without being told which keys exist. On the run that writes it,
             // it has already read the settings for the reason its own comment gives, and a second
@@ -7374,9 +7676,9 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(OnFinishEffects);
         reshade::register_event<reshade::addon_event::present>(OnPresent);
         if (g.events & 16)
-            reshade::register_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
+            reshade::register_overlay("AMD Neural Rendering", OnOverlay);
         Log("events subscribed: mask %d", g.events);
-#if DLSS5_WITH_VULKAN
+#if AMDNR_WITH_VULKAN
         // Has to happen here and not at the first present: the host's VkDevice is created when a
         // game boots, and by the time a frame is presented it is far too late to change what that
         // device was created with. Patches one import-table entry and does nothing at all in a
@@ -7386,7 +7688,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
 #endif
         break;
     case DLL_PROCESS_DETACH:
-#if DLSS5_WITH_VULKAN
+#if AMDNR_WITH_VULKAN
         // At process termination Windows is already tearing every module down. MinHook removal
         // suspends threads, which is useful for an explicit unload but unsafe under the loader
         // lock while the process is exiting.
@@ -7394,7 +7696,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
             vkroute::devicehook::Remove();
 #endif
         if (g.events & 16)
-            reshade::unregister_overlay("DLSS Neural Rendering (AMD)", OnOverlay);
+            reshade::unregister_overlay("AMD Neural Rendering", OnOverlay);
         reshade::unregister_addon(module);
         if (g_log != nullptr)
             fclose(g_log), g_log = nullptr;

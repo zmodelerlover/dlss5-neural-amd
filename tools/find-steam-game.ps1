@@ -2,7 +2,7 @@
 # Dot-source this to get Find-SteamGame:
 #
 #     . (Join-Path $PSScriptRoot 'find-steam-game.ps1')
-#     $game = Find-SteamGame -Name 'Need for Speed' -Explicit $GamePath -EnvName 'DLSS5_NFS_PATH'
+#     $game = Find-SteamGame -Name 'Need for Speed' -Explicit $GamePath -EnvName 'AMDNR_NFS_PATH'
 #
 # Order of precedence: an explicit path wins, then the environment variable, then whatever Steam
 # itself reports. Steam records its own install path in the registry, and steamapps\libraryfolders.vdf

@@ -1,7 +1,7 @@
 # The OpenGL route
 
 > **Status: experimental, and further along than that sounds.** The route is written, builds into
-> the single add-on behind `DLSS5_WITH_OPENGL`, and has run the network end to end over a real
+> the single add-on behind `AMDNR_WITH_OPENGL`, and has run the network end to end over a real
 > OpenGL game (Luanti 5.17.0, Minetest Game, AMD RX 9070 XT, Adrenalin 26.8.1). It hands over
 > between the two APIs on the GPU with imported D3D12 fences, it copes with a multisampled default
 > framebuffer, and resize has been exercised with the effect on. It still carries no guides.
@@ -134,7 +134,7 @@ both work on this driver in a 3.3 core context as well.
 
 ## The route
 
-`src/neural/gl_route.inc`, included from `neural.cpp` behind `DLSS5_WITH_OPENGL`
+`src/neural/gl_route.inc`, included from `neural.cpp` behind `AMDNR_WITH_OPENGL`
 (`src/neural/build_config.h`). Integration is five small edits, mirroring the Vulkan ones: the
 include, the `device_api::opengl` branch in `OnPresent`, a call in `ReleaseSwapchainSized`, the API
 name in the status log, and the description string. There is no `DllMain` work at all — unlike
@@ -242,7 +242,7 @@ fault from a thread of its own, far from the cause:
 - step-by-step logging through the first build of each crossing (eight lines, once per size);
 - an unhandled-exception filter that names the module and offset and then chains to the previous
   filter. It is what turned "the game closed" into `atio6axx.dll+0xA9A1FE` and later into
-  `dlss5-neural.addon64+0x195C3`.
+  `amd-nr.addon64+0x195C3`.
 
 ## Results
 
@@ -300,7 +300,7 @@ handover is for.
 
 ## How it shipped
 
-Released as add-on **v0.6.0** (`dlss5-neural.addon64`, `c037a69f…`), with the payload the
+Released as add-on **v0.6.0** (`amd-nr.addon64`, `c037a69f…`), with the payload the
 installer reads pinned to those bytes, and installer **v0.2.0** carrying the detection and the
 `opengl32.dll` proxy. The installer's own self-update was exercised end to end by the user after
 publication and worked.
@@ -320,7 +320,7 @@ particular. The game is deliberately kept **outside** the repository.
 # 1. the add-on and the two diagnostics
 .\build.ps1 -Target neural
 .\build.ps1 -Target glinfo
-.\build.ps1 -Target glprobe -Exe ; .\build\dlss5-glprobe.exe    # driver check, no game needed
+.\build.ps1 -Target glprobe -Exe ; .\build\amd-nr-glprobe.exe    # driver check, no game needed
 
 # 2. ReShade with full add-on support, for OpenGL, into the game's folder only
 .\ReShade_Setup_6.8.0_Addon.exe --headless --api opengl "<game>\bin\<game>.exe"
@@ -331,8 +331,8 @@ python tools\extract_runtime.py <dlssnr_on_amd_setup.exe v0.3.0> version.dll
 python tools\patch_runtime.py version.dll tools\runtime-patches.json dlssnr_amd_pass1.dll
 #   -> 70af3fb757f83f71ec947ce461970fdecc9636864bc01d952abffb36ae310be6 (SHA256SUMS.txt)
 
-# 4. beside the game's exe: dlss5-neural.addon64, dlssnr_amd_pass1.dll,
-#    dlssnr_on_amd_weights.bin (6bf8dc93...), and a dlss5-neural.ini
+# 4. beside the game's exe: amd-nr.addon64, dlssnr_amd_pass1.dll,
+#    dlssnr_on_amd_weights.bin (6bf8dc93...), and a amd-nr.ini
 ```
 
 The runtime pairing is worth stating plainly, because a mismatch here is refused with a hash error
@@ -341,7 +341,7 @@ and it is easy to arrive at the wrong file: the add-on consumes the **patched** 
 and the superseded 2026-09-10 preview mention. The vendor's own installer output, and any
 `dlssnr_amd_pass1.dll` already sitting in a game folder, will not match.
 
-`dlss5-neural.ini` for a scripted session:
+`amd-nr.ini` for a scripted session:
 
 ```ini
 [dlss5]
@@ -404,7 +404,7 @@ In the order the value falls out:
 | Path | |
 |---|---|
 | `src/neural/gl_route.inc` | the route |
-| `src/neural/build_config.h` | `DLSS5_WITH_OPENGL` |
+| `src/neural/build_config.h` | `AMDNR_WITH_OPENGL` |
 | `src/neural/neural.cpp` | the branch in `OnPresent`, the teardown hook, `SelfIssued` |
 | `src/glprobe/glprobe.cpp` | the offline driver probe (`-Target glprobe -Exe`) |
 | `src/glinfo/glinfo.cpp` | the in-game ReShade probe (`-Target glinfo`) |

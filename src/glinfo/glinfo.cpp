@@ -32,8 +32,8 @@
 // engine, and doing that six times during a game's start-up is not free.
 //
 // Build:  .\build.ps1 -Target glinfo
-// Use:    copy dlss5-glinfo.addon64 next to the game's exe, beside ReShade's opengl32.dll,
-//         play for a minute, close the game, read dlss5-glinfo.log next to the exe.
+// Use:    copy amd-nr-glinfo.addon64 next to the game's exe, beside ReShade's opengl32.dll,
+//         play for a minute, close the game, read amd-nr-glinfo.log next to the exe.
 
 #include <reshade.hpp>
 
@@ -281,7 +281,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
 
 }  // namespace
 
-extern "C" __declspec(dllexport) const char *NAME = "dlss5 glinfo";
+extern "C" __declspec(dllexport) const char *NAME = "AMD NR glinfo";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
     "Reports what ReShade hands an add-on under an OpenGL host: the back buffer's GL object type, "
     "whether render-target and depth binds arrive, and whether there is an immediate command list.";
@@ -296,7 +296,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         // Appended, not truncated: under SDL this add-on is loaded and unloaded several times
         // while the window is being created, and "w" would leave only the last load's lines.
         if (g_log == nullptr)
-            g_log = fopen(GamePath("dlss5-glinfo.log").c_str(), "a");
+            g_log = fopen(GamePath("amd-nr-glinfo.log").c_str(), "a");
         {
             SYSTEMTIME now {};
             GetLocalTime(&now);

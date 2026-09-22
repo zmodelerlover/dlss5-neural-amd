@@ -212,7 +212,7 @@ struct Front {
     // describes a back buffer that no longer exists and must be dropped rather than composed.
     bool async=false,pending=false;x86bridge::Frame pendingFrame{};UINT pendingWidth=0,pendingHeight=0;
 } g;
-// Opt-in per-stage measurement, off unless DLSS5_X86BRIDGE_TIMING=1.
+// Opt-in per-stage measurement, off unless AMDNR_X86BRIDGE_TIMING=1.
 //
 // Tuning the classic D3D9 route blind is what produced the rejected raster experiment: the
 // requested raster was altered before anyone knew whether the cost was the CPU round trip, the
@@ -934,14 +934,14 @@ bool FlushAndWait11(){
 }
 void Settings(){
     if(g.settings)return;g.settings=true;
-    const auto dir=Directory();logFile=_wfopen((dir/L"dlss5-neural-x86.log").c_str(),L"w");
-    const auto ini=(dir/L"dlss5-neural.ini").wstring();
-    if(ini_text::StripUtf8Bom(ini))Log("x86bridge: removed a UTF-8 byte-order mark from dlss5-neural.ini; every setting in it was reading as its default");
-    g.enabled=GetPrivateProfileIntW(L"dlss5",L"StartOn",0,ini.c_str())!=0;
-    g.toggleKey=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"dlss5",L"ToggleKey",VK_END,ini.c_str())),0,255);
-    g.toggleMods=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"dlss5",L"ToggleMods",1,ini.c_str())),0,7);
-    g.disableAltTab=GetPrivateProfileIntW(L"dlss5",L"DisableOnAltTab",0,ini.c_str())!=0;
-    wchar_t flag[8]{};g.transport=GetEnvironmentVariableW(L"DLSS5_X86BRIDGE_TRANSPORT_ONLY",flag,8)==1&&flag[0]==L'1';
+    const auto dir=Directory();logFile=_wfopen((dir/L"amd-nr-x86.log").c_str(),L"w");
+    const auto ini=(dir/L"amd-nr.ini").wstring();
+    if(ini_text::StripUtf8Bom(ini))Log("x86bridge: removed a UTF-8 byte-order mark from amd-nr.ini; every setting in it was reading as its default");
+    g.enabled=GetPrivateProfileIntW(L"amd-nr",L"StartOn",0,ini.c_str())!=0;
+    g.toggleKey=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"amd-nr",L"ToggleKey",VK_END,ini.c_str())),0,255);
+    g.toggleMods=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"amd-nr",L"ToggleMods",1,ini.c_str())),0,7);
+    g.disableAltTab=GetPrivateProfileIntW(L"amd-nr",L"DisableOnAltTab",0,ini.c_str())!=0;
+    wchar_t flag[8]{};g.transport=GetEnvironmentVariableW(L"AMDNR_X86BRIDGE_TRANSPORT_ONLY",flag,8)==1&&flag[0]==L'1';
     // The environment variable alone is not enough for every game. One that re-launches itself
     // through its own launcher ends up loading this add-on into a process that is not a child of
     // whatever set the variable, so it inherits nothing and run-with-timing.cmd reports probe=off
@@ -953,18 +953,18 @@ void Settings(){
     // the previous one finished rather than a mix of two, and all three were checked in both modes
     // with no difference seen. Async=0 restores the old behaviour. Ini rather than environment, for
     // the same reason Timing is.
-    g.async=GetPrivateProfileIntW(L"dlss5",L"Async",1,ini.c_str())!=0;
+    g.async=GetPrivateProfileIntW(L"amd-nr",L"Async",1,ini.c_str())!=0;
     wchar_t timingFlag[8]{};
-    probe.Arm((GetEnvironmentVariableW(L"DLSS5_X86BRIDGE_TIMING",timingFlag,8)==1&&timingFlag[0]==L'1')
-              ||GetPrivateProfileIntW(L"dlss5",L"Timing",0,ini.c_str())!=0);
+    probe.Arm((GetEnvironmentVariableW(L"AMDNR_X86BRIDGE_TIMING",timingFlag,8)==1&&timingFlag[0]==L'1')
+              ||GetPrivateProfileIntW(L"amd-nr",L"Timing",0,ini.c_str())!=0);
     Log("x86bridge native x86 protocol=%u mode=%s StartOn=%d ToggleKey=%d ToggleMods=%d probe=%s present=%s",x86bridge::Version,g.transport?"TRANSPORT_ONLY":"NEURAL",g.enabled,g.toggleKey,g.toggleMods,probe.on?"on":"off",g.async?"pipelined":"same-frame");
 }
 bool StartHost(){
     if(g.process)return WaitForSingleObject(g.process.value,0)==WAIT_TIMEOUT;
-    const auto dir=Directory(),exe=dir/L"dlss5-neural-host64.exe";
+    const auto dir=Directory(),exe=dir/L"amd-nr-host64.exe";
     if(GetFileAttributesW(exe.c_str())==INVALID_FILE_ATTRIBUTES)return false;
     LARGE_INTEGER ticks{};QueryPerformanceCounter(&ticks);
-    const std::wstring name=L"\\\\.\\pipe\\dlss5-x86bridge-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(ticks.QuadPart);
+    const std::wstring name=L"\\\\.\\pipe\\amd-nr-x86bridge-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(ticks.QuadPart);
     g.pipe.reset(CreateNamedPipeW(name.c_str(),PIPE_ACCESS_DUPLEX|FILE_FLAG_OVERLAPPED|FILE_FLAG_FIRST_PIPE_INSTANCE,
         PIPE_TYPE_BYTE|PIPE_READMODE_BYTE|PIPE_WAIT|PIPE_REJECT_REMOTE_CLIENTS,1,4096,4096,0,nullptr));
     if(!g.pipe)return false;
@@ -1068,8 +1068,8 @@ void SetAsync(bool async){
     g.async=async;
     probe.Present(g.enabled,g.async);
     Log("x86bridge presentation switched to %s",async?"pipelined":"same-frame");
-    WritePrivateProfileStringW(L"dlss5",L"Async",async?L"1":L"0",
-        (Directory()/L"dlss5-neural.ini").wstring().c_str());
+    WritePrivateProfileStringW(L"amd-nr",L"Async",async?L"1":L"0",
+        (Directory()/L"amd-nr.ini").wstring().c_str());
 }
 #include "overlay32.inc"
 void ClearGuide(Guide& v){
@@ -1377,7 +1377,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     }
 }
 }
-extern "C" __declspec(dllexport) const char* NAME="dlss5 neural x86 bridge";
+extern "C" __declspec(dllexport) const char* NAME="AMD Neural Rendering (32-bit)";
 extern "C" __declspec(dllexport) const char* DESCRIPTION="Native D3D9/D3D11 x86 to original x64 neural engine; same-frame CPU barriers.";
 BOOL APIENTRY DllMain(HMODULE module,DWORD reason,LPVOID){
     if(reason==DLL_PROCESS_ATTACH){
@@ -1390,9 +1390,9 @@ BOOL APIENTRY DllMain(HMODULE module,DWORD reason,LPVOID){
         reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroy);
         reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
         reshade::register_event<reshade::addon_event::present>(OnPresent);
-        reshade::register_overlay("DLSS Neural Rendering (AMD)",OnOverlay32);
+        reshade::register_overlay("AMD Neural Rendering (32-bit)",OnOverlay32);
     }else if(reason==DLL_PROCESS_DETACH){
-        reshade::unregister_overlay("DLSS Neural Rendering (AMD)",OnOverlay32);
+        reshade::unregister_overlay("AMD Neural Rendering (32-bit)",OnOverlay32);
         reshade::unregister_addon(module);
         // No waits or graphics calls while holding the loader lock. Normal retirement is
         // in destroy_swapchain. The private kill-on-close job isolates forced unload/exit.

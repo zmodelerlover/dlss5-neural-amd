@@ -21,7 +21,7 @@
 // discard the contents, so doing it per frame would throw away whatever D3D12 had just written
 // and the symptom would be an empty image with no error anywhere.
 //
-// Build:  .\build.ps1 -Target vkbridge -Exe      Run:  .\build\dlss5-vkbridge.exe
+// Build:  .\build.ps1 -Target vkbridge -Exe      Run:  .\build\amd-nr-vkbridge.exe
 
 #include "../vkshared/vk_raw.inc"
 

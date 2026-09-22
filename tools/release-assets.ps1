@@ -5,8 +5,8 @@
 # missing either is skipped without a word -- the version simply never appears in the menu, and
 # nothing anywhere says why. Releases.cs is the contract:
 #
-#   64-bit route : dlss5-neural.addon64
-#   32-bit route : dlss5-neural.addon32, dlss5-neural-host64.exe, payload.sha256
+#   64-bit route : amd-nr.addon64
+#   32-bit route : amd-nr.addon32, amd-nr-host64.exe, payload.sha256
 #   always       : SHA256SUMS.txt covering all of them
 #
 # Run build-x86bridge.ps1 first -- it produces every one of these except the sums file.
@@ -24,9 +24,9 @@ New-Item -ItemType Directory -Force -Path $release | Out-Null
 
 # Where each one is built, and the name it has to carry in the release.
 $wanted = [ordered]@{
-    'dlss5-neural.addon64'    = Join-Path $root 'build\dlss5-neural.addon64'
-    'dlss5-neural.addon32'    = Join-Path $root 'build-x86bridge\dlss5-neural.addon32'
-    'dlss5-neural-host64.exe' = Join-Path $root 'build-x86bridge\dlss5-neural-host64.exe'
+    'amd-nr.addon64'    = Join-Path $root 'build\amd-nr.addon64'
+    'amd-nr.addon32'    = Join-Path $root 'build-x86bridge\amd-nr.addon32'
+    'amd-nr-host64.exe' = Join-Path $root 'build-x86bridge\amd-nr-host64.exe'
     'payload.sha256'          = Join-Path $release 'payload.sha256'
 }
 

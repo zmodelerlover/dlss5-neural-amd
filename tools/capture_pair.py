@@ -1,6 +1,6 @@
 """Convert Ctrl+PageDown diagnostic captures to PNG and a local A/B viewer.
 
-    python tools/capture_pair.py ".../dlss5-captures/frame-123-456.txt"
+    python tools/capture_pair.py ".../amd-nr-captures/frame-123-456.txt"
 
 The input and runtime textures are from the same recorded evaluation. The
 runtime image already includes its internal residual application. It is not
