@@ -150,11 +150,7 @@ struct Host {
         if(!EnsureResources(w,h,fmt,g.scale.load())){g.unavailable=true;return Result::Original;}
         if(!g.crossLocal && !CreateTexture(w,h,fmt,g.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
     bool runNetwork = true;
-    const bool jobPending =
-        g.fence->GetCompletedValue() < g.completion ||
-        static_cast<UINT>(InterlockedCompareExchange(
-            reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kJobCounter)), 0, 0)) <
-            g.lastJob;
+    const bool jobPending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
     if (!jobPending && g.jobRunning)
     {
         g.jobRunning = false;
@@ -172,7 +168,7 @@ struct Host {
     }
     else if (jobPending)
     {
-        g.lastJob = 0;
+        ResetJobs();
     }
 
     const UINT i = static_cast<UINT>(g.backValue % State::kRing);

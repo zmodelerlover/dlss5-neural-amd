@@ -69,6 +69,9 @@ struct Guide
     bool ready = false;
     bool logged = false;
     bool failed = false;
+    // Set when the companion effect supplies this guide instead of the game. Mirrored from
+    // upstream's Guide so SettleGuide stays an executable copy rather than a lookalike.
+    bool external = false;
 };
 
 constexpr char kGuideDepthCs[] = R"(
@@ -185,6 +188,7 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally)
     guide.ready = false;
     guide.logged = false;
     guide.failed = false;
+    guide.external = false;
     Log("guide %s: taking %ux%u format %u, bound %u times %s", guide.name, best->width,
         best->height, static_cast<unsigned>(best->format), best->binds,
         cold ? "over the first three presents" : "a frame for three frames running");

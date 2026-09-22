@@ -131,7 +131,10 @@ for word in ['FrameFlagClassicD3D9','EfficientClassicD3D9Scale','D3D9 timing avg
 
 # Verify the copied job-pending decision has identical executable text to upstream.
 u=read(root/'src/neural/neural.cpp')
-a=u[u.index('    bool runNetwork = true;',u.index('void BridgePresent')):u.index('    // 1. the game',u.index('void BridgePresent'))]
+# Ends at RenderEffectsAheadOfNetwork rather than at the comment after it: that call is the
+# D3D12 route's own business and has no counterpart in the bridge, so including it made this
+# compare a policy against a policy plus one unrelated line.
+a=u[u.index('    bool runNetwork = true;',u.index('void BridgePresent')):u.index('    RenderEffectsAheadOfNetwork',u.index('void BridgePresent'))]
 b=h[h.index('    bool runNetwork = true;'):h.index('    const UINT i =',h.index('    bool runNetwork = true;'))]
 normal=lambda s:re.sub(r'\s+','',re.sub(r'//[^\n]*','',s))
 assert normal(a)==normal(b),'job pending policy differs'
