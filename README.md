@@ -68,7 +68,7 @@ The controls are colour-coded:
 | Colour | Meaning |
 |---|---|
 | Red | This value can crash the display driver. |
-| Amber | Beyond what has been tested. Not known to break, not known to work. |
+| Amber | A measured warning: the skip rate is climbing, or the card's own limit has fired. |
 
 The main controls:
 
@@ -86,8 +86,8 @@ The main controls:
 
 The defaults are a reasonable starting point.
 
-Each control carries a tag saying how well it is understood: `MEASURED`, `TRACED`, `UNKNOWN` or
-`INERT`. The legend is at the bottom of the panel.
+The panel shows fifteen controls. Everything else it can do is one tick away under **More
+settings** at the bottom, and all of it is editable in `amd-nr.ini` either way.
 
 ## Better motion vectors (optional)
 
@@ -106,13 +106,13 @@ add-on read one instead, and passes ReShade's depth buffer along with it.
    preprocessor definition on the effect.
 2. Copy `AMD_Neural_Feed.fx` into your ReShade shaders folder.
 3. In ReShade's **Home** tab, tick both techniques, with the provider's **above**
-   `DLSS 5 Neural Feed`.
+   `AMD Neural Feed`.
 
 Nothing of any provider is bundled here, and the effect includes no third-party files. It
 declares the provider's output texture exactly as the provider does, which is how ReShade binds
 the same one.
 
-The add-on's **Guides** section reports what it ended up with, per frame, and the line is the
+The add-on's **Status** column reports what it ended up with, per frame, and the line is the
 whole story: a game's own vectors beat the effect, the effect beats the estimator, and the
 estimator beats nothing. Turn the whole thing off with the checkbox there or `FeedEffect=0`.
 
