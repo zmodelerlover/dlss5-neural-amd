@@ -41,7 +41,14 @@ in — the one holding the proxy DLL you just installed.
 1. Unzip this archive anywhere.
 2. Copy `amd-nr.addon64` into that folder. That is the whole of a 64-bit install.
 3. Copy `dlssnr_amd_pass1.dll` and `dlssnr_on_amd_weights.bin` in beside it.
-4. **For a 32-bit game**, copy `files\amd-nr.addon32`, `files\amd-nr-host64.exe` and
+4. Copy `AMD_Neural_Feed.fx` into `reshade-shaders\Shaders\`. Optional, and the only
+   file that does not go in the game's root. It is what gives the network real motion vectors
+   in a game that writes no velocity buffer of its own: it reads whichever optical-flow shader
+   you already have -- iMMERSE Launchpad, VORT or LumeniteFX -- and hands the field over. None
+   of them is bundled. Enable it in ReShade **below** the provider, and set its
+   `AMDNR_MV_PROVIDER` preprocessor definition to 1, 2 or 3 to match. Without it the add-on
+   estimates motion from consecutive frames instead, which works but is a guess.
+5. **For a 32-bit game**, copy `files\amd-nr.addon32`, `files\amd-nr-host64.exe` and
    `payload.sha256` in as well. The `.addon32` is what ReShade loads; the `.exe` is the 64-bit
    helper it starts, and it has to be beside it.
 

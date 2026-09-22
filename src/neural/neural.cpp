@@ -7630,7 +7630,7 @@ extern "C" __declspec(dllexport) const char *DESCRIPTION =
 #if AMDNR_WITH_OPENGL
     ", experimental OpenGL"
 #endif
-    ". SDR and serialized inline multipass preview.";
+    ". Bounded-ratio composition, up to three passes.";
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
 {
