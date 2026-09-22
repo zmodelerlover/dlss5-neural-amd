@@ -1690,7 +1690,7 @@ void SaveSettings(bool quiet = false);
 // Returns whether it read the settings itself, which it does only on the run that writes the file.
 // The caller uses that to skip a second read: on a first run this used to parse the ini twice and
 // print the same two "settings:" and "compose:" lines twice, describing one state.
-// v0.7.0 renamed the add-on's files. Somebody upgrading has a dlss5-neural.ini they spent time
+// v0.6.5 renamed the add-on's files. Somebody upgrading has a dlss5-neural.ini they spent time
 // on, and a rename that silently resets every setting to default is a worse first impression than
 // any rebrand is worth -- so the old file is carried over once, section header and all, and left
 // in place rather than deleted. If both exist the new one wins and nothing is touched.

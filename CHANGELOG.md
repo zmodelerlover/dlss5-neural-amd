@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.7.0 - 2026-09-22 - AMD Neural Rendering
+## v0.6.5 - 2026-09-22 - AMD Neural Rendering
 
 Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights, so an upgrade is the add-on,
 the companion effect, and nothing else.
