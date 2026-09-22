@@ -16,7 +16,7 @@ Discord: <https://discord.gg/wYhvS3JSHM> - for DLSS 5 in general, not a support 
 | | |
 |---|---|
 | GPU | AMD RDNA3 or RDNA4 with the HIP 7 runtime (`amdhip64_7.dll`). HIP 6 does not work. A current Adrenalin driver includes it. Does nothing on NVIDIA or Intel. |
-| Renderer | Direct3D 11 works best. Direct3D 12 works but gets less information. Vulkan and OpenGL are experimental. 32-bit games are experimental, and 32-bit OpenGL is not supported at all. |
+| Renderer | Direct3D 11 works best. Direct3D 12 works, but ReShade is not a good way into a D3D12 game and it is not the route to recommend today; wait for the OptiScaler builds instead. Vulkan and OpenGL are experimental. 32-bit games are experimental, and 32-bit OpenGL is not supported at all. |
 | ReShade | The build labelled "with full add-on support", version 6.x. The normal build cannot load add-ons. |
 | Disk | About 150 MB for the network weights. |
 
