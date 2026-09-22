@@ -324,17 +324,17 @@ void StatusLine()
 {
     const auto &s = controls.status;
     if (!s.connected)
-        ImGui::TextColored(kDanger, T("no helper", "sem ajudante"));
+        ImGui::TextColored(kDanger, "%s", T("no helper", "sem ajudante"));
     else if (s.failed)
-        ImGui::TextColored(kDanger, T("error -- see the log", "erro -- veja o log"));
+        ImGui::TextColored(kDanger, "%s", T("error -- see the log", "erro -- veja o log"));
     else if (s.transportOnly)
         ImGui::TextColored(kWarn, "TRANSPORT_ONLY");
     else if (!s.engineReady)
-        ImGui::TextColored(kWarn, T("engine not ready", "motor não pronto"));
+        ImGui::TextColored(kWarn, "%s", T("engine not ready", "motor não pronto"));
     else if (!g.enabled.load())
-        ImGui::TextDisabled(T("off", "desligado"));
+        ImGui::TextDisabled("%s", T("off", "desligado"));
     else if (s.processed == 0)
-        ImGui::TextColored(kWarn, T("no frames yet", "nenhum quadro ainda"));
+        ImGui::TextColored(kWarn, "%s", T("no frames yet", "nenhum quadro ainda"));
     else
     {
         const uint64_t seen = s.processed + s.skipped;
@@ -1223,15 +1223,15 @@ void Draw()
 
     if (GroupShown(kGrpEngine) && SectionHeader(kHueEngine, T("Engine", "Motor")))
     {
-        ImGui::TextWrapped(T("The engine's own option struct. Every offset came from decompiling "
-                             "the runtime's ini reader, not from guesswork -- but an offset being "
-                             "real says nothing about what writing it does. Every default here is "
-                             "the engine's own, so an untouched section changes nothing.",
+        ImGui::TextWrapped("%s", T("The engine's own option struct. Every offset came from decompiling "
+                                   "the runtime's ini reader, not from guesswork -- but an offset being "
+                                   "real says nothing about what writing it does. Every default here is "
+                                   "the engine's own, so an untouched section changes nothing.",
 
-                             "A struct de opções do próprio motor. Todo offset veio de decompilar "
-                             "o leitor de ini do runtime, não de chute -- mas um offset ser real "
-                             "não diz nada sobre o que escrever nele faz. Todo padrão aqui é o do "
-                             "próprio motor, então esta seção intocada não muda nada."));
+                                   "A struct de opções do próprio motor. Todo offset veio de decompilar "
+                                   "o leitor de ini do runtime, não de chute -- mas um offset ser real "
+                                   "não diz nada sobre o que escrever nele faz. Todo padrão aqui é o do "
+                                   "próprio motor, então esta seção intocada não muda nada."));
 
         if (Shown(kOptMask))
         {
@@ -1378,13 +1378,13 @@ void Draw()
     // the helper's side. The only thing a bit decides is whether a widget is drawn.
     if (ImGui::TreeNode(T("More settings", "Mais ajustes")))
     {
-        ImGui::TextWrapped(T("Off screen by default, not off. Each of these reads and writes its "
-                             "own key in amd-nr.ini either way; ticking one only puts a control "
-                             "for it in the panel.",
+        ImGui::TextWrapped("%s", T("Off screen by default, not off. Each of these reads and writes its "
+                                   "own key in amd-nr.ini either way; ticking one only puts a control "
+                                   "for it in the panel.",
 
-                             "Fora da tela por padrão, não desligados. Cada um destes lê e "
-                             "escreve a chave dele no amd-nr.ini de qualquer jeito; marcar um só "
-                             "põe um controle para ele no painel."));
+                                   "Fora da tela por padrão, não desligados. Cada um destes lê e "
+                                   "escreve a chave dele no amd-nr.ini de qualquer jeito; marcar um só "
+                                   "põe um controle para ele no painel."));
 
         uint32_t bits = g.optional.load();
         const uint32_t before = bits;
@@ -1453,8 +1453,8 @@ void Draw()
          "ajustes vão junto porque um log sem eles não dá para comparar com nada.\n\n"
          "Os logs são truncados toda vez que o jogo abre, então exporte antes de relançar.");
     if (controls.exportFailed)
-        ImGui::TextColored(kDanger, T("Could not write to the desktop.",
-                                      "Não deu para escrever na área de trabalho."));
+        ImGui::TextColored(kDanger, "%s", T("Could not write to the desktop.",
+                                            "Não deu para escrever na área de trabalho."));
     else if (!controls.exportedPath.empty())
         ImGui::TextColored(kOk, T("Exported to %ls", "Exportado para %ls"),
                            controls.exportedPath.c_str());
@@ -1468,10 +1468,10 @@ void Draw()
 
     // The legend, which used to be six paragraphs and a four-entry tag table. One wrapped line:
     // the tags are gone, and red and amber are the only marks a control can carry now.
-    ImGui::TextDisabled(T("Red: risks the display driver at this value. Amber: past what was "
-                          "measured here.",
-                          "Vermelho: neste valor arrisca o driver de vídeo. Âmbar: além do que "
-                          "foi medido aqui."));
+    ImGui::TextDisabled("%s", T("Red: risks the display driver at this value. Amber: past what was "
+                                "measured here.",
+                                "Vermelho: neste valor arrisca o driver de vídeo. Âmbar: além do "
+                                "que foi medido aqui."));
 }
 
 } // namespace overlay32
