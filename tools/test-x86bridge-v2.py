@@ -98,7 +98,7 @@ assert ui.index('int timing=')<ui.index('::SetAsync(timing==1);')
 assert 'It does not smear' in ui and 'smearing when the camera turns' not in ui
 assert 'ImGui::IsItemDeactivated()' in ui and 'editingScaleActive' in ui
 assert 'g.inlineMode.store(true)' in h and 'LoadSettings();ForceInline();' in h
-assert 'register_overlay("AMD Neural Rendering (AMD)",OnOverlay32)' in front
+assert 'register_overlay("AMD Neural Rendering (32-bit)",OnOverlay32)' in front
 assert h.index('SaveSettings();Snapshot')>h.index('case Kind::SaveSettings:')
 fields=read(n/'settings_fields.inc')
 assert all(re.fullmatch(r'X\((uint32_t|int32_t|float), [A-Za-z]+, [-.0-9]+, [-.0-9]+\)',line) for line in fields.splitlines() if not line.startswith('//'))
