@@ -8,6 +8,7 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <filesystem>
+#include <shlobj.h>
 #include <unordered_map>
 #include <mutex>
 #include <cstdio>
@@ -286,6 +287,10 @@ constexpr uint64_t kCaptureIdleMs=3000;
 struct Controls32 {
     x86bridge::WireSettings shadow{};x86bridge::WireStatus status{};
     bool synced=false,syncRequested=false,save=false,reload=false,factory=false,measure=false,preSyncEnableChanged=false;
+    // The log export the panel's button asks for, and what to tell the person afterwards. The
+    // copying itself happens on the present path with the other control traffic: the overlay
+    // callback owns no transaction, here or anywhere else.
+    bool exportLogs=false,exportFailed=false;std::wstring exportedPath;
     hotkey::Capture capture;
     // Stamped by the overlay callback, the only place ReShade hands a runtime over. The key
     // scan runs on the present path and needs it to read ReShade's own key state.
@@ -1026,6 +1031,35 @@ bool StateRequest(x86bridge::Kind kind,const void* body=nullptr,uint32_t bytes=0
     if(replace){controls.shadow=snapshot.settings;controls.sentRevision=snapshot.settings.settings_revision;controls.synced=true;OperationalSettings();}
     return true;
 }
+// Copies this run's logs and the settings that produced them to a dated folder on the desktop,
+// the same button the 64-bit panel has. Two differences, both from the shape of this route: there
+// are two logs rather than one, and they are not in the same place -- the frontend writes beside
+// the add-on, the helper writes beside the game -- so each name is looked for in both.
+//
+// SHGetKnownFolderPath rather than %USERPROFILE%\Desktop: a desktop redirected into OneDrive is
+// ordinary now, and the guessed path would silently write somewhere nobody looks.
+std::wstring ExportBridgeLogs(){
+    PWSTR desktop=nullptr;
+    if(FAILED(SHGetKnownFolderPath(FOLDERID_Desktop,0,nullptr,&desktop)))return L"";
+    std::filesystem::path out(desktop);CoTaskMemFree(desktop);
+    wchar_t stamp[32]{};SYSTEMTIME now{};GetLocalTime(&now);
+    std::swprintf(stamp,32,L"amd-nr-logs-%04u%02u%02u-%02u%02u%02u",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond);
+    out/=stamp;
+    std::error_code ec;std::filesystem::create_directories(out,ec);if(ec)return L"";
+    wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);
+    const std::filesystem::path places[]{Directory(),std::filesystem::path(exe).parent_path()};
+    const wchar_t* wanted[]{L"amd-nr-x86.log",L"amd-nr-x86-host.log",L"dlssnr_on_amd.log",L"ReShade.log",L"amd-nr.ini"};
+    int copied=0;
+    for(const wchar_t* name:wanted)for(const auto& dir:places){
+        const auto from=dir/name;
+        if(!std::filesystem::exists(from,ec))continue;
+        std::filesystem::copy_file(from,out/name,std::filesystem::copy_options::overwrite_existing,ec);
+        if(!ec){++copied;break;}
+    }
+    if(copied==0){std::filesystem::remove(out,ec);return L"";}
+    Log("menu: exported %d file(s) to %ls",copied,out.c_str());
+    return out.wstring();
+}
 // Called only from OnPresent, with g.lock held. Never from ImGui or a worker.
 bool SyncControls(){
     using x86bridge::Kind;
@@ -1044,6 +1078,11 @@ bool SyncControls(){
     // memory, deliberately leaves this behind so the overlay's autosave picks it up next frame.
     if(controls.save){if(!StateRequest(Kind::SaveSettings))return false;controls.save=false;controls.savedRevision=controls.sentRevision;}
     if(controls.reload){if(!StateRequest(Kind::ReloadSettings,nullptr,0,true))return false;controls.reload=false;controls.savedRevision=controls.sentRevision;}
+    // After the save above, never before it: a log without the settings that produced it cannot be
+    // compared against anything, and the panel arms both flags in the same click.
+    if(controls.exportLogs&&!controls.save){
+        controls.exportedPath=ExportBridgeLogs();controls.exportFailed=controls.exportedPath.empty();controls.exportLogs=false;
+    }
     if(controls.factory){x86bridge::WireCommand c;c.id=++controls.commandId;c.code=x86bridge::CommandCode::FactoryDefaults;
         if(!StateRequest(Kind::Command,&c,sizeof(c),true))return false;controls.factory=false;}
     if(controls.measure){x86bridge::WireCommand c;c.id=++controls.commandId;

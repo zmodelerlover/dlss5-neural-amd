@@ -91,7 +91,7 @@ try {
         if($LASTEXITCODE -ne 0){throw "Hotkey capture test failed: $arch"}
         if($arch -eq 'x86'){
             $binary=Join-Path $out 'amd-nr.addon32'
-            & $cl @flags /LD (Join-Path $root 'src/x86bridge/frontend32.cpp') "/Fo$out\frontend32.obj" /link /DLL "/OUT:$binary" user32.lib d3d9.lib d3d11.lib dxgi.lib d3dcompiler.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x86.log')
+            & $cl @flags /LD (Join-Path $root 'src/x86bridge/frontend32.cpp') "/Fo$out\frontend32.obj" /link /DLL "/OUT:$binary" user32.lib d3d9.lib d3d11.lib dxgi.lib d3dcompiler.lib shell32.lib ole32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x86.log')
         }else{
             $binary=Join-Path $out 'amd-nr-host64.exe'
             & $cl @flags (Join-Path $root 'src/x86bridge/host64.cpp') "/Fo$out\host64.obj" /link "/OUT:$binary" user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x64.log')

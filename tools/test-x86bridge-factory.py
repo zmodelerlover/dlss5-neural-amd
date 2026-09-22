@@ -42,13 +42,15 @@ std::string file(){std::ifstream f("amd-nr.ini",std::ios::binary);return std::st
 int main(){
  std::ofstream("amd-nr.ini")<<"[amd-nr]\\nColourStrength=0.75\\nUserText=untouched\\n";auto original=file();
  Host host;host.CaptureFactoryDefaults();auto captured=host.factoryDefaults;
- auto custom=host.ExportSettings();custom.settings_revision=2;custom.colourStrength=.9f;custom.structure=2;custom.skin=-1;custom.passes=3;custom.scale=1.5f;custom.tone=2;
+ auto custom=host.ExportSettings();custom.settings_revision=2;custom.colourStrength=.9f;custom.structure=2;custom.skin=2;custom.passes=3;custom.optional=7;custom.scale=1.5f;custom.tone=2;
  custom.enabled=1;custom.startOn=1;custom.toggleKey=65;custom.toggleMods=5;custom.language=1;custom.disableOnAltTab=1;custom.useHistory=0;custom.useDepth=0;
  assert(host.ApplySettings(custom));g.historyValid.value=true;g.historyValid.writes=0;
  host.RestoreFactoryDefaults();auto result=host.ExportSettings();
- assert(result.colourStrength==0.25f&&result.structure==1&&result.skin==1&&result.passes==1&&result.inlineMode==1);
+ assert(result.colourStrength==0.25f&&result.structure==1&&result.skin==-1&&result.passes==1&&result.inlineMode==1);
  auto expected=FactorySettings(captured,custom);assert(std::memcmp(&result,&expected,sizeof(result))==0);
  assert(result.enabled==1&&result.startOn==1&&result.toggleKey==65&&result.toggleMods==5&&result.language==1&&result.disableOnAltTab==1);
+ assert(result.optional==7); // a panel arrangement is a preference, not tuning
+
  assert(!g.historyValid.load()&&g.historyValid.writes==1);assert(file()==original);
  StateSnapshot snapshot{result,{}};assert(snapshot.settings.colourStrength==0.25f&&snapshot.settings.settings_revision==3);
  WireCommand c;c.id=12;c.code=CommandCode::FactoryDefaults;assert(NewCommand(c,11)&&!NewCommand(c,12));

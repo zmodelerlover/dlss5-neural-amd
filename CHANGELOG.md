@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased - the 32-bit panel is the rebuilt one
+
+The panel rebuild in v0.6.5 landed on the 64-bit route only. The 32-bit bridge kept its own
+overlay -- forty controls, eight headers, and the MEASURED/TRACED/UNKNOWN/INERT tags -- so any
+D3D8/D3D9/D3D11 game showed the old menu over the new image. The backend was never old: the helper
+compiles the same engine, the composition there has been the bounded ratio since v0.6.5, and the
+bridge already carried `RatioGuard`, `ColourStrength`, `ResidualLimit`, `ResidualFade`,
+`Intensity`, `Structure`, `Skin`, `Tone` and `Scale`. Only the panel could not reach them.
+
+- **The same fifteen controls, the same cascade, the same wording as the 64-bit panel.** Status
+  runs down the right-hand column, the tags are gone, red and amber are the only marks a control
+  carries, and **More settings** reveals the rest one tick at a time under the header it will
+  appear beneath. The `HiddenShown` bits are the same bit numbers on both routes.
+- **Five settings joined the wire**: `Style`, `StyleStrength`, `HiddenShown`, `DepthInverted` and
+  `DepthNormalise`. The protocol is **v3**; the two sides are built and shipped together, and a
+  mismatched pair is refused at the header rather than misread. `FeedEffect` deliberately did not
+  join it -- the companion effect is read through ReShade's effect runtime, which lives in the
+  game's process, while the network lives in the helper.
+- **The helper reports its scale cap.** When one evaluation takes long enough to risk the display
+  driver, the helper lowers the scale on its own; the panel now compares the network raster against
+  what is really running instead of against the slider, so a capped-but-working configuration
+  stops reading as "not applied yet". Moving the slider asks for the full scale again.
+- **Export logs to desktop**, the button the 64-bit panel got, with this route's two logs: it
+  collects `amd-nr-x86.log`, `amd-nr-x86-host.log`, `dlssnr_on_amd.log`, `ReShade.log` and
+  `amd-nr.ini` into a dated folder. It looks in both directories, because the add-on writes beside
+  itself and the helper writes beside the game.
+- **A fresh 32-bit ini no longer writes `Skin=1`.** -1 is the engine's automatic and the value it
+  boots with; writing 1 switched that off before anybody had touched a control, which is the bug
+  the 64-bit default had until v0.6.5. Factory Defaults restores -1 too, and leaves the panel
+  arrangement alone -- which controls are on screen is a preference, like the language and the
+  hotkey.
+
 ## v0.6.5 - 2026-09-22 - AMD Neural Rendering
 
 Same pinned **DLSS-NR-on-AMD v0.3.0** runtime and the same weights, so an upgrade is the add-on,

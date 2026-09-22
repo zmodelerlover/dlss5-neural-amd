@@ -48,7 +48,8 @@ struct Host {
         s.depthActive=!transport&&built&&g.gameDepthActive;s.motionActive=!transport&&built&&g.gameMotionActive;
         s.probeValid=!transport&&built&&g.probeStillPct.load()>=0;
         s.depthMin=g.probeDepthMin.load();s.depthMax=g.probeDepthMax.load();s.motionMean=g.probeMotionMean.load();s.motionMax=g.probeMotionMax.load();s.stillPct=g.probeStillPct.load();
-        s.stage=g.stage.load();s.events=g.events;s.noBridge=g.noBridge.load();s.noBackBuffer=g.noBackBuffer.load();return s;
+        s.stage=g.stage.load();s.events=g.events;s.noBridge=g.noBridge.load();s.noBackBuffer=g.noBackBuffer.load();
+        s.scaleCap=g.scaleCap.load();return s;
     }
     void Snapshot(Kind kind,Result result=Result::Ready){
         StateSnapshot s{ExportSettings(),ExportStatus()};Reply(kind,result);
@@ -64,10 +65,13 @@ struct Host {
         std::error_code ec;const bool existed=std::filesystem::exists(ini,ec);
         EnsureNeuralIni();
         if(!existed&&!ec){
-            g.colourStrength.store(0.25f);g.structure.store(1);g.skin.store(1);g.passes.store(1);
+            g.colourStrength.store(0.25f);g.structure.store(1);g.skin.store(-1);g.passes.store(1);
             WritePrivateProfileStringW(L"amd-nr",L"ColourStrength",L"0.25",ini.c_str());
             WritePrivateProfileStringW(L"amd-nr",L"Structure",L"1",ini.c_str());
-            WritePrivateProfileStringW(L"amd-nr",L"Skin",L"1",ini.c_str());
+            // -1 is the engine's automatic. A fresh ini used to write 1 here, which switched it off
+            // before anybody had touched a control -- the panel's Auto skin box then came up
+            // unticked on this route and ticked on the other, for the same shipped defaults.
+            WritePrivateProfileStringW(L"amd-nr",L"Skin",L"-1",ini.c_str());
             WritePrivateProfileStringW(L"amd-nr",L"Passes",L"1",ini.c_str());
         }
     }
@@ -285,7 +289,13 @@ struct Host {
             switch(h.kind){
             case Kind::GetState:case Kind::Status:Snapshot(h.kind);break;
             case Kind::SetState:{WireSettings s;Require(Receive(pipe.value,parent.value,&s,sizeof(s)),"SET_STATE body");
-                const bool applied=ApplySettings(s);Snapshot(h.kind,applied?Result::Ready:Result::Error);break;}
+                const float wanted=g.scale.load();
+                const bool applied=ApplySettings(s);
+                // A new Scale arriving is the person overruling the cap NoteJobCost put on, the same
+                // as letting go of the slider does on the 64-bit route. Only a moved control sends a
+                // revision at all, so an unchanged value never reaches here and never lifts anything.
+                if(applied&&g.scale.load()!=wanted){g.scaleCap.store(0.0f);g.longJobs=0;}
+                Snapshot(h.kind,applied?Result::Ready:Result::Error);break;}
             case Kind::SaveSettings:SaveSettings();Snapshot(h.kind);break;
             case Kind::ReloadSettings:{const bool history=g.useHistory.load();LoadSettings();ForceInline();if(history!=g.useHistory.load())g.historyValid.store(false);++settingsRevision;Snapshot(h.kind);break;}
             case Kind::Command:{WireCommand c;Require(Receive(pipe.value,parent.value,&c,sizeof(c)),"COMMAND body");

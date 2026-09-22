@@ -29,7 +29,7 @@ struct Front{std::mutex lock;Guide guideDepth,guideMotion;bool failed=false,asyn
 // Stand-in for neural/hotkey_capture.h, which is Windows-only. The overlay touches two
 // members of it, and this is a syntax check, so those two are what it needs to see.
 namespace hotkey{struct Capture{bool armed=false;void Toggle(){}};}
-struct Controls{x86bridge::WireSettings shadow;x86bridge::WireStatus status;uint64_t overlayAt=0,savedRevision=0;bool synced=false,syncRequested=false,save=false,reload=false,factory=false,measure=false,capturing=false,preSyncEnableChanged=false;hotkey::Capture capture;effect_runtime* runtime=nullptr;}controls;
+struct Controls{x86bridge::WireSettings shadow;x86bridge::WireStatus status;uint64_t overlayAt=0,savedRevision=0;bool synced=false,syncRequested=false,save=false,reload=false,factory=false,measure=false,capturing=false,preSyncEnableChanged=false,exportLogs=false,exportFailed=false;std::wstring exportedPath;hotkey::Capture capture;effect_runtime* runtime=nullptr;}controls;
 void OperationalSettings(){}
 // The Timing combo switches presentation mode live, so the overlay calls into the frontend.
 void SetAsync(bool a){g.async=a;}
@@ -78,6 +78,15 @@ ui=read(n/'overlay32.inc');front=read(n/'frontend32.cpp')
 for call in ['Request(', 'ReadFile(', 'WriteFile(', 'WaitFor', 'FlushAndWait', 'StartHost(', 'StateRequest(', 'SyncControls(', 'SaveSettings(', 'LoadSettings(']:
  assert call not in ui,call
 assert 'std::try_to_lock' in ui and 'controls.save=true' in ui and 'controls.reload=true' in ui and 'controls.measure=true' in ui
+assert 'controls.exportLogs=true' in ui and 'ExportBridgeLogs()' not in ui
+assert front.index('if(controls.save)')<front.index('controls.exportedPath=ExportBridgeLogs()')
+# The rebuilt panel is the 64-bit one: fifteen controls, the cascade that reveals the rest, and
+# no MEASURED/TRACED/UNKNOWN/INERT tags. Feed.fx has no row here -- the effect runtime is in
+# this process and the network is in the helper.
+for gone in ['void Tag(','enum Known','Tag(k','kOptFeed','Use Feed.fx']:
+ assert gone not in ui,gone
+for wanted in ['More settings','RightLine(','GroupShown(','EffectiveScale()','Export logs to desktop','kOptMeasure']:
+ assert wanted in ui,wanted
 # Autosave: armed only once a control has settled, and only against what is already on disk. Without
 # the IsAnyItemActive guard a held slider is one whole-file rewrite per frame.
 assert 'controls.shadow.settings_revision!=controls.savedRevision&&!ImGui::IsAnyItemActive()' in ui

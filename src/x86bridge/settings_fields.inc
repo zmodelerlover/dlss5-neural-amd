@@ -36,3 +36,13 @@ X(float, motionScale, -2, 2)
 X(float, flowGate, 0.002, 0.1)
 X(float, flowRatio, 0.5, 1)
 X(float, engineScale, 0, 1)
+// Added with the rebuilt panel: the 32-bit route needs the same controls the 64-bit one has.
+// FeedEffect is deliberately not here -- the companion effect is read through ReShade's effect
+// runtime, which lives in the frontend process, so the helper has nothing to do with the flag.
+X(uint32_t, depthInverted, 0, 1)
+X(uint32_t, depthNormalise, 0, 1)
+// One bit per optional control, saved as HiddenShown. The high bound is kOptAll, 23 bits; this
+// macro takes a literal, so it is spelled out.
+X(uint32_t, optional, 0, 8388607)
+X(int32_t, style, 0, 2)
+X(float, styleStrength, 0, 1)
