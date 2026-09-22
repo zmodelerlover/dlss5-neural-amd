@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased - the 32-bit panel is the rebuilt one
+## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
+
+Same pinned **DLSS-NR-on-AMD v0.3.0** runtime, same weights, and **the 64-bit add-on is
+unchanged by this release**: `amd-nr.addon64` is the v0.6.5 binary, still pinned by the same
+hash. What ships here is the 32-bit pair, `amd-nr.addon32` and `amd-nr-host64.exe`.
 
 The panel rebuild in v0.6.5 landed on the 64-bit route only. The 32-bit bridge kept its own
 overlay -- forty controls, eight headers, and the MEASURED/TRACED/UNKNOWN/INERT tags -- so any
