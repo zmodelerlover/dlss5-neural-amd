@@ -1,0 +1,22 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+BreakBeforeBraces: Attach
+NamespaceIndentation: None
+FixNamespaceComments: false
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakConstructorInitializers: BeforeComma
+PackConstructorInitializers: Never
+AccessModifierOffset: -4
+# The include order is load-bearing here (reshade.hpp before core/ui/), and the comments carry
+# measurements laid out by hand.
+SortIncludes: Never
+ReflowComments: false
+# A log line has to stay greppable as one string.
+BreakStringLiterals: false
+...

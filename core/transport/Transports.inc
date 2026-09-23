@@ -3,8 +3,7 @@
 // The guard every transport that crosses to our own D3D12 device runs first. Between a teardown
 // and the new swapchain being announced there is nothing safe to touch, and without the D3D12
 // entry points there is nothing to cross to.
-bool CrossingReady(swapchain *sc)
-{
+bool CrossingReady(swapchain* sc) {
     if (g.noBridge.load() || g.goneSwapchain.load() == sc)
         return false;
     if (LoadGraphicsApi())
@@ -28,10 +27,8 @@ bool CrossingReady(swapchain *sc)
 #endif
 
 // The one place that asks which API this is.
-FrameTransport *TransportFor(device_api api)
-{
-    switch (api)
-    {
+FrameTransport* TransportFor(device_api api) {
+    switch (api) {
     case device_api::d3d12:
         return &d3d12route::transport;
     case device_api::d3d11:
@@ -49,10 +46,9 @@ FrameTransport *TransportFor(device_api api)
     }
 }
 
-std::span<FrameTransport *const> AllTransports()
-{
+std::span<FrameTransport* const> AllTransports() {
     // OpenGL first: the order the core released them in before they were transports.
-    static FrameTransport *const all[] {
+    static FrameTransport* const all[]{
         &d3d12route::transport,
         &d3d11route::transport,
 #if AMDNR_WITH_OPENGL
@@ -61,7 +57,7 @@ std::span<FrameTransport *const> AllTransports()
 #if AMDNR_WITH_VULKAN
         &vkroute::transport,
 #endif
-        nullptr,  // so the array is never empty; not counted
+        nullptr, // so the array is never empty; not counted
     };
-    return { all, std::size(all) - 1 };
+    return {all, std::size(all) - 1};
 }

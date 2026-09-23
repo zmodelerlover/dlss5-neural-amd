@@ -2,28 +2,27 @@
 // scene depth, told apart by how often it is bound and cleared, and a copy taken before each
 // clear because by present time PCSX2 has already wiped it.
 
-namespace d3d12route
-{
+namespace d3d12route {
 
-void TallyBoundDepth(resource res)
-{
+void TallyBoundDepth(resource res) {
     if (res.handle == 0)
         return;
-    auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
+    auto* native = reinterpret_cast<ID3D12Resource*>(res.handle);
     std::lock_guard guard(g.lock);
     if (native == g.depthBest.Get())
-        ++g.depthBinds;  // the status line's running total, which outlives one present
+        ++g.depthBinds; // the status line's running total, which outlives one present
     const auto d = native->GetDesc();
-    static UINT seen = 0;  // separate from the API-agnostic counter above
+    static UINT seen = 0; // separate from the API-agnostic counter above
     const bool readable = DepthReadFormat(d.Format) != DXGI_FORMAT_UNKNOWN;
     const bool denied = (d.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0;
-    if (seen < 8)
-    {
+    if (seen < 8) {
         ++seen;
         Log("depth seen: %llux%u format %d flags 0x%x samples %u array %u -> %s",
             static_cast<unsigned long long>(d.Width), d.Height, static_cast<int>(d.Format),
             static_cast<unsigned>(d.Flags), d.SampleDesc.Count, d.DepthOrArraySize,
-            (!readable ? "format not readable" : denied ? "shader resource denied" : "taken"));
+            (!readable ? "format not readable"
+             : denied  ? "shader resource denied"
+                       : "taken"));
     }
     if (d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || d.SampleDesc.Count != 1 ||
         d.DepthOrArraySize != 1 || !readable || denied)
@@ -33,12 +32,11 @@ void TallyBoundDepth(resource res)
     ++TallyD12Depth(native, d).binds;
 }
 
-void SnapshotBeforeClear(command_list *cmd_list, device *dev, resource_view dsv)
-{
+void SnapshotBeforeClear(command_list* cmd_list, device* dev, resource_view dsv) {
     const resource res = dev->get_resource_from_view(dsv);
     if (res.handle == 0)
         return;
-    auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
+    auto* native = reinterpret_cast<ID3D12Resource*>(res.handle);
 
     std::lock_guard guard(g.lock);
     // Counted for whichever candidate this is, not only for the one holding the slot: "the game
@@ -60,8 +58,7 @@ void SnapshotBeforeClear(command_list *cmd_list, device *dev, resource_view dsv)
 
     const auto d = native->GetDesc();
     if (g.depthSnapshot == nullptr || g.depthSnapshot->GetDesc().Width != d.Width ||
-        g.depthSnapshot->GetDesc().Height != d.Height)
-    {
+        g.depthSnapshot->GetDesc().Height != d.Height) {
         g.depthSnapshot.Reset();
         auto sd = d;
         sd.Format = DepthAliasFormat(d.Format);
@@ -75,12 +72,11 @@ void SnapshotBeforeClear(command_list *cmd_list, device *dev, resource_view dsv)
         sd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         if (sd.Format == DXGI_FORMAT_UNKNOWN)
             return;
-        D3D12_HEAP_PROPERTIES hp {};
+        D3D12_HEAP_PROPERTIES hp{};
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
-        if (FAILED(g.device->CreateCommittedResource(
-                &hp, D3D12_HEAP_FLAG_NONE, &sd, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                nullptr, IID_PPV_ARGS(&g.depthSnapshot))))
-        {
+        if (FAILED(g.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &sd,
+                                                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                                     nullptr, IID_PPV_ARGS(&g.depthSnapshot)))) {
             Log("depth snapshot allocation failed (%llux%u format %d).",
                 static_cast<unsigned long long>(d.Width), d.Height, static_cast<int>(sd.Format));
             return;
@@ -89,7 +85,7 @@ void SnapshotBeforeClear(command_list *cmd_list, device *dev, resource_view dsv)
             static_cast<unsigned long long>(d.Width), d.Height);
     }
 
-    auto *cmd = reinterpret_cast<ID3D12GraphicsCommandList *>(cmd_list->get_native());
+    auto* cmd = reinterpret_cast<ID3D12GraphicsCommandList*>(cmd_list->get_native());
     if (cmd == nullptr)
         return;
     // A clear needs the resource in DEPTH_WRITE, so that is the state it is in right now.
@@ -100,8 +96,7 @@ void SnapshotBeforeClear(command_list *cmd_list, device *dev, resource_view dsv)
     Barrier(cmd, g.depthSnapshot.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Barrier(cmd, native, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    if (!g.loggedSnapshot)
-    {
+    if (!g.loggedSnapshot) {
         g.loggedSnapshot = true;
         Log("depth: first snapshot copied before a clear. If the engine log still says depth off, "
             "the copy is happening but the engine is refusing the resource.");
@@ -109,4 +104,4 @@ void SnapshotBeforeClear(command_list *cmd_list, device *dev, resource_view dsv)
     return;
 }
 
-}  // namespace d3d12route
+} // namespace d3d12route
