@@ -3327,7 +3327,7 @@ void OnDestroySwapchain(swapchain *sc, bool resize)
             }
         }
         // No ClearState: nothing of ours is bound, it only emptied the game's cached pipeline (PCSX2
-        // lost its device 57 ms later, DRIVER_INTERNAL_ERROR; suspected, not yet bench-confirmed).
+        // lost its device 57 ms later, DRIVER_INTERNAL_ERROR; gone without it on the bench).
         g.bridge.game11ctx->Flush();
     }
     ReleaseSwapchainSized();

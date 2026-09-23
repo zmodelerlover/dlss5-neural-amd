@@ -41,7 +41,8 @@ assert 'TestCooperativeLevel()' in recover and 'D3DERR_DEVICELOST' in recover an
 assert 'g.reset=true;' in recover and 'StopHost(' not in recover and 'g.failed=true' not in recover
 assert 'HRESULT UploadD3D9Frame(' in f and 'HRESULT DownloadD3D9Frame(' in f and 'HRESULT FlushAndWait9()' in f
 assert 'mods&g.toggleMods' in present and 'IsIconic' in present and 'g.reset=true' in present
-assert 'g.game11ctx->ClearState()' in f
+# Clearing the game's context on a resize emptied its cached pipeline; PCSX2 lost its device.
+assert 'ClearState()' not in f
 # D3D9 Reset is already in progress when ReShade emits destroy_swapchain. Its resize branch must
 # release default-pool resources without IPC, submitting queries or waiting on either GPU. Remote
 # retirement is deferred until Bridge::Ensure runs from the next stable presentation.

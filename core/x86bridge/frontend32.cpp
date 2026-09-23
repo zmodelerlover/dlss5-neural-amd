@@ -1030,7 +1030,7 @@ void OnDestroy(swapchain* sc,bool resize){
     }
 
     DropRemote();
-    if(g.game11ctx){FlushAndWait11();g.game11ctx->ClearState();g.game11ctx->Flush();}
+    if(g.game11ctx){FlushAndWait11();g.game11ctx->Flush();} // no ClearState: it emptied the game's cache
     if(g.nativeD3D9)FlushAndWait9();
     ReleaseLocal();
     if(!resize){
