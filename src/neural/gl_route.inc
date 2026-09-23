@@ -504,7 +504,7 @@ bool BuildCrossing(Route &r, Crossing &c, UINT w, UINT h, const char *what)
     rd.SampleDesc.Count = 1;
     rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
-    HRESULT hr = g.workDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd,
+    HRESULT hr = g.bridge.workDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd,
                                                        D3D12_RESOURCE_STATE_COMMON, nullptr,
                                                        IID_PPV_ARGS(&c.on12));
     if (FAILED(hr))
@@ -512,13 +512,13 @@ bool BuildCrossing(Route &r, Crossing &c, UINT w, UINT h, const char *what)
         Log("opengl: creating the shared %s texture failed 0x%08lX.", what, hr);
         return false;
     }
-    hr = g.workDevice->CreateSharedHandle(c.on12.Get(), nullptr, GENERIC_ALL, nullptr, &c.handle);
+    hr = g.bridge.workDevice->CreateSharedHandle(c.on12.Get(), nullptr, GENERIC_ALL, nullptr, &c.handle);
     if (FAILED(hr))
     {
         Log("opengl: exporting the shared %s handle failed 0x%08lX.", what, hr);
         return false;
     }
-    const UINT64 bytes = g.workDevice->GetResourceAllocationInfo(0, 1, &rd).SizeInBytes;
+    const UINT64 bytes = g.bridge.workDevice->GetResourceAllocationInfo(0, 1, &rd).SizeInBytes;
     Log("opengl:   %s D3D12 texture created and exported, %llu bytes.", what,
         static_cast<unsigned long long>(bytes));
 
@@ -659,7 +659,7 @@ bool ImportFences(Route &r)
         r.api.semaphoreParameterui64v == nullptr || r.api.waitSemaphore == nullptr ||
         r.api.signalSemaphore == nullptr)
         return false;
-    if (g.crossHandle == nullptr || g.backHandle == nullptr)
+    if (g.bridge.crossHandle == nullptr || g.bridge.backHandle == nullptr)
         return false;
 
     GLuint pair[2] { 0, 0 };
@@ -667,9 +667,9 @@ bool ImportFences(Route &r)
     r.api.genSemaphores(2, pair);
     if (!r.api.Clean() || pair[0] == 0 || pair[1] == 0)
         return false;
-    r.api.importSemaphoreWin32(pair[0], GL_HANDLE_TYPE_D3D12_FENCE_EXT_, g.crossHandle);
+    r.api.importSemaphoreWin32(pair[0], GL_HANDLE_TYPE_D3D12_FENCE_EXT_, g.bridge.crossHandle);
     const bool first = r.api.Clean();
-    r.api.importSemaphoreWin32(pair[1], GL_HANDLE_TYPE_D3D12_FENCE_EXT_, g.backHandle);
+    r.api.importSemaphoreWin32(pair[1], GL_HANDLE_TYPE_D3D12_FENCE_EXT_, g.bridge.backHandle);
     const bool second = r.api.Clean();
     if (!first || !second)
     {
@@ -682,8 +682,8 @@ bool ImportFences(Route &r)
     r.semToD3D = pair[1];
     // The fences already carry whatever the D3D11 route left on them in another life; start above
     // their current values so every wait below is for a value that has not been reached yet.
-    r.toGlValue = g.crossFence->GetCompletedValue();
-    r.toD3DValue = g.backFence->GetCompletedValue();
+    r.toGlValue = g.bridge.crossFence->GetCompletedValue();
+    r.toD3DValue = g.bridge.backFence->GetCompletedValue();
     return true;
 }
 
@@ -821,7 +821,7 @@ bool Ensure(Route &r, UINT w, UINT h)
         }
     }
 
-    if (g.workDevice == nullptr)
+    if (g.bridge.workDevice == nullptr)
     {
         if (!r.luidKnown)
         {
@@ -841,12 +841,12 @@ bool Ensure(Route &r, UINT w, UINT h)
             r.Stop("the work D3D12 device did not come up.");
             return false;
         }
-        g.device = g.workDevice;
-        g.queue = g.workQueue;
+        g.device = g.bridge.workDevice;
+        g.queue = g.bridge.workQueue;
         // The completion fence this route waits on before blitting the result back. The D3D11
         // route creates it inside its own frame function, so a route that does not go through
         // there has to create it here -- and Signal on a null fence is not a wait, it is nothing.
-        if (FAILED(g.workDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
+        if (FAILED(g.bridge.workDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
         {
             r.Stop("could not create the completion fence.");
             return false;
@@ -868,7 +868,7 @@ bool Ensure(Route &r, UINT w, UINT h)
     }
 
     const bool built = r.in.texture != 0 && r.in.on12 != nullptr && r.out.texture != 0 &&
-                       r.out.on12 != nullptr && g.crossLocal != nullptr;
+                       r.out.on12 != nullptr && g.bridge.crossLocal != nullptr;
     if (r.ready && r.width == w && r.height == h && built)
         return true;
 
@@ -897,8 +897,8 @@ bool Ensure(Route &r, UINT w, UINT h)
 
     // Our private copy on our own device, so the network never reads shared memory directly --
     // the same reason the D3D11 route keeps crossLocal.
-    g.crossLocal.Reset();
-    if (!CreateTexture(w, h, kCrossingFormat, g.crossLocal, "crossLocal",
+    g.bridge.crossLocal.Reset();
+    if (!CreateTexture(w, h, kCrossingFormat, g.bridge.crossLocal, "crossLocal",
                        D3D12_RESOURCE_STATE_COPY_DEST))
     {
         r.Stop("could not create the private copy of the frame.");
@@ -1225,26 +1225,26 @@ void Present(command_queue *queue, swapchain *sc)
         // In and straight back out, through our own device, so the round trip is real: the frame
         // is read from the imported texture, written to a resource this device owns, and written
         // back to the other imported texture.
-        cmd12->CopyResource(g.crossLocal.Get(), r.in.on12.Get());
-        Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+        cmd12->CopyResource(g.bridge.crossLocal.Get(), r.in.on12.Get());
+        Barrier(cmd12, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
-        cmd12->CopyResource(r.out.on12.Get(), g.crossLocal.Get());
-        Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+        cmd12->CopyResource(r.out.on12.Get(), g.bridge.crossLocal.Get());
+        Barrier(cmd12, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
         fresh = true;
     }
     else
     {
-        cmd12->CopyResource(g.crossLocal.Get(), r.in.on12.Get());
-        Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+        cmd12->CopyResource(g.bridge.crossLocal.Get(), r.in.on12.Get());
+        Barrier(cmd12, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         const bool ok =
-            RecordNetwork(cmd12, g.crossLocal.Get(), kCrossingFormat, nullptr, runNetwork,
+            RecordNetwork(cmd12, g.bridge.crossLocal.Get(), kCrossingFormat, nullptr, runNetwork,
                           g.loadedPasses,
                           [&]() { return SubmitPrivatePass(cmd12, g.alloc[slot].Get()); });
         if (!ok && g.failed)
             return;
-        Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        Barrier(cmd12, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
 
         // Freshness gate, same as the other routes: on a frame where the network was skipped the
@@ -1276,20 +1276,20 @@ void Present(command_queue *queue, swapchain *sc)
     // shared texture. Without them BlitIn already called glFinish and there is nothing to wait
     // for.
     if (r.semaphores)
-        g.workQueue->Wait(g.backFence.Get(), r.toD3DValue);
-    g.workQueue->ExecuteCommandLists(1, lists);
+        g.bridge.workQueue->Wait(g.bridge.backFence.Get(), r.toD3DValue);
+    g.bridge.workQueue->ExecuteCommandLists(1, lists);
     if (!transportOnly && g.activePasses != 0)
-        NotifyRuntimes(g.workQueue.Get(), 1, lists);
+        NotifyRuntimes(g.bridge.workQueue.Get(), 1, lists);
     g.ringValue[slot] = ++g.ringSerial;
-    g.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
+    g.bridge.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
     g.completion = ++g.serial;
-    g.workQueue->Signal(g.fence.Get(), g.completion);
+    g.bridge.workQueue->Signal(g.fence.Get(), g.completion);
     if (r.semaphores)
     {
         // The value GL waits for in BlitOut. A second signal rather than reusing g.fence,
         // because g.fence is not shared and only the exported one can cross.
         r.toGlValue = r.toGlValue + 1;
-        g.workQueue->Signal(g.crossFence.Get(), r.toGlValue);
+        g.bridge.workQueue->Signal(g.bridge.crossFence.Get(), r.toGlValue);
     }
 
     // The first frame is confirmed on the CPU even with the fences in use, and only then is the

@@ -690,7 +690,7 @@ bool BuildCrossing(Route &r, Crossing &c, UINT w, UINT h, DXGI_FORMAT fmt, int v
     rd.Format = fmt;
     rd.SampleDesc.Count = 1;
     rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    HRESULT hr = g.workDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd,
+    HRESULT hr = g.bridge.workDevice->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd,
                                                        D3D12_RESOURCE_STATE_COMMON, nullptr,
                                                        IID_PPV_ARGS(&c.on12));
     if (FAILED(hr))
@@ -698,7 +698,7 @@ bool BuildCrossing(Route &r, Crossing &c, UINT w, UINT h, DXGI_FORMAT fmt, int v
         Log("vulkan: creating the shared %s texture failed 0x%08lX.", what, hr);
         return false;
     }
-    hr = g.workDevice->CreateSharedHandle(c.on12.Get(), nullptr, GENERIC_ALL, nullptr, &c.handle);
+    hr = g.bridge.workDevice->CreateSharedHandle(c.on12.Get(), nullptr, GENERIC_ALL, nullptr, &c.handle);
     if (FAILED(hr))
     {
         Log("vulkan: exporting the shared %s handle failed 0x%08lX.", what, hr);
@@ -843,7 +843,7 @@ bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate
         }
     }
 
-    if (g.workDevice == nullptr)
+    if (g.bridge.workDevice == nullptr)
     {
         ComPtr<IDXGIAdapter> adapter;
         if (!AdapterForLuid(r.luid, adapter))
@@ -857,20 +857,20 @@ bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate
             r.Stop("the work D3D12 device did not come up.");
             return false;
         }
-        g.device = g.workDevice;
-        g.queue = g.workQueue;
+        g.device = g.bridge.workDevice;
+        g.queue = g.bridge.workQueue;
         // The completion fence, the one this route waits on before copying the result back.
         // CreateWorkDevice makes the ring fence and the two shared ones; this one is created by
         // the D3D11 route inside its own frame function, so the Vulkan route never had it -- and
         // Signal on a null fence is not a wait, it is nothing, so the copy back would have raced
         // the network with no error anywhere to say so.
-        if (FAILED(g.workDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
+        if (FAILED(g.bridge.workDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
         {
             r.Stop("could not create the completion fence.");
             return false;
         }
-        if (!ImportFence(r, g.crossHandle, r.semToVk, "D3D12 -> Vulkan") ||
-            !ImportFence(r, g.backHandle, r.semToD3D, "Vulkan -> D3D12"))
+        if (!ImportFence(r, g.bridge.crossHandle, r.semToVk, "D3D12 -> Vulkan") ||
+            !ImportFence(r, g.bridge.backHandle, r.semToD3D, "Vulkan -> D3D12"))
         {
             r.Stop("the shared fences would not import.");
             return false;
@@ -881,7 +881,7 @@ bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate
                                 r.in.on12 != nullptr && r.out.image != nullptr &&
                                 r.out.memory != nullptr && r.out.on12 != nullptr;
     if (r.ready && r.width == w && r.height == h && r.format == fmt &&
-        crossingsReady && g.crossLocal != nullptr)
+        crossingsReady && g.bridge.crossLocal != nullptr)
         return true;
 
     if (r.ready && r.width == w && r.height == h && r.format == fmt)
@@ -915,8 +915,8 @@ bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate
 
     // Our private copy, on our device, so the network never reads a shared resource directly --
     // same reason the D3D11 route keeps crossLocal.
-    g.crossLocal.Reset();
-    if (!CreateTexture(w, h, fmt, g.crossLocal, "crossLocal",
+    g.bridge.crossLocal.Reset();
+    if (!CreateTexture(w, h, fmt, g.bridge.crossLocal, "crossLocal",
                        D3D12_RESOURCE_STATE_COPY_DEST))
     {
         r.Stop("could not create the private copy of the frame.");
@@ -1078,15 +1078,15 @@ void Present(command_queue *queue, swapchain *sc)
         return;
     }
     auto *cmd12 = g.list[slot].Get();
-    cmd12->CopyResource(g.crossLocal.Get(), r.in.on12.Get());
-    Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+    cmd12->CopyResource(g.bridge.crossLocal.Get(), r.in.on12.Get());
+    Barrier(cmd12, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    const bool ok = RecordNetwork(cmd12, g.crossLocal.Get(), r.format, nullptr, runNetwork,
+    const bool ok = RecordNetwork(cmd12, g.bridge.crossLocal.Get(), r.format, nullptr, runNetwork,
                                   g.loadedPasses,
                                   [&]() { return SubmitPrivatePass(cmd12, g.alloc[slot].Get()); });
     if (!ok && g.failed)
         return;
-    Barrier(cmd12, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+    Barrier(cmd12, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
     // Freshness gate, same as the other two routes: on a frame where the network was skipped the
     // residual belongs to an older picture, and the host is better served by its own image than
@@ -1112,13 +1112,13 @@ void Present(command_queue *queue, swapchain *sc)
         return;
     }
     ID3D12CommandList *lists[] { cmd12 };
-    g.workQueue->ExecuteCommandLists(1, lists);
+    g.bridge.workQueue->ExecuteCommandLists(1, lists);
     if (g.activePasses != 0)
-        NotifyRuntimes(g.workQueue.Get(), 1, lists);
+        NotifyRuntimes(g.bridge.workQueue.Get(), 1, lists);
     g.ringValue[slot] = ++g.ringSerial;
-    g.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
+    g.bridge.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
     g.completion = ++g.serial;
-    g.workQueue->Signal(g.fence.Get(), g.completion);
+    g.bridge.workQueue->Signal(g.fence.Get(), g.completion);
     WaitForWorkQueue(g.completion);
 
     // --- 3. and the finished image goes back over the host's -------------------------------

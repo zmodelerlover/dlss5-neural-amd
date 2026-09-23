@@ -149,8 +149,8 @@ for src in (u,f):
 
 transport=h[h.index('    Result CopyOnly()'):h.index('    Result Neural()')]
 for call in ['InitHip(','InitEngine(','BringUpEngines(','RecordNetwork(','LoadLibrary','RuntimeHashMatches(']:assert call not in transport
-assert 'cmd->CopyResource(g.crossLocal.Get(),g.bridgeIn.on12.Get())' in transport
-assert 'cmd->CopyResource(g.bridgeOut.on12.Get(),g.crossLocal.Get())' in transport
+assert 'cmd->CopyResource(g.bridge.crossLocal.Get(),g.bridge.in.on12.Get())' in transport
+assert 'cmd->CopyResource(g.bridge.out.on12.Get(),g.bridge.crossLocal.Get())' in transport
 assert 'Idle();return Result::Transport' in transport
 neural=h[h.index('    Result Neural()'):h.index('    Result FrameWork(')]
 assert neural.index('RecordNetwork(')<neural.index('CompositionIsFresh(')<neural.index('cmd->Close()')<neural.index('ExecuteCommandLists(')<neural.index('NotifyFn')<neural.index('WaitForWorkQueue(g.completion)')<neural.index('return fresh?')

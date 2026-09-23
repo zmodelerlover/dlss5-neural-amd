@@ -92,23 +92,23 @@ struct Host {
         LUID luid{h.luidLow,h.luidHigh};ComPtr<IDXGIAdapter1> adapter;
         Check(factory->EnumAdapterByLuid(luid,IID_PPV_ARGS(&adapter)),"exact LUID adapter unavailable");
         Require(CreateWorkDevice(adapter.Get(),luid),"work device creation failed");
-        const LUID got=g.workDevice->GetAdapterLuid();
+        const LUID got=g.bridge.workDevice->GetAdapterLuid();
         const bool match=got.LowPart==luid.LowPart&&got.HighPart==luid.HighPart;
         Log("x86bridge game LUID=%08lX:%08lX host LUID=%08lX:%08lX %s",luid.HighPart,luid.LowPart,got.HighPart,got.LowPart,match?"MATCH":"MISMATCH");
-        Require(match,"LUID mismatch");g.device=g.workDevice;g.queue=g.workQueue;
+        Require(match,"LUID mismatch");g.device=g.bridge.workDevice;g.queue=g.bridge.workQueue;
         Check(g.device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&g.fence)),"completion fence");
         Require(g.ringEvent&&g.completionEvent,"fence events unavailable");
         Log("x86bridge mode=%s; no IPC GPU fences",transport?"TRANSPORT_ONLY (not neural)":"ORIGINAL_ENGINE");
     }
     void Idle(){
-        if(!g.workQueue)return;
-        g.completion=++g.serial;Check(g.workQueue->Signal(g.fence.Get(),g.completion),"idle signal");
+        if(!g.bridge.workQueue)return;
+        g.completion=++g.serial;Check(g.bridge.workQueue->Signal(g.fence.Get(),g.completion),"idle signal");
         WaitForWorkQueue(g.completion);
         Require(!DeviceLost()&&g.fence->GetCompletedValue()!=UINT64_MAX&&g.fence->GetCompletedValue()>=g.completion,"queue did not finish");
     }
     void Drop(){
         Idle();ReleaseSwapchainSized();built=false;g.historyValid.store(false);
-        Require(!g.bridgeFailed,"resource retirement failed");
+        Require(!g.bridge.failed,"resource retirement failed");
     }
     void Import(const Texture& t,ComPtr<ID3D12Resource>& out){
         out.Reset();if(!t.valid)return;
@@ -121,38 +121,38 @@ struct Host {
         Require(!built&&ValidBuild(b)&&b.generation>generation,"invalid resource generation/shape");
         Require(!b.depth.valid||b.depth.format==DXGI_FORMAT_R32_FLOAT,"invalid depth transport format");
         Require(!b.motion.valid||b.motion.format==DXGI_FORMAT_R16G16_FLOAT||b.motion.format==DXGI_FORMAT_R32G32_FLOAT||b.motion.format==DXGI_FORMAT_R16G16_SNORM,"invalid motion transport format");
-        Import(b.colour,g.bridgeIn.on12);Import(b.output,g.bridgeOut.on12);
+        Import(b.colour,g.bridge.in.on12);Import(b.output,g.bridge.out.on12);
         Import(b.depth,g.guideDepth.bridge.on12);Import(b.motion,g.guideMotion.bridge.on12);
         g.guideDepth.name="depth";g.guideMotion.name="motion";
         generation=b.generation;spec=b;built=true;g.historyValid.store(false);
         Log("x86bridge BUILD generation=%llu %ux%u depth=%u motion=%u",generation,b.colour.width,b.colour.height,b.depth.valid,b.motion.valid);
     }
     Result CopyOnly(){
-        const UINT i=static_cast<UINT>(g.backValue%State::kRing);
+        const UINT i=static_cast<UINT>(g.bridge.backValue%State::kRing);
         Require(WaitFence(g.ringFence.Get(),g.ringValue[i],g.ringEvent,"transport slot"),"transport ring wait");
         Check(g.alloc[i]->Reset(),"transport allocator");Check(g.list[i]->Reset(g.alloc[i].Get(),nullptr),"transport list");
-        if(!g.crossLocal){
-            auto d=g.bridgeIn.on12->GetDesc();d.Flags=D3D12_RESOURCE_FLAG_NONE;
+        if(!g.bridge.crossLocal){
+            auto d=g.bridge.in.on12->GetDesc();d.Flags=D3D12_RESOURCE_FLAG_NONE;
             D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
-            Check(g.device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&g.crossLocal)),"transport local texture");
+            Check(g.device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&g.bridge.crossLocal)),"transport local texture");
         }
-        auto* cmd=g.list[i].Get();cmd->CopyResource(g.crossLocal.Get(),g.bridgeIn.on12.Get());
-        Barrier(cmd,g.crossLocal.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE);
-        cmd->CopyResource(g.bridgeOut.on12.Get(),g.crossLocal.Get());
-        Barrier(cmd,g.crossLocal.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COPY_DEST);
-        Check(cmd->Close(),"transport close");ID3D12CommandList* lists[]={cmd};g.workQueue->ExecuteCommandLists(1,lists);
-        g.ringValue[i]=++g.ringSerial;Check(g.workQueue->Signal(g.ringFence.Get(),g.ringSerial),"transport ring signal");
-        ++g.backValue;Idle();return Result::Transport;
+        auto* cmd=g.list[i].Get();cmd->CopyResource(g.bridge.crossLocal.Get(),g.bridge.in.on12.Get());
+        Barrier(cmd,g.bridge.crossLocal.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmd->CopyResource(g.bridge.out.on12.Get(),g.bridge.crossLocal.Get());
+        Barrier(cmd,g.bridge.crossLocal.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COPY_DEST);
+        Check(cmd->Close(),"transport close");ID3D12CommandList* lists[]={cmd};g.bridge.workQueue->ExecuteCommandLists(1,lists);
+        g.ringValue[i]=++g.ringSerial;Check(g.bridge.workQueue->Signal(g.ringFence.Get(),g.ringSerial),"transport ring signal");
+        ++g.bridge.backValue;Idle();return Result::Transport;
     }
     Result Neural(){
-        if(g.bridgeFailed)throw std::runtime_error("work slot unavailable");
+        if(g.bridge.failed)throw std::runtime_error("work slot unavailable");
         if(g.failed||g.unavailable||DeviceLost())return Result::Original;
         if(g.noBridge.load()||g.stage.load()<3)return Result::Original;
         UINT wanted=WantedPasses();if(!BringUpEngines(wanted)){g.unavailable=true;return Result::Original;}
         g.loadedPasses=wanted;
         const UINT w=spec.colour.width,h=spec.colour.height;const auto fmt=static_cast<DXGI_FORMAT>(spec.colour.format);
         if(!EnsureResources(w,h,fmt,g.scale.load())){g.unavailable=true;return Result::Original;}
-        if(!g.crossLocal && !CreateTexture(w,h,fmt,g.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
+        if(!g.bridge.crossLocal && !CreateTexture(w,h,fmt,g.bridge.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
     bool runNetwork = true;
     const bool jobPending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
     if (!jobPending && g.jobRunning)
@@ -175,7 +175,7 @@ struct Host {
         ResetJobs();
     }
 
-    const UINT i = static_cast<UINT>(g.backValue % State::kRing);
+    const UINT i = static_cast<UINT>(g.bridge.backValue % State::kRing);
 
     if (g.ringValue[i] != 0 &&
         !WaitFence(g.ringFence.Get(), g.ringValue[i], g.ringEvent, "the ring slot to come free"))
@@ -189,11 +189,11 @@ struct Host {
         Log("bridge: work slot %u reset failed (allocator 0x%08lX, list 0x%08lX); "
             "recreating the pair.", i, allocatorHr, listHr);
         if (!RecreateWorkSlot(i))
-            g.bridgeFailed = true;
+            g.bridge.failed = true;
         return x86bridge::Result::Original;
     }
     auto *cmd = g.list[i].Get();
-    cmd->CopyResource(g.crossLocal.Get(), g.bridgeIn.on12.Get());
+    cmd->CopyResource(g.bridge.crossLocal.Get(), g.bridge.in.on12.Get());
 
     auto localise = [&](Guide &guide) {
         if (!guide.ready || guide.bridge.on12 == nullptr)
@@ -217,20 +217,20 @@ struct Host {
     };
     g.gameDepthActive = localise(g.guideDepth);
     g.gameMotionActive = localise(g.guideMotion);
-    Barrier(cmd, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+    Barrier(cmd, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     const bool ok =
-        RecordNetwork(cmd, g.crossLocal.Get(), fmt, nullptr, runNetwork, g.loadedPasses,
+        RecordNetwork(cmd, g.bridge.crossLocal.Get(), fmt, nullptr, runNetwork, g.loadedPasses,
             [&]() { return SubmitPrivatePass(cmd, g.alloc[i].Get()); });
     if (!ok && g.failed)
         throw std::runtime_error("engine recording failed");
-    Barrier(cmd, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+    Barrier(cmd, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
     if (ok && CompositionIsFresh(runNetwork) && runNetwork && g.activePasses != 0 && !g.noBackBuffer.load())
     {
         Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
-        cmd->CopyResource(g.bridgeOut.on12.Get(), g.composed.Get());
+        cmd->CopyResource(g.bridge.out.on12.Get(), g.composed.Get());
         Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
@@ -242,20 +242,20 @@ struct Host {
         g.activePasses = 0;
         g.historyValid.store(false);
         if (!RecreateWorkSlot(i))
-            g.bridgeFailed = true;
+            g.bridge.failed = true;
         return x86bridge::Result::Original;
     }
     ID3D12CommandList *lists[] { cmd };
-    g.workQueue->ExecuteCommandLists(1, lists);
+    g.bridge.workQueue->ExecuteCommandLists(1, lists);
     if (g.activePasses != 0)
         reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
-            g.workQueue.Get(), 1, lists);
+            g.bridge.workQueue.Get(), 1, lists);
     g.ringValue[i] = ++g.ringSerial;
-    Check(g.workQueue->Signal(g.ringFence.Get(), g.ringSerial), "ring signal");
+    Check(g.bridge.workQueue->Signal(g.ringFence.Get(), g.ringSerial), "ring signal");
     g.completion = ++g.serial;
-    Check(g.workQueue->Signal(g.fence.Get(), g.completion), "completion signal");
+    Check(g.bridge.workQueue->Signal(g.fence.Get(), g.completion), "completion signal");
 
-        ++g.backValue;WaitForWorkQueue(g.completion);
+        ++g.bridge.backValue;WaitForWorkQueue(g.completion);
         Require(!DeviceLost()&&g.fence->GetCompletedValue()!=UINT64_MAX&&g.fence->GetCompletedValue()>=g.completion,"output completion failed");
         const bool fresh=ok&&CompositionIsFresh(runNetwork)&&runNetwork&&g.activePasses!=0&&!g.noBackBuffer.load();
         DrainReadbacks(g.netWidth,g.netHeight);
@@ -276,7 +276,7 @@ struct Host {
     }
     void Reply(Kind kind,Result result,uint64_t frame=0){
         Ack a;a.header.kind=kind;a.header.bytes=sizeof(a)-sizeof(a.header);a.result=result;a.generation=generation;a.frame=frame;
-        if(g.workDevice){const auto luid=g.workDevice->GetAdapterLuid();a.luidLow=luid.LowPart;a.luidHigh=luid.HighPart;}
+        if(g.bridge.workDevice){const auto luid=g.bridge.workDevice->GetAdapterLuid();a.luidLow=luid.LowPart;a.luidHigh=luid.HighPart;}
         Require(Send(pipe.value,parent.value,&a,sizeof(a)),"ACK write failed");
     }
     void Run(){

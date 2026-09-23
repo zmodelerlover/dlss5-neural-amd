@@ -785,29 +785,34 @@ struct State
 
     // The bridge. On D3D11 the game's device cannot run the network, so we make our own D3D12
     // device on the same physical adapter and the two talk through shared textures and fences.
-    // Step 1 of that build: bring the device up and prove it landed on the right adapter.
-    ComPtr<ID3D11Device5> game11;
-    ComPtr<ID3D11DeviceContext4> game11ctx;
-    ComPtr<ID3D12Device> workDevice;
-    ComPtr<ID3D12CommandQueue> workQueue;
-    bool bridgeFailed = false;
-    bool loggedBridge = false;
-    Bridge bridgeIn { "colour-in" };
-    Bridge bridgeOut { "result-out" };
-    ComPtr<ID3D12Resource> crossLocal;
-    // Private, unshared, on the game's device. The back buffer is copied to and from these, and
-    // only these are copied to and from the cross-device shared textures. Copying the back buffer
-    // straight into a resource shared with another device enrolls it in a kernel-level sharing
-    // dependency, and DXGI will not resize a swapchain whose buffers are still enrolled in one.
-    // Two extra full-res copies a frame is a fraction of a millisecond; the resize is not
-    // negotiable.
-    ComPtr<ID3D11Texture2D> stageIn11, stageOut11;
-    UINT stageW = 0, stageH = 0;
-    DXGI_FORMAT stageFmt = DXGI_FORMAT_UNKNOWN;
-    ComPtr<ID3D12Fence> crossFence, backFence;
-    HANDLE crossHandle = nullptr, backHandle = nullptr;
-    ComPtr<ID3D11Fence> crossOn11, backOn11;
-    UINT64 crossValue = 0, backValue = 0;
+    // Vulkan and OpenGL cross the same way: this is what a transport other than native D3D12 owns.
+    struct BridgeState
+    {
+        ComPtr<ID3D11Device5> game11;
+        ComPtr<ID3D11DeviceContext4> game11ctx;
+        ComPtr<ID3D12Device> workDevice;
+        ComPtr<ID3D12CommandQueue> workQueue;
+        bool failed = false, logged = false;
+        Bridge in { "colour-in" }, out { "result-out" };
+        ComPtr<ID3D12Resource> crossLocal;
+        // Private, unshared, on the game's device. The back buffer is copied to and from these,
+        // and only these are copied to and from the cross-device shared textures. Copying the
+        // back buffer straight into a resource shared with another device enrolls it in a
+        // kernel-level sharing dependency, and DXGI will not resize a swapchain whose buffers are
+        // still enrolled in one. Two extra full-res copies a frame is a fraction of a
+        // millisecond; the resize is not negotiable.
+        ComPtr<ID3D11Texture2D> stageIn11, stageOut11;
+        UINT stageW = 0, stageH = 0;
+        DXGI_FORMAT stageFmt = DXGI_FORMAT_UNKNOWN;
+        ComPtr<ID3D12Fence> crossFence, backFence;
+        HANDLE crossHandle = nullptr, backHandle = nullptr;
+        ComPtr<ID3D11Fence> crossOn11, backOn11;
+        UINT64 crossValue = 0, backValue = 0;
+        UINT retries = 0;  // a failure is usually a rebuild caught mid-flight: it costs a rebuild
+        // Safety net: presents seen since the bridge last finished a frame.
+        uint64_t presentsSinceFrame = 0;
+        uint64_t lastSeenFrame = 0;
+    } bridge;
     static constexpr UINT kRing = 3;
     ComPtr<ID3D12CommandAllocator> alloc[kRing];
     ComPtr<ID3D12GraphicsCommandList> list[kRing];
@@ -834,13 +839,7 @@ struct State
     static constexpr UINT kMaxPasses = 3;
     bool loggedDeviceLost = false;
     bool loggedNoBackBuffer = false;
-    // A bridge failure is usually transitory -- a rebuild caught mid-flight -- so it costs a
-    // rebuild, not the rest of the run.
     static constexpr UINT kMaxBridgeRetries = 10;
-    UINT bridgeRetries = 0;
-    // Safety net: presents seen since the bridge last finished a frame.
-    uint64_t presentsSinceFrame = 0;
-    uint64_t lastSeenFrame = 0;
     // Whether the last present was to a window nobody can see. Alt-tab is the only way this
     // becomes true in practice, and it is the state in which every wait in this file misbehaves.
     bool windowHidden = false;
@@ -1571,7 +1570,7 @@ uint64_t SettingsFingerprint()
 // fewer library to touch, and one fewer chance to disturb the runtime the game is using.
 bool RecreateWorkSlot(UINT slot)
 {
-    if (slot >= State::kRing || g.workDevice == nullptr)
+    if (slot >= State::kRing || g.bridge.workDevice == nullptr)
         return false;
 
     // A failed Close leaves the list recording and unusable, while an allocator Reset followed by
@@ -1579,10 +1578,10 @@ bool RecreateWorkSlot(UINT slot)
     // cannot poison this ring slot for the rest of the process.
     g.list[slot].Reset();
     g.alloc[slot].Reset();
-    const HRESULT allocatorHr = g.workDevice->CreateCommandAllocator(
+    const HRESULT allocatorHr = g.bridge.workDevice->CreateCommandAllocator(
         D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g.alloc[slot]));
     const HRESULT listHr = SUCCEEDED(allocatorHr)
-                               ? g.workDevice->CreateCommandList(
+                               ? g.bridge.workDevice->CreateCommandList(
                                      0, D3D12_COMMAND_LIST_TYPE_DIRECT, g.alloc[slot].Get(), nullptr,
                                      IID_PPV_ARGS(&g.list[slot]))
                                : allocatorHr;
@@ -1604,7 +1603,7 @@ bool CreateWorkDevice(IDXGIAdapter *adapter, LUID luid)
     DXGI_ADAPTER_DESC ad {};
     adapter->GetDesc(&ad);
     const HRESULT hr =
-        p_D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g.workDevice));
+        p_D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g.bridge.workDevice));
     if (FAILED(hr))
     {
         Log("bridge: D3D12CreateDevice failed 0x%08lX.", hr);
@@ -1612,7 +1611,7 @@ bool CreateWorkDevice(IDXGIAdapter *adapter, LUID luid)
     }
     D3D12_COMMAND_QUEUE_DESC qd {};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    if (FAILED(g.workDevice->CreateCommandQueue(&qd, IID_PPV_ARGS(&g.workQueue))))
+    if (FAILED(g.bridge.workDevice->CreateCommandQueue(&qd, IID_PPV_ARGS(&g.bridge.workQueue))))
     {
         Log("bridge: could not create the work queue.");
         return false;
@@ -1625,13 +1624,13 @@ bool CreateWorkDevice(IDXGIAdapter *adapter, LUID luid)
             return false;
         }
     }
-    if (FAILED(g.workDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.ringFence))) ||
-        FAILED(g.workDevice->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&g.crossFence))) ||
-        FAILED(g.workDevice->CreateSharedHandle(g.crossFence.Get(), nullptr, GENERIC_ALL, nullptr,
-                                                &g.crossHandle)) ||
-        FAILED(g.workDevice->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&g.backFence))) ||
-        FAILED(g.workDevice->CreateSharedHandle(g.backFence.Get(), nullptr, GENERIC_ALL, nullptr,
-                                                &g.backHandle)))
+    if (FAILED(g.bridge.workDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.ringFence))) ||
+        FAILED(g.bridge.workDevice->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&g.bridge.crossFence))) ||
+        FAILED(g.bridge.workDevice->CreateSharedHandle(g.bridge.crossFence.Get(), nullptr, GENERIC_ALL, nullptr,
+                                                &g.bridge.crossHandle)) ||
+        FAILED(g.bridge.workDevice->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&g.bridge.backFence))) ||
+        FAILED(g.bridge.workDevice->CreateSharedHandle(g.bridge.backFence.Get(), nullptr, GENERIC_ALL, nullptr,
+                                                &g.bridge.backHandle)))
     {
         Log("bridge: could not create the shared fences.");
         return false;
@@ -1641,7 +1640,7 @@ bool CreateWorkDevice(IDXGIAdapter *adapter, LUID luid)
 
     char name[128] {};
     WideCharToMultiByte(CP_UTF8, 0, ad.Description, -1, name, sizeof(name) - 1, nullptr, nullptr);
-    const LUID got = g.workDevice->GetAdapterLuid();
+    const LUID got = g.bridge.workDevice->GetAdapterLuid();
     Log("bridge: own D3D12 device on %s (vendor %04X). LUID game %08lX:%08lX, ours %08lX:%08lX -> "
         "%s adapter.", name, ad.VendorId, static_cast<unsigned long>(luid.HighPart),
         luid.LowPart, static_cast<unsigned long>(got.HighPart), got.LowPart,
@@ -1654,45 +1653,45 @@ bool CreateWorkDevice(IDXGIAdapter *adapter, LUID luid)
 // second device comes up on the same GPU as the game.
 void BridgeStep1(device *dev)
 {
-    if (g.bridgeFailed || g.workDevice != nullptr)
+    if (g.bridge.failed || g.bridge.workDevice != nullptr)
         return;
     // First point at which D3D12 is genuinely needed. Everything before this runs without
     // d3d12.dll ever entering the process.
     if (!LoadGraphicsApi())
     {
-        g.bridgeFailed = true;
+        g.bridge.failed = true;
         return;
     }
     if (g.stage.load() < 2)
         return;
     auto *native = reinterpret_cast<ID3D11Device *>(dev->get_native());
-    if (native == nullptr || FAILED(native->QueryInterface(IID_PPV_ARGS(&g.game11))))
+    if (native == nullptr || FAILED(native->QueryInterface(IID_PPV_ARGS(&g.bridge.game11))))
     {
         Log("bridge: the game's device does not expose ID3D11Device5 (needs Windows 10 1703+).");
-        g.bridgeFailed = true;
+        g.bridge.failed = true;
         return;
     }
     ComPtr<ID3D11DeviceContext> ctx;
-    g.game11->GetImmediateContext(&ctx);
-    if (ctx == nullptr || FAILED(ctx.As(&g.game11ctx)))
+    g.bridge.game11->GetImmediateContext(&ctx);
+    if (ctx == nullptr || FAILED(ctx.As(&g.bridge.game11ctx)))
     {
         Log("bridge: the game's context does not expose ID3D11DeviceContext4.");
-        g.bridgeFailed = true;
+        g.bridge.failed = true;
         return;
     }
     ComPtr<IDXGIDevice> dxgi;
     ComPtr<IDXGIAdapter> adapter;
     DXGI_ADAPTER_DESC ad {};
-    if (FAILED(g.game11.As(&dxgi)) || FAILED(dxgi->GetAdapter(&adapter)) ||
+    if (FAILED(g.bridge.game11.As(&dxgi)) || FAILED(dxgi->GetAdapter(&adapter)) ||
         FAILED(adapter->GetDesc(&ad)))
     {
         Log("bridge: could not read the game adapter's LUID.");
-        g.bridgeFailed = true;
+        g.bridge.failed = true;
         return;
     }
     if (!CreateWorkDevice(adapter.Get(), ad.AdapterLuid))
     {
-        g.bridgeFailed = true;
+        g.bridge.failed = true;
         return;
     }
     if (g.stage.load() < 3)
@@ -1700,18 +1699,18 @@ void BridgeStep1(device *dev)
         Log("stage %d: stopping after the work device, on purpose.", g.stage.load());
         return;
     }
-    if (FAILED(g.game11->OpenSharedFence(g.crossHandle, IID_PPV_ARGS(&g.crossOn11))) ||
-        FAILED(g.game11->OpenSharedFence(g.backHandle, IID_PPV_ARGS(&g.backOn11))))
+    if (FAILED(g.bridge.game11->OpenSharedFence(g.bridge.crossHandle, IID_PPV_ARGS(&g.bridge.crossOn11))) ||
+        FAILED(g.bridge.game11->OpenSharedFence(g.bridge.backHandle, IID_PPV_ARGS(&g.bridge.backOn11))))
     {
         Log("bridge: OpenSharedFence on the game's device failed.");
-        g.bridgeFailed = true;
+        g.bridge.failed = true;
         return;
     }
     // From here the network's device IS the work device. Everything downstream -- InitPipeline,
     // EnsureResources, InitEngine, the Packet -- already runs on whatever g.device points at, so
     // this one assignment is what moves the whole pipeline off the game's device.
-    g.device = g.workDevice;
-    g.queue = g.workQueue;
+    g.device = g.bridge.workDevice;
+    g.queue = g.bridge.workQueue;
     Log("bridge: up. The network now runs on our own device; colour crosses in and the result "
         "crosses back.");
 }
@@ -2130,7 +2129,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
 // R32_FLOAT. Both of those steps are ported from session.cpp, where the transport is measured.
 bool PrepareGuide(Guide &guide, bool isDepth)
 {
-    if (guide.failed || guide.chosen == nullptr || g.game11 == nullptr || g.workDevice == nullptr)
+    if (guide.failed || guide.chosen == nullptr || g.bridge.game11 == nullptr || g.bridge.workDevice == nullptr)
         return false;
     const UINT w = guide.width, h = guide.height;
     if (w == 0 || h == 0)
@@ -2138,14 +2137,14 @@ bool PrepareGuide(Guide &guide, bool isDepth)
 
     if (!isDepth)
     {
-        if (!guide.bridge.Ensure(g.game11.Get(), g.workDevice.Get(), w, h, guide.format))
+        if (!guide.bridge.Ensure(g.bridge.game11.Get(), g.bridge.workDevice.Get(), w, h, guide.format))
         {
             guide.failed = true;
             Log("guide %s: format %u will not share between the devices; giving up on it.",
                 guide.name, static_cast<unsigned>(guide.format));
             return false;
         }
-        g.game11ctx->CopyResource(guide.bridge.on11.Get(), guide.chosen.Get());
+        g.bridge.game11ctx->CopyResource(guide.bridge.on11.Get(), guide.chosen.Get());
         guide.ready = true;
         if (!guide.logged)
         {
@@ -2163,7 +2162,7 @@ bool PrepareGuide(Guide &guide, bool isDepth)
         ComPtr<ID3DBlob> blob, err;
         if (FAILED(p_D3DCompile(shaders::kGuideDepthCs, sizeof(shaders::kGuideDepthCs) - 1, "guide-depth", nullptr,
                               nullptr, "main", "cs_5_0", 0, 0, &blob, &err)) ||
-            FAILED(g.game11->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(),
+            FAILED(g.bridge.game11->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(),
                                                  nullptr, &g.guideDepthCs)))
         {
             g.guideDepthCsFailed = true;
@@ -2201,7 +2200,7 @@ bool PrepareGuide(Guide &guide, bool isDepth)
         const bool isDepth = GuideDepthSrvFormat(guide.format) != DXGI_FORMAT_UNKNOWN;
         td.BindFlags = isDepth ? (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DEPTH_STENCIL)
                                : D3D11_BIND_SHADER_RESOURCE;
-        HRESULT made = g.game11->CreateTexture2D(&td, nullptr, &guide.snap);
+        HRESULT made = g.bridge.game11->CreateTexture2D(&td, nullptr, &guide.snap);
         if (FAILED(made) && isDepth)
         {
             // Some formats reach here that no driver will give a depth-stencil view of. Falling
@@ -2211,7 +2210,7 @@ bool PrepareGuide(Guide &guide, bool isDepth)
                 "falling back to a plain shader-resource copy, which may not read correctly.",
                 w, h, static_cast<unsigned>(guide.format), static_cast<unsigned long>(made));
             td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            made = g.game11->CreateTexture2D(&td, nullptr, &guide.snap);
+            made = g.bridge.game11->CreateTexture2D(&td, nullptr, &guide.snap);
         }
         if (FAILED(made))
         {
@@ -2224,9 +2223,9 @@ bool PrepareGuide(Guide &guide, bool isDepth)
         guide.snapH = h;
         guide.snapFmt = guide.format;
     }
-    g.game11ctx->CopyResource(guide.snap.Get(), guide.chosen.Get());
+    g.bridge.game11ctx->CopyResource(guide.snap.Get(), guide.chosen.Get());
 
-    if (!guide.bridge.Ensure(g.game11.Get(), g.workDevice.Get(), w, h, DXGI_FORMAT_R32_FLOAT, true))
+    if (!guide.bridge.Ensure(g.bridge.game11.Get(), g.bridge.workDevice.Get(), w, h, DXGI_FORMAT_R32_FLOAT, true))
     {
         guide.failed = true;
         return false;
@@ -2244,7 +2243,7 @@ bool PrepareGuide(Guide &guide, bool isDepth)
         D3D11_UNORDERED_ACCESS_VIEW_DESC ud {};
         ud.Format = DXGI_FORMAT_R32_FLOAT;
         ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-        if (FAILED(g.game11->CreateUnorderedAccessView(guide.bridge.on11.Get(), &ud, &guide.uav)))
+        if (FAILED(g.bridge.game11->CreateUnorderedAccessView(guide.bridge.on11.Get(), &ud, &guide.uav)))
         {
             guide.failed = true;
             Log("guide depth: UAV over the shared texture failed.");
@@ -2263,7 +2262,7 @@ bool PrepareGuide(Guide &guide, bool isDepth)
         sd.Format = GuideDepthSrvFormat(guide.format);
         sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
         sd.Texture2D.MipLevels = 1;
-        if (FAILED(g.game11->CreateShaderResourceView(guide.snap.Get(), &sd, &guide.srv)))
+        if (FAILED(g.bridge.game11->CreateShaderResourceView(guide.snap.Get(), &sd, &guide.srv)))
         {
             guide.failed = true;
             Log("guide depth: SRV over the snapshot failed (fmt %u read as %u).",
@@ -2278,25 +2277,25 @@ bool PrepareGuide(Guide &guide, bool isDepth)
     ID3D11ComputeShader *oldCs = nullptr;
     ID3D11ShaderResourceView *oldSrv = nullptr;
     ID3D11UnorderedAccessView *oldUav = nullptr;
-    g.game11ctx->CSGetShader(&oldCs, nullptr, nullptr);
-    g.game11ctx->CSGetShaderResources(0, 1, &oldSrv);
-    g.game11ctx->CSGetUnorderedAccessViews(0, 1, &oldUav);
+    g.bridge.game11ctx->CSGetShader(&oldCs, nullptr, nullptr);
+    g.bridge.game11ctx->CSGetShaderResources(0, 1, &oldSrv);
+    g.bridge.game11ctx->CSGetUnorderedAccessViews(0, 1, &oldUav);
 
     UINT keep = static_cast<UINT>(-1);
     ID3D11ShaderResourceView *srv = guide.srv.Get();
     ID3D11UnorderedAccessView *uav = guide.uav.Get();
-    g.game11ctx->CSSetShader(g.guideDepthCs.Get(), nullptr, 0);
-    g.game11ctx->CSSetShaderResources(0, 1, &srv);
-    g.game11ctx->CSSetUnorderedAccessViews(0, 1, &uav, &keep);
-    g.game11ctx->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
+    g.bridge.game11ctx->CSSetShader(g.guideDepthCs.Get(), nullptr, 0);
+    g.bridge.game11ctx->CSSetShaderResources(0, 1, &srv);
+    g.bridge.game11ctx->CSSetUnorderedAccessViews(0, 1, &uav, &keep);
+    g.bridge.game11ctx->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
 
     ID3D11ShaderResourceView *nullSrv = nullptr;
     ID3D11UnorderedAccessView *nullUav = nullptr;
-    g.game11ctx->CSSetUnorderedAccessViews(0, 1, &nullUav, &keep);
-    g.game11ctx->CSSetShaderResources(0, 1, &nullSrv);
-    g.game11ctx->CSSetShader(oldCs, nullptr, 0);
-    g.game11ctx->CSSetShaderResources(0, 1, &oldSrv);
-    g.game11ctx->CSSetUnorderedAccessViews(0, 1, &oldUav, &keep);
+    g.bridge.game11ctx->CSSetUnorderedAccessViews(0, 1, &nullUav, &keep);
+    g.bridge.game11ctx->CSSetShaderResources(0, 1, &nullSrv);
+    g.bridge.game11ctx->CSSetShader(oldCs, nullptr, 0);
+    g.bridge.game11ctx->CSSetShaderResources(0, 1, &oldSrv);
+    g.bridge.game11ctx->CSSetUnorderedAccessViews(0, 1, &oldUav, &keep);
     if (oldCs != nullptr)
         oldCs->Release();
     if (oldSrv != nullptr)
@@ -2503,11 +2502,11 @@ void AdoptFeedEffect()
 // The two private textures that keep the back buffer away from anything shared.
 bool EnsureStage(UINT w, UINT h, DXGI_FORMAT fmt)
 {
-    if (g.stageIn11 != nullptr && g.stageW == w && g.stageH == h && g.stageFmt == fmt)
+    if (g.bridge.stageIn11 != nullptr && g.bridge.stageW == w && g.bridge.stageH == h && g.bridge.stageFmt == fmt)
         return true;
-    g.stageIn11.Reset();
-    g.stageOut11.Reset();
-    g.stageW = g.stageH = 0;
+    g.bridge.stageIn11.Reset();
+    g.bridge.stageOut11.Reset();
+    g.bridge.stageW = g.bridge.stageH = 0;
     D3D11_TEXTURE2D_DESC td {};
     td.Width = w;
     td.Height = h;
@@ -2517,18 +2516,18 @@ bool EnsureStage(UINT w, UINT h, DXGI_FORMAT fmt)
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(g.game11->CreateTexture2D(&td, nullptr, &g.stageIn11)) ||
-        FAILED(g.game11->CreateTexture2D(&td, nullptr, &g.stageOut11)))
+    if (FAILED(g.bridge.game11->CreateTexture2D(&td, nullptr, &g.bridge.stageIn11)) ||
+        FAILED(g.bridge.game11->CreateTexture2D(&td, nullptr, &g.bridge.stageOut11)))
     {
         Log("bridge: could not create the private staging textures %ux%u fmt %u.", w, h,
             static_cast<unsigned>(fmt));
-        g.stageIn11.Reset();
-        g.stageOut11.Reset();
+        g.bridge.stageIn11.Reset();
+        g.bridge.stageOut11.Reset();
         return false;
     }
-    g.stageW = w;
-    g.stageH = h;
-    g.stageFmt = fmt;
+    g.bridge.stageW = w;
+    g.bridge.stageH = h;
+    g.bridge.stageFmt = fmt;
     Log("bridge: private staging %ux%u fmt %u, so the back buffer never meets a shared resource.",
         w, h, static_cast<unsigned>(fmt));
     return true;
@@ -2601,20 +2600,20 @@ bool DeviceLost()
 
 bool FlushAndWait11()
 {
-    if (g.game11 == nullptr || g.game11ctx == nullptr)
+    if (g.bridge.game11 == nullptr || g.bridge.game11ctx == nullptr)
         return false;
     D3D11_QUERY_DESC qd {};
     qd.Query = D3D11_QUERY_EVENT;
     ComPtr<ID3D11Query> done;
-    if (FAILED(g.game11->CreateQuery(&qd, &done)))
+    if (FAILED(g.bridge.game11->CreateQuery(&qd, &done)))
     {
-        g.game11ctx->Flush();
+        g.bridge.game11ctx->Flush();
         return false;
     }
-    g.game11ctx->End(done.Get());
-    g.game11ctx->Flush();
+    g.bridge.game11ctx->End(done.Get());
+    g.bridge.game11ctx->Flush();
     const ULONGLONG deadline = GetTickCount64() + 2000;
-    while (g.game11ctx->GetData(done.Get(), nullptr, 0, 0) == S_FALSE)
+    while (g.bridge.game11ctx->GetData(done.Get(), nullptr, 0, 0) == S_FALSE)
     {
         if (GetTickCount64() > deadline)
         {
@@ -2737,10 +2736,10 @@ void BridgePresent(device *dev, swapchain *sc)
             g.reason = "could not create the working textures; see amd-nr.log";
         return;
     }
-    if (!g.bridgeIn.Ensure(g.game11.Get(), g.workDevice.Get(), w, h, fmt) ||
-        !g.bridgeOut.Ensure(g.game11.Get(), g.workDevice.Get(), w, h, fmt))
+    if (!g.bridge.in.Ensure(g.bridge.game11.Get(), g.bridge.workDevice.Get(), w, h, fmt) ||
+        !g.bridge.out.Ensure(g.bridge.game11.Get(), g.bridge.workDevice.Get(), w, h, fmt))
     {
-        g.bridgeFailed = true;
+        g.bridge.failed = true;
         g.unavailable = true;
         g.reason = "the back buffer format is not shareable between the two devices";
         return;
@@ -2748,13 +2747,13 @@ void BridgePresent(device *dev, swapchain *sc)
     // The crossed texture is read as an SRV by the copy shader. Rather than lean on state
     // promotion for a shared resource, take a local copy first: a plain copy is the one access
     // that needs no barriers on either side.
-    if (g.crossLocal == nullptr || g.crossLocal->GetDesc().Width != w ||
-        g.crossLocal->GetDesc().Height != h)
+    if (g.bridge.crossLocal == nullptr || g.bridge.crossLocal->GetDesc().Width != w ||
+        g.bridge.crossLocal->GetDesc().Height != h)
     {
-        if (!CreateTexture(w, h, fmt, g.crossLocal, "crossLocal",
+        if (!CreateTexture(w, h, fmt, g.bridge.crossLocal, "crossLocal",
                            D3D12_RESOURCE_STATE_COPY_DEST))
         {
-            g.bridgeFailed = true;
+            g.bridge.failed = true;
             return;
         }
     }
@@ -2800,12 +2799,12 @@ void BridgePresent(device *dev, swapchain *sc)
     {
         if (!EnsureStage(w, h, fmt))
         {
-            g.bridgeFailed = true;
+            g.bridge.failed = true;
             return;
         }
-        g.game11ctx->CopyResource(g.stageIn11.Get(),
+        g.bridge.game11ctx->CopyResource(g.bridge.stageIn11.Get(),
                                   reinterpret_cast<ID3D11Resource *>(back.handle));
-        g.game11ctx->CopyResource(g.bridgeIn.on11.Get(), g.stageIn11.Get());
+        g.bridge.game11ctx->CopyResource(g.bridge.in.on11.Get(), g.bridge.stageIn11.Get());
     }
     // Settled first, and unconditionally, so a game that renders its own buffers can take a slot
     // back off the companion effect. The observation no longer sees ReShade's own targets, so an
@@ -2830,12 +2829,12 @@ void BridgePresent(device *dev, swapchain *sc)
     // cross-device dependencies -- see FlushAndWait11.
     if (!FlushAndWait11())
     {
-        g.bridgeFailed = true;
+        g.bridge.failed = true;
         return;
     }
 
     // 2. our device does the work
-    const UINT i = static_cast<UINT>(g.backValue % State::kRing);
+    const UINT i = static_cast<UINT>(g.bridge.backValue % State::kRing);
     // Resetting an allocator whose command list is still executing is undefined behaviour, so
     // this wait is not optional and cannot be allowed to expire.
     if (g.ringValue[i] != 0 &&
@@ -2850,11 +2849,11 @@ void BridgePresent(device *dev, swapchain *sc)
         Log("bridge: work slot %u reset failed (allocator 0x%08lX, list 0x%08lX); "
             "recreating the pair.", i, allocatorHr, listHr);
         if (!RecreateWorkSlot(i))
-            g.bridgeFailed = true;
+            g.bridge.failed = true;
         return;
     }
     auto *cmd = g.list[i].Get();
-    cmd->CopyResource(g.crossLocal.Get(), g.bridgeIn.on12.Get());
+    cmd->CopyResource(g.bridge.crossLocal.Get(), g.bridge.in.on12.Get());
     // Same reason as crossLocal: a shared resource is read here as an SRV, and a plain copy is
     // the one access that needs no barrier on either side.
     auto localise = [&](Guide &guide) {
@@ -2879,20 +2878,20 @@ void BridgePresent(device *dev, swapchain *sc)
     };
     g.gameDepthActive = localise(g.guideDepth);
     g.gameMotionActive = localise(g.guideMotion);
-    Barrier(cmd, g.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+    Barrier(cmd, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     const bool ok =
-        RecordNetwork(cmd, g.crossLocal.Get(), fmt, nullptr, runNetwork, g.loadedPasses,
+        RecordNetwork(cmd, g.bridge.crossLocal.Get(), fmt, nullptr, runNetwork, g.loadedPasses,
             [&]() { return SubmitPrivatePass(cmd, g.alloc[i].Get()); });
     if (!ok && g.failed)
         return;
-    Barrier(cmd, g.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+    Barrier(cmd, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
     if (ok && CompositionIsFresh(runNetwork))
     {
         Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
-        cmd->CopyResource(g.bridgeOut.on12.Get(), g.composed.Get());
+        cmd->CopyResource(g.bridge.out.on12.Get(), g.composed.Get());
         Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
@@ -2907,29 +2906,29 @@ void BridgePresent(device *dev, swapchain *sc)
         g.activePasses = 0;
         g.historyValid.store(0);
         if (!RecreateWorkSlot(i))
-            g.bridgeFailed = true;
+            g.bridge.failed = true;
         return;
     }
     ID3D12CommandList *lists[] { cmd };
-    g.workQueue->ExecuteCommandLists(1, lists);
+    g.bridge.workQueue->ExecuteCommandLists(1, lists);
     if (g.activePasses != 0)
-        NotifyRuntimes(g.workQueue.Get(), 1, lists);
+        NotifyRuntimes(g.bridge.workQueue.Get(), 1, lists);
     g.ringValue[i] = ++g.ringSerial;
-    g.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
+    g.bridge.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
     g.completion = ++g.serial;
-    g.workQueue->Signal(g.fence.Get(), g.completion);
+    g.bridge.workQueue->Signal(g.fence.Get(), g.completion);
 
     // 3. and the finished image comes back, once our queue has actually produced it
-    ++g.backValue;
+    ++g.bridge.backValue;
     WaitForWorkQueue(g.completion);
     // Gated on freshness as well: without that, a skipped frame copies back whatever composition
     // the last evaluated frame left in the shared texture -- a whole stale picture, which is a
     // worse artefact than the stale correction this is here to avoid.
-    if (ok && CompositionIsFresh(runNetwork) && !g.noBackBuffer.load() && g.stageOut11 != nullptr)
+    if (ok && CompositionIsFresh(runNetwork) && !g.noBackBuffer.load() && g.bridge.stageOut11 != nullptr)
     {
-        g.game11ctx->CopyResource(g.stageOut11.Get(), g.bridgeOut.on11.Get());
-        g.game11ctx->CopyResource(reinterpret_cast<ID3D11Resource *>(back.handle),
-                                  g.stageOut11.Get());
+        g.bridge.game11ctx->CopyResource(g.bridge.stageOut11.Get(), g.bridge.out.on11.Get());
+        g.bridge.game11ctx->CopyResource(reinterpret_cast<ID3D11Resource *>(back.handle),
+                                  g.bridge.stageOut11.Get());
         // And this copy must not still be pending when the game resizes. It is the last thing
         // the add-on does to the swapchain, so draining here leaves nothing outstanding.
         FlushAndWait11();
@@ -2941,7 +2940,7 @@ void BridgePresent(device *dev, swapchain *sc)
     // any reference to a back buffer is outstanding, and the game does its own cleanup *before*
     // the present callback runs, so ours is always the one left. NFS resizes once on the way to
     // fullscreen, which is exactly where it died. Flushing here retires them.
-    g.game11ctx->Flush();
+    g.bridge.game11ctx->Flush();
 
     DrainReadbacks(g.netWidth, g.netHeight);
 
@@ -3539,7 +3538,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     // changes look like a VRAM leak even after the corresponding ComPtr is released. The UI now
     // commits one scale after an edit instead of one per mouse movement; retire all three lists
     // at that single boundary so the old raster has no command-list lifetime left either.
-    if (netChanged && g.workDevice != nullptr)
+    if (netChanged && g.bridge.workDevice != nullptr)
     {
         for (UINT i = 0; i < State::kRing; ++i)
         {
@@ -4009,25 +4008,25 @@ void ReleaseSwapchainSized()
 #endif
     // Closed command lists retain references to their recorded resources until Reset. Retire all
     // slots while the queue is idle so no recording from the old swapchain survives the teardown.
-    if (g.workDevice != nullptr)
+    if (g.bridge.workDevice != nullptr)
     {
         for (UINT i = 0; i < State::kRing; ++i)
         {
             if (RecreateWorkSlot(i))
                 continue;
-            g.bridgeFailed = true;
+            g.bridge.failed = true;
             g.unavailable = true;
             g.reason = "could not retire the D3D12 work slots during swapchain teardown";
             break;
         }
     }
-    g.bridgeIn.Destroy();
-    g.bridgeOut.Destroy();
-    g.crossLocal.Reset();
-    g.stageIn11.Reset();
-    g.stageOut11.Reset();
-    g.stageW = g.stageH = 0;
-    g.stageFmt = DXGI_FORMAT_UNKNOWN;
+    g.bridge.in.Destroy();
+    g.bridge.out.Destroy();
+    g.bridge.crossLocal.Reset();
+    g.bridge.stageIn11.Reset();
+    g.bridge.stageOut11.Reset();
+    g.bridge.stageW = g.bridge.stageH = 0;
+    g.bridge.stageFmt = DXGI_FORMAT_UNKNOWN;
     for (Guide *guide : { &g.guideDepth, &g.guideMotion })
     {
         guide->chosen.Reset();
@@ -4071,7 +4070,7 @@ void OnDestroySwapchain(swapchain *sc, bool resize)
     Log("swapchain going away (resize %d) after %llu frames; draining and dropping everything "
         "sized to it.", resize ? 1 : 0, static_cast<unsigned long long>(g.frame));
 
-    if (g.game11ctx != nullptr)
+    if (g.bridge.game11ctx != nullptr)
     {
         // Retiring the back-buffer reference needs the work to have *finished*, not just to have
         // been submitted. DXGI refuses ResizeBuffers while a pending command references a back
@@ -4081,14 +4080,14 @@ void OnDestroySwapchain(swapchain *sc, bool resize)
         D3D11_QUERY_DESC qd {};
         qd.Query = D3D11_QUERY_EVENT;
         ComPtr<ID3D11Query> done;
-        if (SUCCEEDED(g.game11->CreateQuery(&qd, &done)))
+        if (SUCCEEDED(g.bridge.game11->CreateQuery(&qd, &done)))
         {
-            g.game11ctx->End(done.Get());
-            g.game11ctx->Flush();
+            g.bridge.game11ctx->End(done.Get());
+            g.bridge.game11ctx->Flush();
             // Bounded: hanging here would be a black screen instead of an error, which is not an
             // improvement. The network takes about 16 ms, so this normally returns at once.
             const ULONGLONG deadline = GetTickCount64() + 2000;
-            while (g.game11ctx->GetData(done.Get(), nullptr, 0, 0) == S_FALSE)
+            while (g.bridge.game11ctx->GetData(done.Get(), nullptr, 0, 0) == S_FALSE)
             {
                 if (GetTickCount64() > deadline)
                 {
@@ -4098,8 +4097,8 @@ void OnDestroySwapchain(swapchain *sc, bool resize)
                 Sleep(0);
             }
         }
-        g.game11ctx->ClearState();
-        g.game11ctx->Flush();
+        g.bridge.game11ctx->ClearState();
+        g.bridge.game11ctx->Flush();
     }
     ReleaseSwapchainSized();
 }
@@ -5405,13 +5404,13 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         // presents at 60 Hz; a real frame resets it. This is here because two separate bugs -- an
         // event handle shared by two fences, and a teardown flag that latched on -- both showed up
         // as a frozen counter and a black window rather than as anything readable.
-        if (g.frame != g.lastSeenFrame)
+        if (g.frame != g.bridge.lastSeenFrame)
         {
-            g.lastSeenFrame = g.frame;
-            g.presentsSinceFrame = 0;
-            g.bridgeRetries = 0;  // a frame got through, so the retries were spent well
+            g.bridge.lastSeenFrame = g.frame;
+            g.bridge.presentsSinceFrame = 0;
+            g.bridge.retries = 0;  // a frame got through, so the retries were spent well
         }
-        else if (++g.presentsSinceFrame > 600)
+        else if (++g.bridge.presentsSinceFrame > 600)
         {
             g.unavailable = true;
             g.reason = "the bridge stopped completing frames; see amd-nr.log";
@@ -5421,22 +5420,22 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             return;
         }
         BridgeStep1(dev);
-        if (g.workDevice == nullptr)
+        if (g.bridge.workDevice == nullptr)
             return;  // BridgeStep1 said why
-        if (g.bridgeFailed)
+        if (g.bridge.failed)
         {
-            if (++g.bridgeRetries > State::kMaxBridgeRetries)
+            if (++g.bridge.retries > State::kMaxBridgeRetries)
             {
                 g.unavailable = true;
                 g.reason = "the bridge kept failing to rebuild; see amd-nr.log";
                 Log("bridge: %u rebuilds in a row did not take. Standing down and leaving the "
-                    "game's own image alone.", g.bridgeRetries - 1);
+                    "game's own image alone.", g.bridge.retries - 1);
                 return;
             }
-            Log("bridge: rebuilding after a failure (attempt %u of %u).", g.bridgeRetries,
+            Log("bridge: rebuilding after a failure (attempt %u of %u).", g.bridge.retries,
                 State::kMaxBridgeRetries);
             ReleaseSwapchainSized();
-            g.bridgeFailed = false;
+            g.bridge.failed = false;
             return;  // next present builds it again
         }
         if (g.stage.load() < 3)

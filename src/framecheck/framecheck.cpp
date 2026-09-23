@@ -143,7 +143,7 @@ void Run(const std::filesystem::path &input, int frames)
         if (ad.VendorId == 0x1002 && !(ad.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) break;
     }
     Check(CreateWorkDevice(adapter.Get(), ad.AdapterLuid), "work device");
-    g.device = g.workDevice; g.queue = g.workQueue;
+    g.device = g.bridge.workDevice; g.queue = g.bridge.workQueue;
     Hr(g.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence)), "pass fence");
     Check(InitPipeline() && EnsureResources(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, g.scale), "pipeline/resources");
     ComPtr<ID3D12Resource> source;
