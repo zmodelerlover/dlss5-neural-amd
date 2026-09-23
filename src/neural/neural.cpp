@@ -17,6 +17,7 @@
 #include "ini_text.h"
 #include "../ui/i18n.h"
 #include "../ui/panel_model.h"
+#include "../ui/sections/sections.h"
 #include "../ui/theme.h"
 #include "../ui/view_logic.h"
 #include "../ui/widgets/widgets.h"
@@ -4120,8 +4121,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
 // setting is never overwritten -- the cap is separate, and the overlay says it is in force.
 float EffectiveScale()
 {
-    const float wanted = g.scale.load(), cap = g.scaleCap.load();
-    return cap > 0.0f && cap < wanted ? cap : wanted;
+    return ui::EffectiveScale(g.scale.load(), g.scaleCap.load());
 }
 
 // One finished evaluation, timed from this side rather than read out of the engine's log. Three
@@ -6266,6 +6266,55 @@ PanelSettings ReadPanelSettings()
     return s;
 }
 
+// What the panel changed, written back to the engine. Only the fields that moved: the part of the
+// overlay still drawn in this file writes the same atomics directly, and a whole-struct write would
+// put back what was read before it did.
+void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)
+{
+#define X(type, name, low, high)                                                                   \
+    if (after.name != before.name)                                                                 \
+    {                                                                                              \
+        g.name.store(static_cast<decltype(g.name.load())>(after.name));                           \
+        Log("menu: " #name " %g -> %g", static_cast<double>(before.name),                          \
+            static_cast<double>(after.name));                                                      \
+    }
+#include "../x86bridge/settings_fields.inc"
+#undef X
+    for (int i = 0; i < kMaxPasses; ++i)
+    {
+        if (after.passOverride[i] != before.passOverride[i])
+        {
+            g.passOverride[i].store(after.passOverride[i] != 0);
+            Log("menu: pass %d profile %s", i + 1, after.passOverride[i] != 0 ? "on" : "off");
+        }
+        if (after.passStructure[i] != before.passStructure[i])
+            g.passStructure[i].store(after.passStructure[i]);
+        if (after.passTone[i] != before.passTone[i])
+            g.passTone[i].store(after.passTone[i]);
+        if (after.passSkin[i] != before.passSkin[i])
+            g.passSkin[i].store(after.passSkin[i]);
+    }
+    // A raster of a new size, a depth read the other way round, or history switched: last frame's
+    // output no longer means what the next frame's motion vectors assume, so do not carry it.
+    if (after.scale != before.scale || after.depthInverted != before.depthInverted ||
+        after.useHistory != before.useHistory)
+        g.historyValid.store(0);
+}
+
+void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)
+{
+    if (actions.Has(PanelAction::LiftScaleCap))
+    {
+        // Letting go of Scale overrules a cap NoteJobCost put on. If this card still cannot carry
+        // it, three long jobs put the cap back.
+        const float cap = g.scaleCap.exchange(0.0f);
+        g.longJobs = 0;
+        if (cap > 0.0f)
+            Log("menu: resolution scale %.2f; the automatic cap is lifted and it runs at that until "
+                "the network is measured too slow for it again.", static_cast<double>(after.scale));
+    }
+}
+
 // The overlay, rebuilt 22/09/2026. It used to carry 47 controls across eight headers; it carries
 // fifteen across five now. Nothing was deleted: every atomic, every LoadSettings line and every
 // SaveSettings line is untouched, so each hidden control still reads its key out of
@@ -6292,7 +6341,9 @@ void OnOverlay(effect_runtime *runtime)
     static hotkey::Capture capture;
     PanelStatus status = ReadPanelStatus();
     status.hotkeyArmed = capture.armed;
-    const PanelSettings panel = ReadPanelSettings();
+    PanelSettings panel = ReadPanelSettings();
+    const PanelSettings before = panel;
+    PanelActions actions;
     SetLanguage(panel.language);
 
     bool on = g.enabled.load();
@@ -6398,211 +6449,7 @@ void OnOverlay(effect_runtime *runtime)
                           "a Escala e ponha Passes em 1."));
     }
 
-    if (SectionHeader(kHuePerf, T("Performance", "Desempenho"), true))
-    {
-        // Same-frame timing is what turns every other cost into a stall, so it is coloured
-        // exactly when there is a cost big enough for that to matter.
-        int timing = g.inlineMode.load() ? 0 : 1;
-        const float sc = g.scale.load();
-        const int np = g.passes.load();
-        // Red is the documented device-removal path -- inline, waiting on the GPU, above full
-        // resolution -- and nothing else here earns a colour. The old amber lit whenever Scale
-        // passed 0.50 or Passes passed 1, which is most of a working configuration: a warning
-        // that is on while everything is fine is a warning nobody reads.
-        (void)np;
-        if (Risk r(kDanger, g.inlineMode.load() && sc > 1.0f);
-            ImGui::Combo(T("Timing", "Momento"), &timing,
-                         T("Same frame\0Async\0", "Mesmo quadro\0Assíncrono\0")))
-        {
-            g.inlineMode.store(timing == 0);
-            Log("menu: mode %s", timing == 0 ? "inline" : "async");
-        }
-        Help("Same frame waits for this frame's own result: correct, and every millisecond the "
-             "network costs is a millisecond of frame time.\n\n"
-             "Async pastes an older correction instead, which is cheaper and can show the "
-             "correction of a picture that has already moved -- that is what a trail behind "
-             "moving objects is.",
-
-             "Mesmo quadro espera o resultado deste quadro: correto, e cada milissegundo que a "
-             "rede custa é milissegundo de tempo de quadro.\n\n"
-             "Assíncrono cola uma correção anterior, o que é mais barato e pode mostrar a "
-             "correção de uma imagem que já andou -- é isso o rastro atrás de coisa em "
-             "movimento.");
-
-        // Keep the value being dragged separate from the value consumed by the render thread.
-        // SliderFloat changes on every mouse movement; publishing each intermediate float made
-        // EnsureResources build a complete network raster every frame, while the runtime and
-        // driver kept the retired allocations resident. Commit once, when the edit ends.
-        static float editingScale = g.scale.load();
-        static bool editingScaleActive = false;
-        if (!editingScaleActive)
-            editingScale = g.scale.load();
-        float v = editingScale;
-        if (Risk r(kDanger, v > 1.0f && g.inlineMode.load());
-            ImGui::SliderFloat(T("Scale", "Escala"), &v, 0.25f, 2.0f, "%.2f", 0))
-            editingScale = v;
-        if (ImGui::IsItemActive())
-            editingScaleActive = true;
-        if (ImGui::IsItemDeactivated())
-        {
-            const float before = g.scale.load();
-            if (editingScaleActive)
-            {
-                // Letting go of the slider is the person overruling a cap NoteJobCost put on,
-                // even when they let go on the number they started from -- which is exactly what
-                // somebody capped at 0.75 does when their Scale already says 1.00, and the
-                // overlay tells them to move the slider to ask again. If this card still cannot
-                // carry it, three long jobs put the cap back.
-                const float cap = g.scaleCap.exchange(0.0f);
-                g.longJobs = 0;
-                if (editingScale != before)
-                {
-                    g.scale.store(editingScale);
-                    g.historyValid.store(0);
-                    Log("menu: resolution scale %.2f -> %.2f; applying once after the edit ended%s",
-                        static_cast<double>(before), static_cast<double>(editingScale),
-                        cap > 0.0f ? " (the automatic cap is lifted)" : "");
-                }
-                else if (cap > 0.0f)
-                {
-                    Log("menu: resolution scale left at %.2f; the automatic cap is lifted and it "
-                        "runs at that until the network is measured too slow for it again.",
-                        static_cast<double>(before));
-                }
-            }
-            editingScaleActive = false;
-        }
-        Help("Width and height the network runs at, relative to the game frame. 0.50 uses a "
-             "quarter of the pixels. Lower is faster and the network answers differently, not "
-             "just softer; above 1.00 it costs GPU time and memory for a frame that is already "
-             "at full resolution.",
-
-             "Largura e altura em que a rede roda, em relação ao quadro do jogo. 0.50 usa um "
-             "quarto dos pixels. Menor é mais rápido e a rede responde diferente, não só mais "
-             "suave; acima de 1.00 custa tempo de GPU e memória para um quadro que já está em "
-             "resolução cheia.");
-        // Against what is actually being run at, not what the slider says: under a cap those two
-        // disagree by design, and comparing with the slider reported the raster as "not applied
-        // yet" for ever while it was working exactly as intended.
-        if (g.outWidth != 0)
-        {
-            const float running = EffectiveScale();
-            const UINT wantW = std::max<UINT>(64u, static_cast<UINT>(g.outWidth * running + 0.5f));
-            const UINT wantH = std::max<UINT>(64u, static_cast<UINT>(g.outHeight * running + 0.5f));
-            if (wantW != g.netWidth || wantH != g.netHeight)
-                ImGui::TextColored(kWarn, T("%ux%u, asked %ux%u", "%ux%u, pediu %ux%u"),
-                                   g.netWidth, g.netHeight, wantW, wantH);
-            else
-                ImGui::TextDisabled("%ux%u", g.netWidth, g.netHeight);
-        }
-        if (const float cap = g.scaleCap.load(); cap > 0.0f && cap < g.scale.load())
-            Note(kWarn,
-                 T("Held below the slider by this card's own limit: one network run took long "
-                   "enough to reset the display driver and take the game with it. Let go of the "
-                   "slider to ask for the full scale again.",
-                   "Segurado abaixo do slider pelo limite desta placa: uma passada da rede levou "
-                   "tempo bastante para resetar o driver de vídeo e levar o jogo junto. Solte o "
-                   "slider para pedir a escala cheia de novo."));
-
-        int passes = g.passes.load();
-        if (Risk r(kDanger, g.inlineMode.load() && passes > 1 && sc > 1.0f);
-            ImGui::SliderInt(T("Passes", "Passes"), &passes, 1,
-                             static_cast<int>(State::kMaxPasses), "%d", 0))
-        {
-            g.passes.store(passes);
-            Log("menu: pass count %d", passes);
-        }
-        Help("Runs the network over its own output one to three times, and each run costs another "
-             "inference. It can strengthen material detail; it also compounds grain and halos, "
-             "because each pass is editing the last one's work.\n\n"
-             "1 is the default. Watch the skipped percentage at the top when you raise it: a "
-             "network that stops finishing inside a frame is the flicker.",
-
-             "Roda a rede sobre a própria saída de uma a três vezes, e cada rodada custa outra "
-             "inferência. Pode reforçar detalhe de material; também acumula granulado e halo, "
-             "porque cada passe está editando o trabalho do anterior.\n\n"
-             "1 é o padrão. Olhe a porcentagem de pulados lá em cima ao subir: rede que para de "
-             "terminar dentro do quadro é o piscar.");
-        {
-            if (Shown(kOptTaper) && passes > 1)
-            {
-                bool taper = g.passTaper.load();
-                if (ImGui::Checkbox(T("Taper passes", "Diminuir passes"), &taper))
-                {
-                    g.passTaper.store(taper);
-                    Log("menu: pass taper %s", taper ? "on" : "off");
-                }
-                Help("Halves Structure on each later pass: 1.0, 0.5, 0.25. Local tone already "
-                     "drops to zero after pass 1. Per-pass overrides win over this. Can reduce "
-                     "accumulated grain and outlines; compare in your scene.",
-                     "Reduz Estrutura pela metade a cada passe: 1.0, 0.5, 0.25. Tom local já cai "
-                     "a zero depois do passe 1. Ajustes por passe têm prioridade sobre isto. Pode "
-                     "reduzir granulado e contorno acumulados; compare na sua cena.");
-            }
-
-            // Per-pass profiles, the reference fork's "Per pass" tree. A later pass is looking at
-            // a picture an earlier one already edited, so the same numbers again ask it to sharpen
-            // its own sharpening -- and that is the half of "3 passes looks deep fried" that the
-            // composition cannot reach from outside, because it happens inside the network.
-            if (Shown(kOptPerPass) && passes > 1 && ImGui::TreeNode(T("Per pass", "Por passe")))
-            {
-                for (int i = 0; i < passes; ++i)
-                {
-                    char label[32];
-                    snprintf(label, sizeof(label), T("Pass %d", "Passe %d"), i + 1);
-                    if (!ImGui::TreeNode(label))
-                        continue;
-                    ImGui::PushID(i);
-                    bool own = g.passOverride[i].load();
-                    if (ImGui::Checkbox(T("Own settings", "Ajustes próprios"), &own))
-                    {
-                        g.passOverride[i].store(own);
-                        Log("menu: pass %d profile %s", i + 1, own ? "on" : "off");
-                    }
-                    ImGui::BeginDisabled(!own);
-                    float pv = g.passStructure[i].load();
-                    if (ImGui::SliderFloat(T("Structure", "Estrutura"), &pv, 0.0f, 3.0f, "%.2f", 0))
-                        g.passStructure[i].store(pv);
-                    pv = g.passTone[i].load();
-                    if (ImGui::SliderFloat(T("Tone", "Tom"), &pv, 0.0f, 3.0f, "%.2f", 0))
-                        g.passTone[i].store(pv);
-                    pv = g.passSkin[i].load();
-                    if (ImGui::SliderFloat(T("Skin", "Pele"), &pv, -1.0f, 3.0f, "%.2f", 0))
-                        g.passSkin[i].store(pv);
-                    ImGui::EndDisabled();
-                    ImGui::PopID();
-                    ImGui::TreePop();
-                }
-                Note(kWarn, T("A pass without its own settings follows the values above. The "
-                              "useful shape is a taper, because each pass edits the last one's "
-                              "work. -1 Skin is the engine's automatic.",
-                              "Um passe sem ajustes próprios segue os valores acima. O formato "
-                              "útil é uma queda, porque cada passe edita o trabalho do anterior. "
-                              "Pele -1 é o automático do motor."));
-                ImGui::TreePop();
-            }
-
-            if (Shown(kOptBicubic))
-            {
-            bool bic = g.bicubic.load();
-            if (ImGui::Checkbox(T("Bicubic upsample", "Upsample bicúbico"), &bic))
-            {
-                g.bicubic.store(bic);
-                Log("menu: residual upsample %s", bic ? "bicubic" : "bilinear");
-            }
-            Help("Below Scale 1.00 only the correction comes back up to full resolution. "
-                 "Stretching it bilinearly is a blur that throws away everything but colour and "
-                 "brightness, which alone made the whole effect look like a colour filter. "
-                 "Catmull-Rom keeps the rest. Turn it off if hard edges ring. Nothing at all at "
-                 "Scale 1.00.",
-
-                 "Abaixo de Escala 1.00 só a correção volta para a resolução cheia. Esticar ela "
-                 "bilinearmente é um borrão que joga fora tudo menos cor e brilho, e isso sozinho "
-                 "já fazia o efeito inteiro parecer um filtro de cor. Catmull-Rom mantém o resto. "
-                 "Desligue se arestas duras ficarem com halo. Nada em Escala 1.00.");
-            }
-        }
-    }
+    DrawPerformance(panel, status, actions);
 
     if (SectionHeader(kHueImage, T("Image", "Imagem"), true))
     {
@@ -7399,6 +7246,9 @@ void OnOverlay(effect_runtime *runtime)
                           "measured here.",
                           "Vermelho: neste valor arrisca o driver de vídeo. Âmbar: além do que "
                           "foi medido aqui."));
+
+    ApplyPanelSettings(before, panel);
+    HandlePanelActions(actions, panel);
 
     // Autosave. The button above stays -- it is still the only thing that says out loud that a write
     // happened -- but nothing should be lost because somebody never scrolled this far. Written when a
