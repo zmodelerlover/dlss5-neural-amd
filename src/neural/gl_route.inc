@@ -1086,19 +1086,19 @@ void Present(command_queue *queue, swapchain *sc)
     {
         if (!EnsureResources(r.width, r.height, kCrossingFormat, g.scale.load()))
         {
-            g.unavailable = true;
-            if (*g.reason == 0)
-                g.reason = "could not create the working textures; see amd-nr.log";
-            Log("opengl: %s", g.reason);
+            g.status.unavailable = true;
+            if (*g.status.reason == 0)
+                g.status.reason = "could not create the working textures; see amd-nr.log";
+            Log("opengl: %s", g.status.reason);
             return;
         }
 
         UINT wanted = WantedPasses();
         if (!BringUpEngines(wanted))
         {
-            g.unavailable = true;
-            g.reason = "could not bring the engine up on the OpenGL bridge";
-            Log("opengl: %s", g.reason);
+            g.status.unavailable = true;
+            g.status.reason = "could not bring the engine up on the OpenGL bridge";
+            Log("opengl: %s", g.status.reason);
             return;
         }
         g.loadedPasses = wanted;
@@ -1171,7 +1171,7 @@ void Present(command_queue *queue, swapchain *sc)
     {
         ++r.held;
         ++r.heldFrames;
-        ++g.skipped;
+        ++g.status.skipped;
         if (!g.noBackBuffer.load() && !BlitOut(r))
         {
             r.Stop("the blit back into the default framebuffer reported a GL error.");
@@ -1184,9 +1184,9 @@ void Present(command_queue *queue, swapchain *sc)
                 "last result instead of waiting. The present rate rises and part of it is "
                 "duplicates -- every frame counter will read high by that much.", kMaxHeld);
         }
-        if (++g.frame % 600 == 0)
+        if (++g.status.frame % 600 == 0)
             Log("frame %llu processed (%llu fresh, %llu held)",
-                static_cast<unsigned long long>(g.frame),
+                static_cast<unsigned long long>(g.status.frame),
                 static_cast<unsigned long long>(r.freshFrames),
                 static_cast<unsigned long long>(r.heldFrames));
         return;
@@ -1242,7 +1242,7 @@ void Present(command_queue *queue, swapchain *sc)
             RecordNetwork(cmd12, g.bridge.crossLocal.Get(), kCrossingFormat, nullptr, runNetwork,
                           g.loadedPasses,
                           [&]() { return SubmitPrivatePass(cmd12, g.alloc[slot].Get()); });
-        if (!ok && g.failed)
+        if (!ok && g.status.failed)
             return;
         Barrier(cmd12, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
@@ -1356,8 +1356,8 @@ void Present(command_queue *queue, swapchain *sc)
         r.loggedFirstFrame = true;
         Log("opengl: first full round trip done at %ux%u.", r.width, r.height);
     }
-    if (++g.frame <= 3 || g.frame % 120 == 0)
-        Log("frame %llu processed (%llu fresh, %llu held)", static_cast<unsigned long long>(g.frame),
+    if (++g.status.frame <= 3 || g.status.frame % 120 == 0)
+        Log("frame %llu processed (%llu fresh, %llu held)", static_cast<unsigned long long>(g.status.frame),
             static_cast<unsigned long long>(r.freshFrames),
             static_cast<unsigned long long>(r.heldFrames));
 }

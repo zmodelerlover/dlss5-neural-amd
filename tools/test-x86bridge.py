@@ -155,7 +155,7 @@ assert 'Idle();return Result::Transport' in transport
 neural=h[h.index('    Result Neural()'):h.index('    Result FrameWork(')]
 assert neural.index('RecordNetwork(')<neural.index('CompositionIsFresh(')<neural.index('cmd->Close()')<neural.index('ExecuteCommandLists(')<neural.index('NotifyFn')<neural.index('WaitForWorkQueue(g.completion)')<neural.index('return fresh?')
 assert 'runNetwork&&g.activePasses!=0' in neural and 'g.fence->GetCompletedValue()>=g.completion' in neural
-assert h.count('++g.frame')==1 and 'Idle();ReleaseSwapchainSized();built=false;g.historyValid.store(false);' in h
+assert h.count('++g.status.frame')==1 and 'Idle();ReleaseSwapchainSized();built=false;g.historyValid.store(false);' in h
 for path in [new/'frontend32.cpp',new/'host64.cpp']:
  text=read(path)
  assert 'ProfileForThisProcess' not in text and 'kTargets' not in text

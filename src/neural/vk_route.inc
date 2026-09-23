@@ -999,10 +999,10 @@ void Present(command_queue *queue, swapchain *sc)
     // to be enough.
     if (!EnsureResources(r.width, r.height, r.format, g.scale.load()))
     {
-        g.unavailable = true;
-        if (*g.reason == 0)
-            g.reason = "could not create the working textures; see amd-nr.log";
-        Log("vulkan: %s", g.reason);
+        g.status.unavailable = true;
+        if (*g.status.reason == 0)
+            g.status.reason = "could not create the working textures; see amd-nr.log";
+        Log("vulkan: %s", g.status.reason);
         return;
     }
 
@@ -1013,9 +1013,9 @@ void Present(command_queue *queue, swapchain *sc)
     UINT wanted = WantedPasses();
     if (!BringUpEngines(wanted))
     {
-        g.unavailable = true;
-        g.reason = "could not bring the engine up on the Vulkan bridge";
-        Log("vulkan: %s", g.reason);
+        g.status.unavailable = true;
+        g.status.reason = "could not bring the engine up on the Vulkan bridge";
+        Log("vulkan: %s", g.status.reason);
         return;
     }
     g.loadedPasses = wanted;
@@ -1030,10 +1030,10 @@ void Present(command_queue *queue, swapchain *sc)
     if (jobPending && GetTickCount64() - g.lastJobAt < 500)
     {
         runNetwork = false;
-        if (++g.skipped % 120 == 1)
+        if (++g.status.skipped % 120 == 1)
             Log("vulkan: network skipped, previous evaluation still pending (%llu skipped, %llu "
-                "done)", static_cast<unsigned long long>(g.skipped),
-                static_cast<unsigned long long>(g.frame));
+                "done)", static_cast<unsigned long long>(g.status.skipped),
+                static_cast<unsigned long long>(g.status.frame));
     }
 
     auto *backImage = reinterpret_cast<VkImage>(back.handle);
@@ -1084,7 +1084,7 @@ void Present(command_queue *queue, swapchain *sc)
     const bool ok = RecordNetwork(cmd12, g.bridge.crossLocal.Get(), r.format, nullptr, runNetwork,
                                   g.loadedPasses,
                                   [&]() { return SubmitPrivatePass(cmd12, g.alloc[slot].Get()); });
-    if (!ok && g.failed)
+    if (!ok && g.status.failed)
         return;
     Barrier(cmd12, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
@@ -1144,9 +1144,9 @@ void Present(command_queue *queue, swapchain *sc)
         r.loggedFirstFrame = true;
         Log("vulkan: first full round trip done at %ux%u.", r.width, r.height);
     }
-    if (++g.frame <= 3 || g.frame % 120 == 0)
-        Log("frame %llu processed (%llu skipped)", static_cast<unsigned long long>(g.frame),
-            static_cast<unsigned long long>(g.skipped));
+    if (++g.status.frame <= 3 || g.status.frame % 120 == 0)
+        Log("frame %llu processed (%llu skipped)", static_cast<unsigned long long>(g.status.frame),
+            static_cast<unsigned long long>(g.status.skipped));
 }
 
 }  // namespace vkroute

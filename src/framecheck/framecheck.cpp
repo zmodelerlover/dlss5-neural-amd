@@ -208,7 +208,7 @@ void Run(const std::filesystem::path &input, int frames)
             Dump(g.netResidual.Get(), prefix + "residual", manifest);
             Dump(g.composed.Get(), prefix + "composed", manifest);
         }
-        ++g.frame;
+        ++g.status.frame;
         std::printf("frame %d: %.3f GPU ms, %.3f wall ms\n", f, gpu, wall);
         std::fflush(stdout);
     }

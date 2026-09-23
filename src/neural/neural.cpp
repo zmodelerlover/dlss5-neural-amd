@@ -638,8 +638,16 @@ struct State
 {
     std::mutex lock;
 
-    bool unavailable = false;
-    bool loggedWrongApi = false;
+    // Whether this run is up. Every transport fails the same way: say why, leave the frame alone.
+    struct StatusState
+    {
+        bool unavailable = false, loggedWrongApi = false, failed = false;
+        const char *reason = "";
+        uint64_t frame = 0, skipped = 0;
+        // The last present went to a window nobody can see: alt-tab, in practice, and the state
+        // in which every wait in this file misbehaves.
+        bool windowHidden = false, loggedHidden = false;
+    } status;
     // Starts off unless StartOn says otherwise. The add-on rewrites every presented frame, and
     // the settings that do that are the ones that have taken the machine down, so the shipped
     // default is still off -- but "off every single launch" was a diagnostic's rule, not a
@@ -777,8 +785,6 @@ struct State
     std::atomic<float> flowGate { 0.02f };
     std::atomic<float> flowRatio { 0.70f };
     UINT loadedPasses = 0;
-    bool failed = false;
-    const char *reason = "";
 
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
@@ -840,10 +846,6 @@ struct State
     bool loggedDeviceLost = false;
     bool loggedNoBackBuffer = false;
     static constexpr UINT kMaxBridgeRetries = 10;
-    // Whether the last present was to a window nobody can see. Alt-tab is the only way this
-    // becomes true in practice, and it is the state in which every wait in this file misbehaves.
-    bool windowHidden = false;
-    bool loggedHidden = false;
     // Share the runtime and weights. Inline passes submit and finish both the GPU
     // list and HIP job before changing tuning globals for the following pass.
     // Temporal state remains shared; separate per-pass histories are future work.
@@ -1062,8 +1064,6 @@ struct State
     std::atomic<bool> inert { false };
     bool pendingMeasure = false;
 
-    uint64_t frame = 0;
-    uint64_t skipped = 0;
     UINT64 lastJobAt = 0;
     // A job that is running right now, and how the network's real cost is kept. A dispatch that
     // takes seconds is not slow, it is a display-driver reset waiting to happen -- see
@@ -1956,7 +1956,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                     std::error_code ec;
                     const auto dir = ExeDirectory() / L"amd-nr-captures";
                     std::filesystem::create_directories(dir, ec);
-                    const std::string prefix = "frame-" + std::to_string(g.frame) + "-" +
+                    const std::string prefix = "frame-" + std::to_string(g.status.frame) + "-" +
                                                std::to_string(GetTickCount64());
                     auto save = [&](const char *kind, const void *data) {
                         std::ofstream file(dir / (prefix + kind + ".raw"), std::ios::binary);
@@ -2458,7 +2458,7 @@ void AdoptFeedEffect()
     if (!first)
     {
         g.probeGuides.store(true);
-        g.nextGuideProbe = g.frame + 120;
+        g.nextGuideProbe = g.status.frame + 120;
     }
     std::snprintf(g.feedStatus, sizeof(g.feedStatus),
                   "AMD_Neural_Feed.fx: %s; motion %s, depth %s",
@@ -2480,7 +2480,7 @@ void AdoptFeedEffect()
     const auto feedTech = g.effects ? g.effects->find_technique("AMD_Neural_Feed.fx", "AMD_Neural_Feed") : reshade::api::effect_technique { 0 };
     const auto lpTech = g.effects ? g.effects->find_technique("MartysMods_LAUNCHPAD.fx", "MartysMods_Launchpad") : reshade::api::effect_technique { 0 };
     Log("%s  [frame %llu: feed handle %d state %d, launchpad handle %d state %d]", g.feedStatus,
-        static_cast<unsigned long long>(g.frame), feedTech.handle != 0 ? 1 : 0,
+        static_cast<unsigned long long>(g.status.frame), feedTech.handle != 0 ? 1 : 0,
         feedTech.handle != 0 && g.effects->get_technique_state(feedTech) ? 1 : 0,
         lpTech.handle != 0 ? 1 : 0,
         lpTech.handle != 0 && g.effects->get_technique_state(lpTech) ? 1 : 0);
@@ -2593,8 +2593,8 @@ bool DeviceLost()
             "screen any more, so it is stepping out of the way and leaving the game's own image "
             "alone.", reason);
     }
-    g.unavailable = true;
-    g.reason = "the D3D12 device was removed; see amd-nr.log";
+    g.status.unavailable = true;
+    g.status.reason = "the D3D12 device was removed; see amd-nr.log";
     return true;
 }
 
@@ -2731,17 +2731,17 @@ void BridgePresent(device *dev, swapchain *sc)
 
     if (!EnsureResources(w, h, fmt, EffectiveScale()))
     {
-        g.unavailable = true;
-        if (*g.reason == 0)
-            g.reason = "could not create the working textures; see amd-nr.log";
+        g.status.unavailable = true;
+        if (*g.status.reason == 0)
+            g.status.reason = "could not create the working textures; see amd-nr.log";
         return;
     }
     if (!g.bridge.in.Ensure(g.bridge.game11.Get(), g.bridge.workDevice.Get(), w, h, fmt) ||
         !g.bridge.out.Ensure(g.bridge.game11.Get(), g.bridge.workDevice.Get(), w, h, fmt))
     {
         g.bridge.failed = true;
-        g.unavailable = true;
-        g.reason = "the back buffer format is not shareable between the two devices";
+        g.status.unavailable = true;
+        g.status.reason = "the back buffer format is not shareable between the two devices";
         return;
     }
     // The crossed texture is read as an SRV by the copy shader. Rather than lean on state
@@ -2760,8 +2760,8 @@ void BridgePresent(device *dev, swapchain *sc)
     if (g.fence == nullptr &&
         FAILED(g.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
     {
-        g.unavailable = true;
-        g.reason = "could not create the completion fence";
+        g.status.unavailable = true;
+        g.status.reason = "could not create the completion fence";
         return;
     }
 
@@ -2777,12 +2777,12 @@ void BridgePresent(device *dev, swapchain *sc)
     if (jobPending && GetTickCount64() - g.lastJobAt < 500)
     {
         runNetwork = false;
-        if (++g.skipped % 120 == 1)
+        if (++g.status.skipped % 120 == 1)
             Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). Those "
                     "frames go out as the game drew them; a correction aimed at an older picture "
                     "reads as a trail, not as detail.",
-                static_cast<unsigned long long>(g.skipped),
-                static_cast<unsigned long long>(g.frame));
+                static_cast<unsigned long long>(g.status.skipped),
+                static_cast<unsigned long long>(g.status.frame));
     }
     else if (jobPending)
     {
@@ -2883,7 +2883,7 @@ void BridgePresent(device *dev, swapchain *sc)
     const bool ok =
         RecordNetwork(cmd, g.bridge.crossLocal.Get(), fmt, nullptr, runNetwork, g.loadedPasses,
             [&]() { return SubmitPrivatePass(cmd, g.alloc[i].Get()); });
-    if (!ok && g.failed)
+    if (!ok && g.status.failed)
         return;
     Barrier(cmd, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
@@ -2949,9 +2949,9 @@ void BridgePresent(device *dev, swapchain *sc)
         g.loggedRound = true;
         Log("bridge: first full round trip done at %ux%u.", w, h);
     }
-    if (++g.frame <= 3 || g.frame % 120 == 0)
-        Log("frame %llu processed (%llu skipped)", static_cast<unsigned long long>(g.frame),
-            static_cast<unsigned long long>(g.skipped));
+    if (++g.status.frame <= 3 || g.status.frame % 120 == 0)
+        Log("frame %llu processed (%llu skipped)", static_cast<unsigned long long>(g.status.frame),
+            static_cast<unsigned long long>(g.status.skipped));
 }
 
 bool InitHip()
@@ -3288,9 +3288,9 @@ bool InitEngine()
     {
         // Said in the panel too. This is the one failure a user can actually fix, and the log
         // line above it says which file and which build, so pointing at the log is worth it.
-        g.reason = "dlssnr_amd_pass1.dll is a different build to the one this add-on is built "
+        g.status.reason = "dlssnr_amd_pass1.dll is a different build to the one this add-on is built "
                    "against; see amd-nr.log";
-        Log("off: %s", g.reason);
+        Log("off: %s", g.status.reason);
         return false;
     }
     if (!InitHip())
@@ -3507,7 +3507,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
             CloseHandle(done);
             if (!idle)
             {
-                g.reason = "the GPU did not release the old raster before its resolution changed";
+                g.status.reason = "the GPU did not release the old raster before its resolution changed";
                 return false;
             }
         }
@@ -3528,7 +3528,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
         {
             Log("raster: runtime job %u did not become idle in 5 s; keeping its textures alive "
                 "instead of releasing memory that the GPU may still own.", g.lastJob);
-            g.reason = "the neural runtime did not become idle for a resolution change";
+            g.status.reason = "the neural runtime did not become idle for a resolution change";
             return false;
         }
     }
@@ -3556,7 +3556,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
             "%d), so there is no way to write the corrected image back. Stopping instead of "
             "drawing garbage. Try turning HDR off, or a different swapchain format.",
             static_cast<int>(outFormat), static_cast<int>(composeFormat));
-        g.reason = "back buffer format has no typed UAV store on this driver";
+        g.status.reason = "back buffer format has no typed UAV store on this driver";
         return false;
     }
 
@@ -4015,8 +4015,8 @@ void ReleaseSwapchainSized()
             if (RecreateWorkSlot(i))
                 continue;
             g.bridge.failed = true;
-            g.unavailable = true;
-            g.reason = "could not retire the D3D12 work slots during swapchain teardown";
+            g.status.unavailable = true;
+            g.status.reason = "could not retire the D3D12 work slots during swapchain teardown";
             break;
         }
     }
@@ -4068,7 +4068,7 @@ void OnDestroySwapchain(swapchain *sc, bool resize)
     g.goneSwapchain.store(sc);
     std::lock_guard guard(g.lock);
     Log("swapchain going away (resize %d) after %llu frames; draining and dropping everything "
-        "sized to it.", resize ? 1 : 0, static_cast<unsigned long long>(g.frame));
+        "sized to it.", resize ? 1 : 0, static_cast<unsigned long long>(g.status.frame));
 
     if (g.bridge.game11ctx != nullptr)
     {
@@ -4356,7 +4356,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // netBase the input that produced it -- a matched pair, and the last moment it exists before
     // the copy below overwrites netColour. In inline mode this is redundant (the pass after
     // RecordFn re-captures the same frame with no lag) and costs one cheap dispatch.
-    if (g.frame > 0)
+    if (g.status.frame > 0)
         captureResidual();
 
     cmd->SetComputeRootSignature(g.root.Get());
@@ -4427,8 +4427,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     }
     else if (g.useMotion.load() && g.flowSmall != nullptr)
     {
-        ID3D12Resource *cur = (g.frame & 1) ? g.lumaB.Get() : g.lumaA.Get();
-        ID3D12Resource *prev = (g.frame & 1) ? g.lumaA.Get() : g.lumaB.Get();
+        ID3D12Resource *cur = (g.status.frame & 1) ? g.lumaB.Get() : g.lumaA.Get();
+        ID3D12Resource *prev = (g.status.frame & 1) ? g.lumaA.Get() : g.lumaB.Get();
         const UINT fw = g.flowWidth, fh = g.flowHeight;
 
         srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -4520,7 +4520,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // One-shot look inside the flow, so a single run answers what is wrong instead of
         // bisecting over several. A degenerate match and a genuinely still scene produce the same
         // mean vector; the luminance stats tell them apart.
-        if (!g.flowProbed && g.frame == 300)
+        if (!g.flowProbed && g.status.frame == 300)
         {
             g.flowProbed = true;
             const UINT lumaPitch = (fw * 2 + 255) & ~255u;
@@ -4563,7 +4563,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             }
         }
 
-        haveMotion = g.frame > 1;
+        haveMotion = g.status.frame > 1;
         if (!g.loggedFlow)
         {
             g.loggedFlow = true;
@@ -4662,10 +4662,10 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     }
 
     // One-shot look at the two guides, once the game has settled.
-    if (g.probeGuides.load() && g.frame >= g.nextGuideProbe && g.netDepth != nullptr &&
+    if (g.probeGuides.load() && g.status.frame >= g.nextGuideProbe && g.netDepth != nullptr &&
         g.netMotion != nullptr)
     {
-        g.nextGuideProbe = g.frame + 600;
+        g.nextGuideProbe = g.status.frame + 600;
         const UINT pitch = (nw * 4 + 255) & ~255u;
         D3D12_HEAP_PROPERTIES rb {};
         rb.Type = D3D12_HEAP_TYPE_READBACK;
@@ -4702,7 +4702,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             grab(g.netMotion.Get(), g.guideReadMotion.Get(), DXGI_FORMAT_R16G16_FLOAT);
             g.pendingGuides = true;
             Log("guide probe armed at frame %llu: depth fed %d, motion fed %d",
-                static_cast<unsigned long long>(g.frame), haveDepth ? 1 : 0, haveMotion ? 1 : 0);
+                static_cast<unsigned long long>(g.status.frame), haveDepth ? 1 : 0, haveMotion ? 1 : 0);
         }
     }
 
@@ -4833,15 +4833,15 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         if (At<uint8_t>(r, rt::kNativeFailure) != 0)
         {
             nativeFailure = true;
-            g.failed = true;
+            g.status.failed = true;
             Log("pass %u reported a native failure. Stopping.", i + 1);
             break;
         }
         if (At<ID3D12CommandList *>(r, rt::kListMarker) != cmd)
         {
-            if (++g.skipped % 600 == 1)
+            if (++g.status.skipped % 600 == 1)
                 Log("pass %u refused (%llu total)", i + 1,
-                    static_cast<unsigned long long>(g.skipped));
+                    static_cast<unsigned long long>(g.status.skipped));
             break;
         }
         g.lastJob = jobAfter;
@@ -4899,7 +4899,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                 // one overwrites them. A UAV barrier only orders GPU accesses.
                 if (!submitPass || !submitPass())
                 {
-                    g.failed = true;
+                    g.status.failed = true;
                     Log("could not finish pass %u before changing its parameters", i + 1);
                     return false;
                 }
@@ -4974,8 +4974,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // Once in full at frame 240 (or on request), then silently every 1800 frames for the inert
     // watchdog, which only speaks when its verdict changes.
     if (g.activePasses != 0 &&
-        ((!g.measured && (g.measureNow.exchange(false) || (g.frame >= 240 && g.frame % 240 == 0))) ||
-         (g.measured && g.frame % 1800 == 0)))
+        ((!g.measured && (g.measureNow.exchange(false) || (g.status.frame >= 240 && g.status.frame % 240 == 0))) ||
+         (g.measured && g.status.frame % 1800 == 0)))
     {
         const UINT rowPitch = (nw * 8 + 255) & ~255u;
         const UINT64 size = static_cast<UINT64>(rowPitch) * nh;
@@ -5279,7 +5279,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         g.enabled.store(on);
         Log("%s: %s", HotkeyName().c_str(), on ? "on" : "off");
     }
-    if (!g.enabled.load() || g.unavailable || g.failed)
+    if (!g.enabled.load() || g.status.unavailable || g.status.failed)
         return;
     if (!g.loggedProfile)
     {
@@ -5325,19 +5325,19 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         // a user to make about frames nobody can see.
         if (IsIconic(hwnd))
         {
-            if (!g.loggedHidden)
+            if (!g.status.loggedHidden)
             {
-                g.loggedHidden = true;
+                g.status.loggedHidden = true;
                 Log("the window is minimised, so the add-on is sitting the frame out. It picks "
                     "back up on restore. This is not an error, and it is only logged once.");
             }
-            g.windowHidden = true;
+            g.status.windowHidden = true;
             return;
         }
     }
-    if (g.windowHidden)
+    if (g.status.windowHidden)
     {
-        g.windowHidden = false;
+        g.status.windowHidden = false;
         // Coming back from minimised, the last network output is however many seconds old, while
         // the motion vectors handed with it describe a single frame of movement. Feeding that to
         // a temporal denoiser is asking it to smear a stale frame across the new one, which is
@@ -5363,8 +5363,8 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             return;
         if (!LoadGraphicsApi())
         {
-            g.unavailable = true;
-            g.reason = "the D3D12 or DXGI entry points could not be resolved";
+            g.status.unavailable = true;
+            g.status.reason = "the D3D12 or DXGI entry points could not be resolved";
             return;
         }
         vkroute::Present(queue, sc);
@@ -5383,8 +5383,8 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             return;
         if (!LoadGraphicsApi())
         {
-            g.unavailable = true;
-            g.reason = "the D3D12 or DXGI entry points could not be resolved";
+            g.status.unavailable = true;
+            g.status.reason = "the D3D12 or DXGI entry points could not be resolved";
             return;
         }
         glroute::Present(queue, sc);
@@ -5404,16 +5404,16 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         // presents at 60 Hz; a real frame resets it. This is here because two separate bugs -- an
         // event handle shared by two fences, and a teardown flag that latched on -- both showed up
         // as a frozen counter and a black window rather than as anything readable.
-        if (g.frame != g.bridge.lastSeenFrame)
+        if (g.status.frame != g.bridge.lastSeenFrame)
         {
-            g.bridge.lastSeenFrame = g.frame;
+            g.bridge.lastSeenFrame = g.status.frame;
             g.bridge.presentsSinceFrame = 0;
             g.bridge.retries = 0;  // a frame got through, so the retries were spent well
         }
         else if (++g.bridge.presentsSinceFrame > 600)
         {
-            g.unavailable = true;
-            g.reason = "the bridge stopped completing frames; see amd-nr.log";
+            g.status.unavailable = true;
+            g.status.reason = "the bridge stopped completing frames; see amd-nr.log";
             Log("600 presents without the bridge finishing a frame. Something is stuck, so the "
                 "add-on is standing down and leaving the game's own image alone. The last lines "
                 "above this one say how far it got.");
@@ -5426,8 +5426,8 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         {
             if (++g.bridge.retries > State::kMaxBridgeRetries)
             {
-                g.unavailable = true;
-                g.reason = "the bridge kept failing to rebuild; see amd-nr.log";
+                g.status.unavailable = true;
+                g.status.reason = "the bridge kept failing to rebuild; see amd-nr.log";
                 Log("bridge: %u rebuilds in a row did not take. Standing down and leaving the "
                     "game's own image alone.", g.bridge.retries - 1);
                 return;
@@ -5446,13 +5446,13 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         UINT wanted = WantedPasses();
         if (!BringUpEngines(wanted))
         {
-            g.unavailable = true;
+            g.status.unavailable = true;
             // Do not paper over a reason the bring-up already gave. The hash refusal names the
             // file the user has to replace; "could not bring the engine up" names nothing.
-            if (*g.reason == 0)
+            if (*g.status.reason == 0)
             {
-                g.reason = "could not bring the engine up on the bridge device";
-                Log("off: %s", g.reason);
+                g.status.reason = "could not bring the engine up on the bridge device";
+                Log("off: %s", g.status.reason);
             }
             return;
         }
@@ -5462,9 +5462,9 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     }
     if (dev->get_api() != device_api::d3d12)
     {
-        if (!g.loggedWrongApi)
+        if (!g.status.loggedWrongApi)
         {
-            g.loggedWrongApi = true;
+            g.status.loggedWrongApi = true;
             Log("unsupported graphics API %u; transports compiled into this build: Vulkan %d, "
                 "OpenGL %d", static_cast<unsigned>(dev->get_api()), AMDNR_WITH_VULKAN,
                 AMDNR_WITH_OPENGL);
@@ -5473,8 +5473,8 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     }
     if (!LoadGraphicsApi())
     {
-        g.unavailable = true;
-        g.reason = "the D3D12 or DXGI entry points could not be resolved";
+        g.status.unavailable = true;
+        g.status.reason = "the D3D12 or DXGI entry points could not be resolved";
         return;
     }
     if (g.device == nullptr)
@@ -5489,11 +5489,11 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     UINT wanted = WantedPasses();
     if (!BringUpEngines(wanted))
     {
-        g.unavailable = true;
-        if (*g.reason == 0)
+        g.status.unavailable = true;
+        if (*g.status.reason == 0)
         {
-            g.reason = "could not bring the engine up";
-            Log("off: %s", g.reason);
+            g.status.reason = "could not bring the engine up";
+            Log("off: %s", g.status.reason);
         }
         return;
     }
@@ -5509,18 +5509,18 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         return;
     if (!EnsureResources(static_cast<UINT>(bd.Width), bd.Height, bd.Format, EffectiveScale()))
     {
-        g.unavailable = true;
-        if (*g.reason == '\0')
-            g.reason = "could not create the working textures; see amd-nr.log";
+        g.status.unavailable = true;
+        if (*g.status.reason == '\0')
+            g.status.reason = "could not create the working textures; see amd-nr.log";
         return;
     }
 
     if (g.fence == nullptr &&
         FAILED(g.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))))
     {
-        g.unavailable = true;
-        g.reason = "could not create the completion fence";
-        Log("off: %s", g.reason);
+        g.status.unavailable = true;
+        g.status.reason = "could not create the completion fence";
+        Log("off: %s", g.status.reason);
         return;
     }
     bool runNetwork = true;
@@ -5537,18 +5537,18 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         if (GetTickCount64() - g.lastJobAt < 500)
         {
             runNetwork = false;
-            if (++g.skipped % 120 == 1)
+            if (++g.status.skipped % 120 == 1)
                 Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). Those "
                     "frames go out as the game drew them; a correction aimed at an older picture "
                     "reads as a trail, not as detail.",
-                    static_cast<unsigned long long>(g.skipped),
-                    static_cast<unsigned long long>(g.frame));
+                    static_cast<unsigned long long>(g.status.skipped),
+                    static_cast<unsigned long long>(g.status.frame));
         }
         else
         {
-            if (g.skipped % 600 == 0)
+            if (g.status.skipped % 600 == 0)
                 Log("previous job did not finish in 500 ms; continuing anyway (%llu skipped)",
-                    static_cast<unsigned long long>(g.skipped));
+                    static_cast<unsigned long long>(g.status.skipped));
             ResetJobs();
         }
     }
@@ -5572,7 +5572,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         return cmd != nullptr;
     }))
     {
-        if (g.failed)
+        if (g.status.failed)
             return;
         resource_usage a = resource_usage::shader_resource, b = resource_usage::present;
         cmd_list->barrier(1, &backRes, &a, &b);
@@ -5608,16 +5608,16 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     g.completion = ++g.serial;
     if (FAILED(g.queue->Signal(g.fence.Get(), g.completion)))
     {
-        g.failed = true;
+        g.status.failed = true;
         Log("completion fence Signal failed. Stopping.");
     }
 
-    if (++g.frame <= 3 || g.frame % 120 == 0)
-        Log("frame %llu processed (%llu skipped)", static_cast<unsigned long long>(g.frame),
-            static_cast<unsigned long long>(g.skipped));
+    if (++g.status.frame <= 3 || g.status.frame % 120 == 0)
+        Log("frame %llu processed (%llu skipped)", static_cast<unsigned long long>(g.status.frame),
+            static_cast<unsigned long long>(g.status.skipped));
 
     // One line, once, so a log tells us whether depth is even reachable on this API.
-    if (g.frame == 600)
+    if (g.status.frame == 600)
         Log("guides after 600 frames: %llu depth-stencil bind events, best candidate %s. Motion: "
             "the PS2 never computed per-pixel motion, so there is none to take.",
             static_cast<unsigned long long>(g.depthEvents.load()),
@@ -5641,10 +5641,10 @@ PanelStatus ReadPanelStatus()
 {
     PanelStatus st;
     std::lock_guard guard(g.lock);
-    st.run = g.unavailable ? RunState::Unavailable : g.failed ? RunState::Error : RunState::Ready;
-    st.reason = g.reason;
-    st.processed = g.frame;
-    st.skipped = g.skipped;
+    st.run = g.status.unavailable ? RunState::Unavailable : g.status.failed ? RunState::Error : RunState::Ready;
+    st.reason = g.status.reason;
+    st.processed = g.status.frame;
+    st.skipped = g.status.skipped;
     st.routeNote = ProfileForThisProcess().note;
     st.outWidth = g.outWidth;
     st.outHeight = g.outHeight;

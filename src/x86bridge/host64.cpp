@@ -41,8 +41,8 @@ struct Host {
     WireStatus ExportStatus(){
         WireStatus s;s.connected=1;s.transportOnly=transport;
         s.processed=processedFrames;s.skipped=skippedFrames;
-        s.engineReady=!transport&&g.runtime!=nullptr&&!g.unavailable&&!g.failed;
-        s.unavailable=g.unavailable;s.failed=g.failed;
+        s.engineReady=!transport&&g.runtime!=nullptr&&!g.status.unavailable&&!g.status.failed;
+        s.unavailable=g.status.unavailable;s.failed=g.status.failed;
         s.outWidth=spec.colour.width;s.outHeight=spec.colour.height;s.netWidth=g.netWidth;s.netHeight=g.netHeight;
         s.loadedPasses=g.loadedPasses;s.activePasses=g.activePasses;
         s.depthActive=!transport&&built&&g.gameDepthActive;s.motionActive=!transport&&built&&g.gameMotionActive;
@@ -146,12 +146,12 @@ struct Host {
     }
     Result Neural(){
         if(g.bridge.failed)throw std::runtime_error("work slot unavailable");
-        if(g.failed||g.unavailable||DeviceLost())return Result::Original;
+        if(g.status.failed||g.status.unavailable||DeviceLost())return Result::Original;
         if(g.noBridge.load()||g.stage.load()<3)return Result::Original;
-        UINT wanted=WantedPasses();if(!BringUpEngines(wanted)){g.unavailable=true;return Result::Original;}
+        UINT wanted=WantedPasses();if(!BringUpEngines(wanted)){g.status.unavailable=true;return Result::Original;}
         g.loadedPasses=wanted;
         const UINT w=spec.colour.width,h=spec.colour.height;const auto fmt=static_cast<DXGI_FORMAT>(spec.colour.format);
-        if(!EnsureResources(w,h,fmt,g.scale.load())){g.unavailable=true;return Result::Original;}
+        if(!EnsureResources(w,h,fmt,g.scale.load())){g.status.unavailable=true;return Result::Original;}
         if(!g.bridge.crossLocal && !CreateTexture(w,h,fmt,g.bridge.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
     bool runNetwork = true;
     const bool jobPending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
@@ -163,12 +163,12 @@ struct Host {
     if (jobPending && GetTickCount64() - g.lastJobAt < 500)
     {
         runNetwork = false;
-        if (++g.skipped % 120 == 1)
+        if (++g.status.skipped % 120 == 1)
             Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). Those "
                     "frames go out as the game drew them; a correction aimed at an older picture "
                     "reads as a trail, not as detail.",
-                static_cast<unsigned long long>(g.skipped),
-                static_cast<unsigned long long>(g.frame));
+                static_cast<unsigned long long>(g.status.skipped),
+                static_cast<unsigned long long>(g.status.frame));
     }
     else if (jobPending)
     {
@@ -222,7 +222,7 @@ struct Host {
     const bool ok =
         RecordNetwork(cmd, g.bridge.crossLocal.Get(), fmt, nullptr, runNetwork, g.loadedPasses,
             [&]() { return SubmitPrivatePass(cmd, g.alloc[i].Get()); });
-    if (!ok && g.failed)
+    if (!ok && g.status.failed)
         throw std::runtime_error("engine recording failed");
     Barrier(cmd, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
@@ -270,8 +270,8 @@ struct Host {
         g.guideMotion.ready=f.motionValid&&g.useGameGuides.load()&&g.useMotion.load();
         const auto result=transport?CopyOnly():Neural();
         if(result==Result::Neural||result==Result::Transport)++processedFrames;else ++skippedFrames;
-        ++g.frame;
-        if(g.frame<=3||g.frame%120==0)Log("x86bridge frame=%llu engine_frame=%llu result=%u",f.id,g.frame,static_cast<unsigned>(result));
+        ++g.status.frame;
+        if(g.status.frame<=3||g.status.frame%120==0)Log("x86bridge frame=%llu engine_frame=%llu result=%u",f.id,g.status.frame,static_cast<unsigned>(result));
         return result;
     }
     void Reply(Kind kind,Result result,uint64_t frame=0){
