@@ -13,6 +13,9 @@
 // nothing at all, for ever. Measured in Half-Life 2, 15/09/2026.
 #include <Windows.h>
 
+#include <cstdio>
+#include <string>
+
 namespace hotkey {
 
 // A modifier is part of a binding, never the binding itself.
@@ -71,5 +74,41 @@ struct Capture
         return true;
     }
 };
+
+// The bound key, spelled the way the user's keyboard layout spells it.
+//
+// Win32 already knows every key's localised name, so there is no table here to fall out of date
+// or to be wrong on a non-US layout. The one trap is the extended-key bit: without it
+// GetKeyNameText answers with the numpad twin, and End prints as "Num 1".
+inline std::string Name(int key, int mods)
+{
+    std::string out;
+    if (mods & 1) out += "Ctrl+";
+    if (mods & 2) out += "Alt+";
+    if (mods & 4) out += "Shift+";
+    if (key == 0)
+        return out.empty() ? "unbound" : out + "?";
+
+    UINT sc = MapVirtualKeyW(static_cast<UINT>(key), MAPVK_VK_TO_VSC);
+    switch (key)
+    {
+    case VK_END: case VK_HOME: case VK_INSERT: case VK_DELETE: case VK_PRIOR: case VK_NEXT:
+    case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_DIVIDE: case VK_NUMLOCK:
+        sc |= 0x100;
+        break;
+    default:
+        break;
+    }
+    wchar_t wide[64] {};
+    if (sc != 0 && GetKeyNameTextW(static_cast<LONG>(sc) << 16, wide, 64) > 0)
+    {
+        char name[128] {};
+        if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, name, sizeof(name), nullptr, nullptr) > 0)
+            return out + name;
+    }
+    char fallback[16] {};
+    std::snprintf(fallback, sizeof(fallback), "VK 0x%02X", key);
+    return out + fallback;
+}
 
 } // namespace hotkey

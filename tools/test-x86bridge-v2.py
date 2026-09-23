@@ -28,7 +28,7 @@ struct Guide{Ptr chosen;unsigned width=0,height=0,format=0;bool ready=false;};
 struct Front{std::mutex lock;Guide guideDepth,guideMotion;bool failed=false,async=false;}g;
 // Stand-in for neural/hotkey_capture.h, which is Windows-only. The overlay touches two
 // members of it, and this is a syntax check, so those two are what it needs to see.
-namespace hotkey{struct Capture{bool armed=false;void Toggle(){}};}
+namespace hotkey{struct Capture{bool armed=false;void Toggle(){}};inline std::string Name(int,int){return {};}}
 struct Controls{x86bridge::WireSettings shadow;x86bridge::WireStatus status;uint64_t overlayAt=0,savedRevision=0;bool synced=false,syncRequested=false,save=false,reload=false,factory=false,measure=false,capturing=false,preSyncEnableChanged=false,exportLogs=false,exportFailed=false;std::wstring exportedPath;hotkey::Capture capture;effect_runtime* runtime=nullptr;}controls;
 void OperationalSettings(){}
 // The Timing combo switches presentation mode live, so the overlay calls into the frontend.
