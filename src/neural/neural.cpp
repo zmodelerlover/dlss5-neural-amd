@@ -17,6 +17,7 @@
 #include "ini_text.h"
 #include "log_export.h"
 #include "../ui/panel.h"
+#include "../core/shaders/guide_depth.h"
 #include "../core/shaders/motion.h"
 #include "../core/shaders/compose.h"
 #include "../core/shaders/input.h"
@@ -565,18 +566,6 @@ struct Guide
     bool logged = false;
     bool failed = false;
 };
-
-// D3D11 compute that reads a depth-stencil as a single float and writes plain R32_FLOAT. The
-// conversion has to happen on this side: R32G8X24_TYPELESS and R24G8_TYPELESS do not open on a
-// second device, while R32_FLOAT does. Verbatim from session.cpp, where it is measured working.
-constexpr char kGuideDepthCs[] = R"(
-Texture2D<float> src : register(t0);
-RWTexture2D<float> dst : register(u0);
-[numthreads(8,8,1)] void main(uint3 p : SV_DispatchThreadID) {
- uint w, h; dst.GetDimensions(w, h);
- if (p.x >= w || p.y >= h) return;
- dst[p.xy] = src.Load(int3(p.xy, 0));
-})";
 
 // True for the depth-stencil formats whose single-float alias can be read through an SRV.
 DXGI_FORMAT GuideDepthSrvFormat(DXGI_FORMAT f)
@@ -2299,7 +2288,7 @@ bool PrepareGuide(Guide &guide, bool isDepth)
         if (g.guideDepthCsFailed)
             return false;
         ComPtr<ID3DBlob> blob, err;
-        if (FAILED(p_D3DCompile(kGuideDepthCs, sizeof(kGuideDepthCs) - 1, "guide-depth", nullptr,
+        if (FAILED(p_D3DCompile(shaders::kGuideDepthCs, sizeof(shaders::kGuideDepthCs) - 1, "guide-depth", nullptr,
                               nullptr, "main", "cs_5_0", 0, 0, &blob, &err)) ||
             FAILED(g.game11->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(),
                                                  nullptr, &g.guideDepthCs)))

@@ -147,7 +147,9 @@ def function(text,name):
  return normal(clean[pos:end])
 for fn in ['GuideDepthSrvFormat','LooksLikeMotion','SettleGuide']:
  assert function(u,fn)==function(f,fn),fn
-assert re.search(r'constexpr char kGuideDepthCs\[\] = R"\((.*?)\)";',u,re.S)[1]==re.search(r'constexpr char kGuideDepthCs\[\] = R"\((.*?)\)";',f,re.S)[1]
+# The guide-depth shader is one header both routes include, so they cannot compile different ones.
+for src in (u,f):
+ assert '#include "../core/shaders/guide_depth.h"' in src and 'constexpr char kGuideDepthCs' not in src
 
 transport=h[h.index('    Result CopyOnly()'):h.index('    Result Neural()')]
 for call in ['InitHip(','InitEngine(','BringUpEngines(','RecordNetwork(','LoadLibrary','RuntimeHashMatches(']:assert call not in transport

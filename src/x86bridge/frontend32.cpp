@@ -20,6 +20,7 @@
 #include "../neural/hotkey_capture.h"
 #include "../neural/ini_text.h"
 #include "frontend_port.h"
+#include "../core/shaders/guide_depth.h"
 #include "../neural/log_export.h"
 #include <cstring>
 using Microsoft::WRL::ComPtr;
@@ -76,15 +77,6 @@ struct Guide
     // upstream's Guide so SettleGuide stays an executable copy rather than a lookalike.
     bool external = false;
 };
-
-constexpr char kGuideDepthCs[] = R"(
-Texture2D<float> src : register(t0);
-RWTexture2D<float> dst : register(u0);
-[numthreads(8,8,1)] void main(uint3 p : SV_DispatchThreadID) {
- uint w, h; dst.GetDimensions(w, h);
- if (p.x >= w || p.y >= h) return;
- dst[p.xy] = src.Load(int3(p.xy, 0));
-})";
 
 DXGI_FORMAT GuideDepthSrvFormat(DXGI_FORMAT f)
 {
@@ -366,7 +358,7 @@ bool PrepareGuide(Guide &guide, bool isDepth)
         if (g.guideDepthCsFailed)
             return false;
         ComPtr<ID3DBlob> blob, err;
-        if (FAILED(D3DCompile(kGuideDepthCs, sizeof(kGuideDepthCs) - 1, "guide-depth", nullptr,
+        if (FAILED(D3DCompile(shaders::kGuideDepthCs, sizeof(shaders::kGuideDepthCs) - 1, "guide-depth", nullptr,
                               nullptr, "main", "cs_5_0", 0, 0, &blob, &err)) ||
             FAILED(g.game11->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(),
                                                  nullptr, &g.guideDepthCs)))
