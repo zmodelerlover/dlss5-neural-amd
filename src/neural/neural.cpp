@@ -15,6 +15,7 @@
 #include "build_config.h"
 #include "hotkey_capture.h"
 #include "ini_text.h"
+#include "log_export.h"
 #include "../ui/panel.h"
 #include "../ui/panel_model.h"
 #include "../ui/view_logic.h"
@@ -6135,61 +6136,15 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             g.depthBest != nullptr ? "found" : "none");
 }
 
-// Copies this run's logs and the settings that produced them to a dated folder on the desktop.
-//
-// Every question worth asking about a run needs the same four files, and asking somebody to find
-// them means asking them to find the emulator's install directory first. The ini goes with them
-// because a log without the settings that produced it cannot be compared against anything.
-//
-// SHGetKnownFolderPath rather than %USERPROFILE%\Desktop: a desktop redirected into OneDrive is
-// ordinary now, and the guessed path would silently write somewhere nobody looks.
-//
-// The addon log is open while this runs. It was opened through the CRT, which shares for reading,
-// and every line is flushed as it is written, so the copy is the log up to this moment.
+// The Export logs button: this run's log, the runtime's, ReShade's and the ini, all beside the
+// game. See log_export.h, shared with the 32-bit bridge.
 std::wstring ExportLogs()
 {
-    PWSTR desktop = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktop)))
-        return L"";
-    std::filesystem::path out(desktop);
-    CoTaskMemFree(desktop);
-
-    wchar_t stamp[32] {};
-    SYSTEMTIME now {};
-    GetLocalTime(&now);
-    std::swprintf(stamp, 32, L"amd-nr-logs-%04u%02u%02u-%02u%02u%02u", now.wYear, now.wMonth,
-                  now.wDay, now.wHour, now.wMinute, now.wSecond);
-    out /= stamp;
-
-    std::error_code ec;
-    std::filesystem::create_directories(out, ec);
-    if (ec)
-        return L"";
-
-    // The add-on's own log first: it is the one that always exists and the one that carries the
-    // 'measure, residual' lines. The runtime's is next to it when the engine got far enough to
-    // open one, and ReShade's explains an add-on that never loaded at all.
-    const wchar_t *wanted[] { L"amd-nr.log", L"dlssnr_on_amd.log", L"ReShade.log",
-                              L"amd-nr.ini" };
-    const std::filesystem::path here = ExeDirectory();
-    int copied = 0;
-    for (const wchar_t *name : wanted)
-    {
-        const std::filesystem::path from = here / name;
-        if (!std::filesystem::exists(from, ec))
-            continue;
-        std::filesystem::copy_file(from, out / name,
-                                   std::filesystem::copy_options::overwrite_existing, ec);
-        if (!ec)
-            ++copied;
-    }
-    if (copied == 0)
-    {
-        std::filesystem::remove(out, ec);
-        return L"";
-    }
-    Log("menu: exported %d file(s) to %ls", copied, out.c_str());
-    return out.wstring();
+    const auto r = logexport::ToDesktop({ ExeDirectory() }, { L"amd-nr.log", L"dlssnr_on_amd.log",
+                                                              L"ReShade.log", L"amd-nr.ini" });
+    if (r.copied != 0)
+        Log("menu: exported %d file(s) to %ls", r.copied, r.folder.c_str());
+    return r.folder.wstring();
 }
 
 // What the panel shows and does not own, read under the lock the present path holds while it
