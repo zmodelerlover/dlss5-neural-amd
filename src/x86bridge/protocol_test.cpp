@@ -29,7 +29,8 @@ int main(){
     assert(NewRevision(2,1)&&!NewRevision(1,1)&&!NewRevision(0,1));
     WireCommand c;c.id=1;assert(NewCommand(c,0));uint64_t last=c.id;assert(!NewCommand(c,last));
     c.id=2;c.code=CommandCode::FactoryDefaults;assert(NewCommand(c,last));last=c.id;assert(!NewCommand(c,last));
-    c.id=3;c.reserved=1;assert(!NewCommand(c,last));c.reserved=0;c.code=static_cast<CommandCode>(99);assert(!NewCommand(c,last));
+    c.id=3;c.code=CommandCode::LiftScaleCap;assert(NewCommand(c,last));last=c.id;assert(!NewCommand(c,last));
+    c.id=4;c.reserved=1;assert(!NewCommand(c,last));c.reserved=0;c.code=static_cast<CommandCode>(99);assert(!NewCommand(c,last));
     WireSettings base{};base.tone=1;base.scale=.5f;WireSettings current{};current.settings_revision=7;current.enabled=1;current.language=1;current.toggleKey=70;current.startOn=1;
     auto factory=FactorySettings(base,current);assert(factory.colourStrength==0.25f&&factory.structure==1&&factory.skin==-1&&factory.passes==1&&factory.inlineMode==1);
     assert(factory.tone==1&&factory.scale==.5f&&factory.enabled==1&&factory.language==1&&factory.toggleKey==70&&factory.startOn==1&&factory.settings_revision==8);

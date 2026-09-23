@@ -29,5 +29,5 @@ inline WireSettings FactorySettings(WireSettings base,const WireSettings& curren
     base.settings_revision=current.settings_revision+1; return base;
 }
 inline bool NewRevision(uint64_t incoming,uint64_t current){return incoming>current;}
-inline bool NewCommand(const WireCommand& c,uint64_t last){return c.id>last&&(c.code==CommandCode::MeasureResidualAgain||c.code==CommandCode::FactoryDefaults)&&c.reserved==0;}
+inline bool NewCommand(const WireCommand& c,uint64_t last){return c.id>last&&(c.code==CommandCode::MeasureResidualAgain||c.code==CommandCode::FactoryDefaults||c.code==CommandCode::LiftScaleCap)&&c.reserved==0;}
 }

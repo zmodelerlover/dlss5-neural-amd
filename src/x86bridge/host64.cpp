@@ -291,9 +291,9 @@ struct Host {
             case Kind::SetState:{WireSettings s;Require(Receive(pipe.value,parent.value,&s,sizeof(s)),"SET_STATE body");
                 const float wanted=g.scale.load();
                 const bool applied=ApplySettings(s);
-                // A new Scale arriving is the person overruling the cap NoteJobCost put on, the same
-                // as letting go of the slider does on the 64-bit route. Only a moved control sends a
-                // revision at all, so an unchanged value never reaches here and never lifts anything.
+                // A new Scale arriving is the person overruling the cap NoteJobCost put on. Letting go
+                // of the slider on an unchanged value sends no revision; that one arrives as the
+                // LiftScaleCap command below, as it does on the 64-bit route.
                 if(applied&&g.scale.load()!=wanted){g.scaleCap.store(0.0f);g.longJobs=0;}
                 Snapshot(h.kind,applied?Result::Ready:Result::Error);break;}
             case Kind::SaveSettings:SaveSettings();Snapshot(h.kind);break;
@@ -301,6 +301,7 @@ struct Host {
             case Kind::Command:{WireCommand c;Require(Receive(pipe.value,parent.value,&c,sizeof(c)),"COMMAND body");
                 const bool accepted=NewCommand(c,lastCommand)&&(c.code==CommandCode::FactoryDefaults||!transport);
                 if(accepted){lastCommand=c.id;if(c.code==CommandCode::FactoryDefaults)RestoreFactoryDefaults();
+                    else if(c.code==CommandCode::LiftScaleCap){g.scaleCap.store(0.0f);g.longJobs=0;}
                     else {g.measured=false;g.measureTries=0;g.measureNow.store(true);}}
                 Snapshot(h.kind,accepted?Result::Ready:Result::Error);break;}
             case Kind::Build:{Build b;Require(Receive(pipe.value,parent.value,&b,sizeof(b)),"BUILD body");Resources(b);Reply(h.kind,Result::Ready);break;}

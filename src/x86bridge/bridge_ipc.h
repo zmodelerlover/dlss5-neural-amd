@@ -18,7 +18,9 @@ struct Frame { uint64_t generation=0,id=0;uint32_t depthValid=0,motionValid=0,re
 struct Ack { Header header;Result result=Result::Error;uint32_t error=0;uint64_t generation=0,frame=0;uint32_t luidLow=0;int32_t luidHigh=0; };
 
 // These control messages are orthogonal to the unchanged FRAME/Ack contract.
-enum class CommandCode:uint32_t { MeasureResidualAgain=1, FactoryDefaults=2 };
+// LiftScaleCap came after v3 without a version bump: it changes no layout, and the frontend treats a
+// helper that refuses it as one that simply does not lift the cap.
+enum class CommandCode:uint32_t { MeasureResidualAgain=1, FactoryDefaults=2, LiftScaleCap=3 };
 struct WireSettings {
     uint64_t settings_revision=0;
 #define X(type,name,low,high) type name=0;
