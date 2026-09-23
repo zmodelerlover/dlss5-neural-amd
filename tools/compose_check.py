@@ -1,7 +1,8 @@
 """The compose arithmetic, and the four things it has to be true about.
 
-The composition lives in kComposeShader as HLSL and only ever runs on a GPU inside a game, so a
-mistake in it is found by looking at a screen and disagreeing with it. This is the same arithmetic
+The composition lives in kComposeShader (src/core/shaders/compose.h) as HLSL and only ever runs
+on a GPU inside a game, so a mistake in it is found by looking at a screen and disagreeing with
+it. This is the same arithmetic
 written out once more, in the smallest form that can be asserted against -- if the two ever
 disagree, this file is the one that is wrong, and it is here to fail when a change to the shader
 breaks a property the shader was written to have.
