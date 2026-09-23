@@ -33,7 +33,7 @@ The native x86/x64 build and protocol checks run in GitHub Actions. Live ReShade
 | Residual measurement | One-shot command with monotonic ID; duplicates/unknown commands rejected. |
 | Dynamic status | Sampled host counters/readiness/resolutions/guide probes, plus frontend candidate and last-capture validity. |
 
-`overlay32.inc` adapts the original UI in a separate namespace. It uses local Cells to retain the original widgets, English/Portuguese translations, help, Known tags and risk colors. Original game examples are generalized; profile UI and stale-output claims are not copied. A nonblocking try-lock avoids waiting on Present from ImGui; while busy, a short status replaces the panel for that invocation. No ReadFile/WriteFile/Request/host launch/GPU wait occurs in the overlay or its local helpers.
+The panel is `src/ui/`, one implementation shared with the 64-bit add-on. `panel32.cpp` is this route's adapter: it fills the panel's settings from the shadow of the helper's `WireSettings` (`panel_wire.h`), reports the helper's `WireStatus`, and turns what the person did into flags the present path carries across. It reaches the frontend only through `frontend_port.h`. What differs from the 64-bit route is data in `PanelStatus`, never an `#ifdef` in `src/ui/`: Timing switches the bridge's own pipelining, Feed.fx is not offered, and Debug carries the protocol, pass and guide-candidate lines. A nonblocking try-lock avoids waiting on Present from ImGui; while busy, a short status replaces the panel for that invocation. No ReadFile/WriteFile/Request/host launch/GPU wait occurs in the panel or its adapter.
 
 ## Controls ported
 
