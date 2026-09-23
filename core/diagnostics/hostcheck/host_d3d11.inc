@@ -27,7 +27,17 @@ int hostcheck::RunD3D11(const Image &img)
         std::fprintf(stderr, "D3D11CreateDeviceAndSwapChain failed\n");
         return 3;
     }
+    // HOSTCHECK_RESIZE: one ResizeBuffers, at the same size, eight seconds in. It takes the add-on
+    // through the same raster rebuild a Resolution Scale change does, while the network is busy.
+    const bool resize = std::getenv("HOSTCHECK_RESIZE") != nullptr;
+    const ULONGLONG resizeAt = GetTickCount64() + 8000;
+    bool resized = false;
     return Loop([&] {
+        if (resize && !resized && GetTickCount64() >= resizeAt) {
+            resized = true;
+            if (FAILED(sc->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, 0)))
+                return false;
+        }
         ComPtr<ID3D11Texture2D> back;
         if (FAILED(sc->GetBuffer(0, IID_PPV_ARGS(&back))))
             return false;
