@@ -134,7 +134,8 @@ u=read(root/'src/neural/neural.cpp')
 # Ends at RenderEffectsAheadOfNetwork rather than at the comment after it: that call is the
 # D3D12 route's own business and has no counterpart in the bridge, so including it made this
 # compare a policy against a policy plus one unrelated line.
-a=u[u.index('    bool runNetwork = true;',u.index('void BridgePresent')):u.index('    RenderEffectsAheadOfNetwork',u.index('void BridgePresent'))]
+t=read(root/'src/neural/transport_d3d11.inc')
+a=t[t.index('    bool runNetwork = true;',t.index('void BridgePresent')):t.index('    RenderEffectsAheadOfNetwork',t.index('void BridgePresent'))]
 b=h[h.index('    bool runNetwork = true;'):h.index('    const UINT i =',h.index('    bool runNetwork = true;'))]
 normal=lambda s:re.sub(r'\s+','',re.sub(r'//[^\n]*','',s))
 assert normal(a)==normal(b),'job pending policy differs'
