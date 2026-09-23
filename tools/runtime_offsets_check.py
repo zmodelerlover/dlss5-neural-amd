@@ -33,7 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "core/addon/runtime_offsets.h"
-SOURCES = ROOT / "src"
+SOURCES = ROOT / "core"
 
 
 def sections(data):
@@ -107,6 +107,10 @@ def main(argv):
     # and this is the check that matters most, because the crash it catches survived a clean build,
     # a green suite and two code reviews.
     print(f"{HEADER.relative_to(ROOT).as_posix()} and every source under core/\n")
+    # The control row: this pointed at src/ for a while after the tree moved to core/, found
+    # nothing, and passed.
+    scanned = sum(1 for p in SOURCES.rglob("*") if p.suffix.lower() in (".cpp", ".h", ".inc"))
+    check(scanned > 0, f"sources to read ({scanned} under {SOURCES.relative_to(ROOT).as_posix()}/)")
     stray = stray_literals()
     check(not stray, f"no source file writes an offset of its own ({len(stray)} found)")
     for path, number, value in stray:

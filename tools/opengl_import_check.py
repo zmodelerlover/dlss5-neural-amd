@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCES = ROOT / "src"
+SOURCES = ROOT / "core"
 BUILD = ROOT / "build.ps1"
 SUFFIXES = (".cpp", ".h", ".hpp", ".inc", ".c", ".cc")
 
@@ -180,6 +180,10 @@ def main(argv):
 
     print("every source under core/, and build.ps1\n")
 
+    # The control row for the sources: this pointed at src/ for a while after the tree moved to
+    # core/, found nothing, and passed.
+    scanned = sum(1 for _ in sources())
+    check(scanned > 0, f"sources to read ({scanned} under {SOURCES.relative_to(ROOT).as_posix()}/)")
     calls = bare_calls()
     check(not calls, f"no source calls a gl/wgl entry point by name ({len(calls)} found)")
     for path, number, called in calls:
