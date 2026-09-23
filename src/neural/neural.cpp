@@ -3988,19 +3988,9 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
 // Flushing per frame is not enough on its own: the documented sequence is ClearState and then
 // Flush, and ClearState is only safe here.
 // Everything sized to the swapchain, dropped together. Ensure rebuilds each one on demand.
-#if AMDNR_WITH_OPENGL
-namespace glroute { void ReleaseSwapchainSized(); }
-#endif
-
 void ReleaseSwapchainSized()
 {
     WaitForWorkQueue(g.completion);
-#if AMDNR_WITH_OPENGL
-    // The imported GL textures and their FBOs have the same lifetime as the D3D12 resources
-    // below. Unlike the Vulkan route this one may be called with no GL context on the thread --
-    // a swapchain can be destroyed from anywhere -- and it checks for that itself.
-    glroute::ReleaseSwapchainSized();
-#endif
     for (FrameTransport *transport : AllTransports())
         transport->ReleaseSwapchainSized();
     // Closed command lists retain references to their recorded resources until Reset. Retire all
@@ -5349,26 +5339,6 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         transport->Present(dev, queue, sc);
         return;
     }
-
-#if AMDNR_WITH_OPENGL
-    // OpenGL. Same answer again -- our own D3D12 device, shared textures imported into the host --
-    // with the crossing rebuilt around a framebuffer blit, because ReShade hands an OpenGL add-on
-    // the default framebuffer rather than a texture and there is nothing to copy. See
-    // gl_route.inc.
-    if (dev->get_api() == device_api::opengl)
-    {
-        if (g.noBridge.load() || g.goneSwapchain.load() == sc)
-            return;
-        if (!LoadGraphicsApi())
-        {
-            g.status.unavailable = true;
-            g.status.reason = "the D3D12 or DXGI entry points could not be resolved";
-            return;
-        }
-        glroute::Present(queue, sc);
-        return;
-    }
-#endif
 
     if (dev->get_api() == device_api::d3d11)
     {

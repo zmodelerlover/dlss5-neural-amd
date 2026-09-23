@@ -20,6 +20,7 @@ bool CrossingReady(swapchain *sc)
 #endif
 #if AMDNR_WITH_OPENGL
 #include "gl_route.inc"
+#include "transport_opengl.inc"
 #endif
 
 // The one place that asks which API this is.
@@ -31,6 +32,10 @@ FrameTransport *TransportFor(device_api api)
     case device_api::vulkan:
         return &vkroute::transport;
 #endif
+#if AMDNR_WITH_OPENGL
+    case device_api::opengl:
+        return &glroute::transport;
+#endif
     default:
         return nullptr;
     }
@@ -38,7 +43,11 @@ FrameTransport *TransportFor(device_api api)
 
 std::span<FrameTransport *const> AllTransports()
 {
+    // OpenGL first: the order the core released them in before they were transports.
     static FrameTransport *const all[] {
+#if AMDNR_WITH_OPENGL
+        &glroute::transport,
+#endif
 #if AMDNR_WITH_VULKAN
         &vkroute::transport,
 #endif
