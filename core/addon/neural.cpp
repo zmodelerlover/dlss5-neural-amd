@@ -631,7 +631,6 @@ bool ScreenShaped(UINT64 w, UINT h, UINT screenW, UINT screenH)
            static_cast<double>(screenW) * static_cast<double>(screenH) / 9.0;
 }
 
-
 // The optional-control bits (ui::Opt), the section hues, T and the widgets are the panel's, in
 // core/ui/, shared with the 32-bit bridge. Unqualified here so the code that reads them reads the
 // same as it did when they were defined in this file.
@@ -939,6 +938,7 @@ struct State
     ComPtr<ID3D12Resource> netBase;
     ComPtr<ID3D12Resource> netResidual;
     ComPtr<ID3D12Resource> netMotion;
+    std::vector<ComPtr<ID3D12Resource>> parked; // what a stuck job may hold, past a resize
     ComPtr<ID3D12Resource> lumaA, lumaB, flowSmall, flowCoarse;
     // One history per pass, not one for the chain. A pass's history has to be the output of
     // *that* pass on the previous frame: the denoiser blends its input against the reprojected
@@ -2571,7 +2571,6 @@ std::filesystem::path RuntimeCopyUsingPrivateD3D12(const std::filesystem::path &
     return patched;
 }
 
-
 // Who jumped to null, and from where.
 //
 // A call through a null pointer faults with ExceptionAddress == 0, and the engine's own handler
@@ -2942,16 +2941,20 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     if (g.engineReady && g.runtime != nullptr)
     {
         const UINT64 deadline = GetTickCount64() + 5000;
-        while (RuntimeBusy() &&
-                   GetTickCount64() < deadline)
+        while (RuntimeBusy() && GetTickCount64() < deadline)
             Sleep(1);
         if (RuntimeBusy())
         {
-            Log("raster: runtime job %u did not become idle in 5 s; keeping its textures alive "
-                "instead of releasing memory that the GPU may still own.", g.lastJob);
-            g.status.reason = "the neural runtime did not become idle for a resolution change";
-            return false;
+            // Async with several passes lands here with nothing slow: all passes record into one
+            // module, whose counter never reaches the last id. Park what the engine may hold and go
+            // on, as the present does at 500 ms. ponytail: a raster of VRAM per stuck change.
+            Log("raster: runtime job %u did not become idle in 5 s; parking its textures.", g.lastJob);
+            if (netChanged)
+                g.parked.insert(g.parked.end(), { g.netColour, g.netMotion, g.netDepth });
+            ResetJobs();
         }
+        else
+            g.parked.clear();
     }
 
     // The bridge owns three reusable command lists. A completed list may still retain driver-side
@@ -3005,6 +3008,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     // count is a live control: allocating on demand would put a texture creation in the middle
     // of a frame the first time somebody moves the slider. Three at 1306x662 RGBA16F is 10 MB.
     if (netChanged)
+    {
         for (UINT i = 0; i < State::kMaxPasses; ++i)
         {
             char name[16];
@@ -3012,10 +3016,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
             if (!CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.history[i], name))
                 return false;
         }
-    if (netChanged)
         g.historyValid.store(0);
-    if (netChanged)
-    {
         g.flowWidth = fw;
         g.flowHeight = fh;
     }
@@ -3557,7 +3558,6 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         Barrier(cmd, g.netResidual.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     };
-
 
     const int encMode = g.settings.encoding.load();
     const float white = std::max(1.0f, g.settings.diffuseWhite.load());
