@@ -44,6 +44,7 @@
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -53,6 +54,8 @@ using namespace reshade::api;
 
 namespace
 {
+
+#include "transport.h"
 
 enum class Tier
 {
@@ -3985,9 +3988,6 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
 // Flushing per frame is not enough on its own: the documented sequence is ClearState and then
 // Flush, and ClearState is only safe here.
 // Everything sized to the swapchain, dropped together. Ensure rebuilds each one on demand.
-#if AMDNR_WITH_VULKAN
-namespace vkroute { void ReleaseSwapchainSized(); }
-#endif
 #if AMDNR_WITH_OPENGL
 namespace glroute { void ReleaseSwapchainSized(); }
 #endif
@@ -4001,12 +4001,8 @@ void ReleaseSwapchainSized()
     // a swapchain can be destroyed from anywhere -- and it checks for that itself.
     glroute::ReleaseSwapchainSized();
 #endif
-#if AMDNR_WITH_VULKAN
-    // The imported VkImages have the same lifetime as the D3D12 resources below. Invalidate the
-    // route even when the replacement swapchain keeps the same size and format, otherwise its
-    // fast path returns with crossLocal already released.
-    vkroute::ReleaseSwapchainSized();
-#endif
+    for (FrameTransport *transport : AllTransports())
+        transport->ReleaseSwapchainSized();
     // Closed command lists retain references to their recorded resources until Reset. Retire all
     // slots while the queue is idle so no recording from the old swapchain survives the teardown.
     if (g.bridge.workDevice != nullptr)
@@ -5128,12 +5124,7 @@ bool BringUpEngines(UINT &wanted)
     return true;
 }
 
-#if AMDNR_WITH_VULKAN
-#include "vk_route.inc"
-#endif
-#if AMDNR_WITH_OPENGL
-#include "gl_route.inc"
-#endif
+#include "transports.inc"
 
 // Which D3D12 buffer is the scene depth, decided once per present.
 //
@@ -5353,25 +5344,11 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             "is carried into the new frame.");
     }
 
-#if AMDNR_WITH_VULKAN
-    // Vulkan. The host -- RPCS3 is the one this was built for -- never makes a D3D12 call, so
-    // the network cannot run on its device. Same answer as D3D11: a second D3D12 device of our
-    // own, and shared textures between the two. The crossing runs the other way round, because
-    // memory exported from Vulkan is opaque and D3D12 cannot open it. See vk_route.inc.
-    if (dev->get_api() == device_api::vulkan)
+    if (FrameTransport *transport = TransportFor(dev->get_api()))
     {
-        if (g.noBridge.load() || g.goneSwapchain.load() == sc)
-            return;
-        if (!LoadGraphicsApi())
-        {
-            g.status.unavailable = true;
-            g.status.reason = "the D3D12 or DXGI entry points could not be resolved";
-            return;
-        }
-        vkroute::Present(queue, sc);
+        transport->Present(dev, queue, sc);
         return;
     }
-#endif
 
 #if AMDNR_WITH_OPENGL
     // OpenGL. Same answer again -- our own D3D12 device, shared textures imported into the host --
@@ -5895,23 +5872,13 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         if (g.events & 16)
             reshade::register_overlay("AMD Neural Rendering", OnOverlay);
         Log("events subscribed: mask %d", g.events);
-#if AMDNR_WITH_VULKAN
-        // Has to happen here and not at the first present: the host's VkDevice is created when a
-        // game boots, and by the time a frame is presented it is far too late to change what that
-        // device was created with. Patches one import-table entry and does nothing at all in a
-        // process that has no static vkCreateDevice import, which is every D3D11 and D3D12 target.
-        if (!g.noBridge.load())
-            vkroute::devicehook::Install();
-#endif
+        for (FrameTransport *transport : AllTransports())
+            transport->OnAddonLoad();
         break;
     case DLL_PROCESS_DETACH:
-#if AMDNR_WITH_VULKAN
-        // At process termination Windows is already tearing every module down. MinHook removal
-        // suspends threads, which is useful for an explicit unload but unsafe under the loader
-        // lock while the process is exiting.
-        if (reserved == nullptr)
-            vkroute::devicehook::Remove();
-#endif
+        // reserved is non-null when the process is exiting rather than unloading us.
+        for (FrameTransport *transport : AllTransports())
+            transport->OnAddonUnload(reserved != nullptr);
         if (g.events & 16)
             reshade::unregister_overlay("AMD Neural Rendering", OnOverlay);
         reshade::unregister_addon(module);
