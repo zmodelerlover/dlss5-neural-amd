@@ -113,6 +113,8 @@ $targets = @{
     'glprobe'    = @('core\diagnostics\glprobe\glprobe.cpp')
     'vkprobe'    = @('core\diagnostics\vkprobe\vkprobe.cpp')
     'vkbridge'   = @('core\diagnostics\vkbridge\vkbridge.cpp')
+    'hostcheck'  = @('core\diagnostics\hostcheck\hostcheck.cpp')
+    'hostcapture' = @('core\diagnostics\hostcheck\capture.cpp')
 }
 if (-not $targets.ContainsKey($Target)) {
     throw "unknown target '$Target'; known: $(($targets.Keys | Sort-Object) -join ', ')"

@@ -33,6 +33,15 @@ jobs:
         shell: pwsh
         run: .\build.ps1 -Target framecheck -Exe
 
+      # tools/host_check.py runs these on a machine with the runtime; here they only have to build.
+      - name: Build the transport hosts
+        shell: pwsh
+        run: |
+          .\build.ps1 -Target hostcheck -Exe
+          if ($LASTEXITCODE -ne 0) { throw 'hostcheck failed' }
+          .\build.ps1 -Target hostcapture
+          if ($LASTEXITCODE -ne 0) { throw 'hostcapture failed' }
+
       # The add-on must reach OpenGL through GetProcAddress and never through its import
       # table: a static opengl32 import loads OpenGL into every D3D11 and D3D12 game this is
       # placed in, which is what one unwanted import already did to NFS 2015. Here it is read
