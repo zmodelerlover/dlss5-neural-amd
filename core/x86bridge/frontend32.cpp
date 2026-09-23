@@ -999,8 +999,11 @@ void OnInit(swapchain* sc,bool){
     if(api!=device_api::d3d11&&api!=device_api::d3d9)return;
     std::lock_guard lock(g.lock);if(g.active==sc)g.reset=true;
 }
+// Released after g.lock is let go: the D3D9 route's private D3D11 device re-enters OnDestroyDevice on
+// its last release, which takes g.lock again; std::mutex throws, and D3D9 games went down on exit.
+struct Retired{ComPtr<ID3D11ComputeShader> cs;ComPtr<ID3D11Device> d11;ComPtr<ID3D11DeviceContext> ctx;ComPtr<IDirect3DDevice9> d9;};void Retire(Retired& r){r.cs.Swap(g.guideDepthCs);r.d11.Swap(g.game11);r.ctx.Swap(g.game11ctx);r.d9.Swap(g.game9);}
 void OnDestroy(swapchain* sc,bool resize){
-    std::lock_guard lock(g.lock);if(sc!=g.active)return;
+    Retired retired;std::lock_guard lock(g.lock);if(sc!=g.active)return;
     Log("x86bridge retiring swapchain resize=%d",resize);
     // A pipelined frame may still be outstanding. Collect it before anything below touches the pipe
     // or releases a resource the helper is still writing into. This is a bounded pipe read, not a
@@ -1035,8 +1038,7 @@ void OnDestroy(swapchain* sc,bool resize){
     ReleaseLocal();
     if(!resize){
         if(g.process&&!g.failed){x86bridge::Ack a;x86bridge::Request(g.pipe.value,g.process.value,x86bridge::Kind::Quit,nullptr,0,a);}
-        StopHost();g.active=nullptr;controls.runtime=nullptr;g.game9.Reset();g.game11ctx.Reset();g.game11.Reset();
-        g.nativeD3D9=false;g.guideDepthCs.Reset();g.guideDepthCsFailed=false;
+        StopHost();g.active=nullptr;controls.runtime=nullptr;Retire(retired);g.nativeD3D9=false;g.guideDepthCsFailed=false;
     }
     Log("x86bridge swapchain retired resize=%d",resize);
 }
@@ -1072,7 +1074,7 @@ void OnDestroy(swapchain* sc,bool resize){
 // Idempotent on purpose. A clean shutdown reaches OnDestroy first and this then finds nothing left.
 void OnDestroyDevice(device* dev){
     if(dev==nullptr)return;
-    std::lock_guard lock(g.lock);
+    Retired retired;std::lock_guard lock(g.lock);
     const uint64_t native=dev->get_native();
     const uint64_t ours=g.nativeD3D9?reinterpret_cast<uint64_t>(g.game9.Get())
                                     :reinterpret_cast<uint64_t>(g.game11.Get());
@@ -1080,9 +1082,7 @@ void OnDestroyDevice(device* dev){
     Log("x86bridge releasing on device destroy (no destroy_swapchain arrived)");
     StopHost();
     ReleaseLocal();
-    g.active=nullptr;controls.runtime=nullptr;
-    g.game9.Reset();g.game11ctx.Reset();g.game11.Reset();
-    g.nativeD3D9=false;g.guideDepthCs.Reset();g.guideDepthCsFailed=false;
+    g.active=nullptr;controls.runtime=nullptr;Retire(retired);g.nativeD3D9=false;g.guideDepthCsFailed=false;
 }
 void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,const rect*){
     if(!sc)return;auto* dev=sc->get_device();const auto api=dev->get_api();

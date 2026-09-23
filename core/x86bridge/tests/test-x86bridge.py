@@ -58,7 +58,14 @@ assert destroy.index('if(resize&&g.nativeD3D9)')<destroy.index('DropRemote();')
 # destroy_device is the last callback before the device goes, and it is not under the loader lock.
 assert 'addon_event::destroy_device>(OnDestroyDevice)' in f
 gone=f[f.index('void OnDestroyDevice('):f.index('void OnPresent(')]
-assert 'g.game9.Reset()' in gone and 'g.game11.Reset()' in gone and 'ReleaseLocal();' in gone
+assert 'Retire(retired)' in gone and 'ReleaseLocal();' in gone
+# Both release points hand the devices to a Retired declared ahead of the lock, so they go after it
+# is let go: the private D3D11 device's last release re-enters OnDestroyDevice, which takes g.lock,
+# and every D3D9 game with the effect on went down when it closed.
+retire=f[f.index('void Retire('):f.index('\n',f.index('void Retire('))]
+assert all(f'r.{m}.Swap(g.{n})' in retire for m,n in [('d9','game9'),('d11','game11'),('ctx','game11ctx'),('cs','guideDepthCs')])
+destroy_all=f[f.index('void OnDestroy('):f.index('void OnPresent(')]
+assert destroy_all.count('Retired retired;std::lock_guard lock(g.lock);')==2 and 'Reset();' not in destroy_all.replace('g.depthAlias.Reset();','')
 # It must act only on the device it actually holds, never on another one being torn down.
 assert 'native!=ours' in gone and 'g.nativeD3D9?' in gone
 # And issue no GPU work: the device is already going away, the same rule the reset branch follows.
