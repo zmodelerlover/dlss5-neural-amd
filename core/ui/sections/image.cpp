@@ -134,8 +134,11 @@ void Compose(PanelSettings &s)
 
 void Guard(PanelSettings &s)
 {
+    // The additive composition is the guard at 0: no slider, and so no help beside it either.
     float gv = s.ratioGuard;
-    if (gv > 0.0f && ImGui::SliderFloat(T("Guard", "Trava"), &gv, 1.0f, 8.0f, "%.1fx", 0))
+    if (gv <= 0.0f)
+        return;
+    if (ImGui::SliderFloat(T("Guard", "Trava"), &gv, 1.0f, 8.0f, "%.1fx", 0))
         s.ratioGuard = gv;
     Help("The most compose may move a pixel, as a multiple of what it already was, in both "
          "directions. One scalar taken from luminance and applied to the whole triple, so it "

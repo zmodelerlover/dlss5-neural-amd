@@ -342,6 +342,16 @@ void Dependencies() {
     const std::set<std::string> seen = Draw(s, game);
     CHECK(!seen.count("w:Flow gate") && !seen.count("w:Flow accept"),
           "flow knobs drawn over game motion");
+
+    // Additive composition has no Guard slider, and must not leave its (?) behind alone.
+    s = Base();
+    s.ratioGuard = 0.0f;
+    Draw(s, st); // g_drawn, not the set: another row's (?) would hide a stray one
+    const size_t without = g_drawn.size();
+    s.optional = ui::kOptGuard;
+    Draw(s, st);
+    CHECK(g_drawn.size() == without, "Guard ticked on additive draws %zu extra item(s)",
+          g_drawn.size() - without);
 }
 
 // Bench 4: Factory Defaults keeps the preferences and nothing else.
