@@ -2,8 +2,8 @@
 # third-party project with its own distribution terms. Whoever clones brings their own.
 # (See README, "Getting the runtime and the weights".)
 #
-# Third-party HEADERS are the opposite: they are vendored in external/reshade/ so a fresh
-# clone builds with nothing else to download. See external/reshade/NOTICE.md.
+# Third-party HEADERS are the opposite: they are vendored in 3rdparty/reshade/ so a fresh
+# clone builds with nothing else to download. See 3rdparty/reshade/NOTICE.md.
 *.dll
 *.bin
 *.addon64

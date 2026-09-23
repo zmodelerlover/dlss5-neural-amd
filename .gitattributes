@@ -1,9 +1,9 @@
 * text=auto
 
 # Vendored third-party headers: keep the bytes exactly as upstream shipped them, so the
-# hashes in external/reshade/NOTICE.md still verify after a clone.
-external/reshade/*.h  -text
-external/reshade/*.hpp -text
+# hashes in 3rdparty/reshade/NOTICE.md still verify after a clone.
+3rdparty/reshade/*.h  -text
+3rdparty/reshade/*.hpp -text
 
 # ReShade wants CRLF in .ini files it reads back.
 *.ini text eol=crlf

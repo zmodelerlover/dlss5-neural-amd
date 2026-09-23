@@ -11,7 +11,7 @@ listed file that grows fails, and so does one that has come under the limit or n
 so the entry has to be deleted rather than left behind to excuse the next file with that name.
 
 Scanned: tracked files under src/, tools/, docs/spike-rocm/ and shaders/, plus the scripts at the root.
-external/ is vendored and binaries are not code.
+3rdparty/ is vendored and binaries are not code.
 """
 
 import json

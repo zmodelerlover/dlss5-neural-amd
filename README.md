@@ -160,7 +160,7 @@ You do not need to build anything to use this. If you want to:
 ```
 
 You need Visual Studio with the C++ tools and the Windows SDK. The ReShade and Dear ImGui headers
-are already in `external/`.
+are already in `3rdparty/`.
 
 ## Limits
 
@@ -206,5 +206,5 @@ Thanks to everyone who ran a build and sent back a log.
 
 ## License
 
-MIT, in `LICENSE`. Third-party headers in `external/` keep their own licences, listed in
-`external/reshade/NOTICE.md`.
+MIT, in `LICENSE`. Third-party headers in `3rdparty/` keep their own licences, listed in
+`3rdparty/reshade/NOTICE.md`.

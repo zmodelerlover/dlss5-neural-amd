@@ -8,7 +8,7 @@ if not compiler:raise SystemExit('Set CXX to a C++20 compiler')
 # file of it is compiled here against the real bundled imgui.h and ReShade's function table, with
 # the warnings that the MSVC build does not turn into errors.
 for f in sorted(u.rglob('*.cpp')):
- subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-fsyntax-only','-I'+str(r/'external/reshade'),str(f)],check=True)
+ subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-fsyntax-only','-I'+str(r/'3rdparty/reshade'),str(f)],check=True)
 print('PASS shared panel source syntax against real bundled imgui.h and reshade_overlay.hpp, every file of src/ui')
 
 # The bridge hands the panel a copy of the wire settings and takes the edit back. Every field has

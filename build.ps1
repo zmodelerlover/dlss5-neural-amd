@@ -80,8 +80,8 @@ $env:INCLUDE = @(
     (Join-Path $SdkPath "Include\$SdkVersion\um")
     (Join-Path $SdkPath "Include\$SdkVersion\shared")
     (Join-Path $SdkPath "Include\$SdkVersion\winrt")
-    (Join-Path $root 'external\reshade')
-    (Join-Path $root 'external\minhook\include')
+    (Join-Path $root '3rdparty\reshade')
+    (Join-Path $root '3rdparty\minhook\include')
 ) -join ';'
 
 $env:LIB = @(
@@ -98,7 +98,7 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # which forced every target into a folder holding one file of the same name; a table lets a
 # source move or split without the target's name having to follow it.
 $minHook = @('buffer.c', 'hook.c', 'trampoline.c', 'hde\hde64.c') |
-    ForEach-Object { "external\minhook\src\$_" }
+    ForEach-Object { "3rdparty\minhook\src\$_" }
 # The panel, shared with the 32-bit bridge. Every .cpp under src\ui, so a new widget or section is a
 # new file and nothing here. Object files land flat in build\, so no two of them may share a name.
 $ui = Get-ChildItem (Join-Path $root 'src\ui') -Recurse -Filter *.cpp |

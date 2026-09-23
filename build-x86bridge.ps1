@@ -62,7 +62,7 @@ Write-Host "SDK  $SdkVersion  ($SdkPath)"
 
 $out=Join-Path $root 'build-x86bridge'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-$env:INCLUDE=@((Join-Path $msvc.FullName 'include'),(Join-Path $SdkPath "Include\$SdkVersion\ucrt"),(Join-Path $SdkPath "Include\$SdkVersion\um"),(Join-Path $SdkPath "Include\$SdkVersion\shared"),(Join-Path $SdkPath "Include\$SdkVersion\winrt"),(Join-Path $root 'external\reshade')) -join ';'
+$env:INCLUDE=@((Join-Path $msvc.FullName 'include'),(Join-Path $SdkPath "Include\$SdkVersion\ucrt"),(Join-Path $SdkPath "Include\$SdkVersion\um"),(Join-Path $SdkPath "Include\$SdkVersion\shared"),(Join-Path $SdkPath "Include\$SdkVersion\winrt"),(Join-Path $root '3rdparty\reshade')) -join ';'
 $flags=@('/nologo','/utf-8','/std:c++20','/EHsc','/O2','/MT','/W3','/DUNICODE','/D_UNICODE','/D_CRT_SECURE_NO_WARNINGS','/DNOMINMAX','/DWIN32_LEAN_AND_MEAN')
 function PE([string]$p,[int]$machine){
     $b=[IO.File]::ReadAllBytes($p);$e=[BitConverter]::ToInt32($b,0x3c)
