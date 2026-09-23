@@ -3227,8 +3227,8 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
 // DXGI_ERROR_INVALID_CALL while anything still references a back buffer, and D3D11 counts a
 // command list that merely *used* the resource -- the two CopyResource calls the bridge makes
 // every frame -- as a reference. The game reports the refusal as a DirectX error and quits.
-// Flushing per frame is not enough on its own: the documented sequence is ClearState and then
-// Flush, and ClearState is only safe here.
+// Flushing per frame is not enough on its own: OnDestroySwapchain drains the bridge's work with an
+// event query first.
 // Everything sized to the swapchain, dropped together. Ensure rebuilds each one on demand.
 void ReleaseSwapchainSized()
 {
@@ -3301,11 +3301,10 @@ void OnDestroySwapchain(swapchain *sc, bool resize)
 
     if (g.bridge.game11ctx != nullptr)
     {
-        // Retiring the back-buffer reference needs the work to have *finished*, not just to have
-        // been submitted. DXGI refuses ResizeBuffers while a pending command references a back
-        // buffer, and the game reports that refusal as a DirectX error and quits over it.
-        // ClearState and Flush do not drain it; an event query does, because it does not report
-        // until everything submitted before it has completed.
+        // Retiring the back-buffer reference needs the work to have *finished*, not just been
+        // submitted: DXGI refuses ResizeBuffers while a pending command references a back buffer,
+        // and the game quits over it. Flush does not drain it; an event query does, because it
+        // does not report until everything submitted before it has completed.
         D3D11_QUERY_DESC qd {};
         qd.Query = D3D11_QUERY_EVENT;
         ComPtr<ID3D11Query> done;
@@ -3326,7 +3325,8 @@ void OnDestroySwapchain(swapchain *sc, bool resize)
                 Sleep(0);
             }
         }
-        g.bridge.game11ctx->ClearState();
+        // No ClearState: nothing of ours is bound, it only emptied the game's cached pipeline (PCSX2
+        // lost its device 57 ms later, DRIVER_INTERNAL_ERROR; suspected, not yet bench-confirmed).
         g.bridge.game11ctx->Flush();
     }
     ReleaseSwapchainSized();
