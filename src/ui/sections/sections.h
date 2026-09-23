@@ -15,5 +15,6 @@ void DrawPerformance(PanelSettings &s, const PanelStatus &status, PanelActions &
 void DrawImage(PanelSettings &s);
 void DrawDebug(PanelSettings &s, const PanelStatus &status, PanelActions &actions);
 void DrawExperimental(PanelSettings &s, const PanelStatus &status);
+void DrawGuides(PanelSettings &s, const PanelStatus &status);
 
 } // namespace ui
