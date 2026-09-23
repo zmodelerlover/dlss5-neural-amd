@@ -99,3 +99,8 @@ jobs:
       # gl call, no pragma naming the library, and no opengl32.lib on the shared link line.
       - name: No source reaches OpenGL by linking to it
         run: python3 tools/opengl_import_check.py
+
+      # 500 lines per file of our own. The ones already over it are grandfathered at their
+      # current length in tools/line_limit_allow.json, and may only shrink.
+      - name: No file grows past the line limit
+        run: python3 tools/line_limit_check.py

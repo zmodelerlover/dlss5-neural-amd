@@ -1,0 +1,12 @@
+{
+  "src/glprobe/glprobe.cpp": 1886,
+  "src/neural/gl_route.inc": 1365,
+  "src/neural/neural.cpp": 7706,
+  "src/neural/vk_route.inc": 1152,
+  "src/session/session.cpp": 1129,
+  "src/vkbridge/vkbridge.cpp": 687,
+  "src/vkprobe/vkprobe.cpp": 579,
+  "src/vkshared/vk_raw.inc": 751,
+  "src/x86bridge/frontend32.cpp": 1445,
+  "src/x86bridge/overlay32.inc": 1508
+}
