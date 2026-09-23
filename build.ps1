@@ -94,19 +94,27 @@ $env:LIB = @(
 $out = Join-Path $root 'build'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
-$src = Join-Path $root "src\$Target\$Target.cpp"
-if (-not (Test-Path $src)) { throw "source not found: $src" }
-$sources = @($src)
-# framecheck includes neural.cpp directly so it has the same Vulkan hook references as the add-on.
-if ($Target -in @('neural', 'framecheck')) {
-    $minHook = Join-Path $root 'external\minhook\src'
-    $sources += @(
-        (Join-Path $minHook 'buffer.c')
-        (Join-Path $minHook 'hook.c')
-        (Join-Path $minHook 'trampoline.c')
-        (Join-Path $minHook 'hde\hde64.c')
-    )
+# Every target names its own sources. The path used to be derived as src\<target>\<target>.cpp,
+# which forced every target into a folder holding one file of the same name; a table lets a
+# source move or split without the target's name having to follow it.
+$minHook = @('buffer.c', 'hook.c', 'trampoline.c', 'hde\hde64.c') |
+    ForEach-Object { "external\minhook\src\$_" }
+$targets = @{
+    'neural'     = @('src\neural\neural.cpp') + $minHook
+    # framecheck includes neural.cpp directly so it has the same Vulkan hook references as the add-on.
+    'framecheck' = @('src\framecheck\framecheck.cpp') + $minHook
+    'probe'      = @('src\probe\probe.cpp')
+    'session'    = @('src\session\session.cpp')
+    'glinfo'     = @('src\glinfo\glinfo.cpp')
+    'glprobe'    = @('src\glprobe\glprobe.cpp')
+    'vkprobe'    = @('src\vkprobe\vkprobe.cpp')
+    'vkbridge'   = @('src\vkbridge\vkbridge.cpp')
 }
+if (-not $targets.ContainsKey($Target)) {
+    throw "unknown target '$Target'; known: $(($targets.Keys | Sort-Object) -join ', ')"
+}
+$sources = $targets[$Target] | ForEach-Object { Join-Path $root $_ }
+foreach ($s in $sources) { if (-not (Test-Path $s)) { throw "source not found: $s" } }
 
 # The neural add-on is the product and carries the product's name; every other target is a
 # diagnostic and keeps its own, prefixed.
