@@ -11,11 +11,14 @@
 
 namespace ui {
 
+void DrawGeneral(PanelSettings &s, const PanelStatus &status, PanelActions &actions);
 void DrawPerformance(PanelSettings &s, const PanelStatus &status, PanelActions &actions);
 void DrawImage(PanelSettings &s);
 void DrawDebug(PanelSettings &s, const PanelStatus &status, PanelActions &actions);
 void DrawExperimental(PanelSettings &s, const PanelStatus &status);
 void DrawGuides(PanelSettings &s, const PanelStatus &status);
 void DrawEngine(PanelSettings &s, const PanelStatus &status);
+void DrawMoreSettings(PanelSettings &s, const PanelStatus &status);
+void DrawFooter(const PanelStatus &status, PanelActions &actions);
 
 } // namespace ui

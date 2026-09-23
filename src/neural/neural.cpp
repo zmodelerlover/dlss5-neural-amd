@@ -15,12 +15,9 @@
 #include "build_config.h"
 #include "hotkey_capture.h"
 #include "ini_text.h"
-#include "../ui/i18n.h"
+#include "../ui/panel.h"
 #include "../ui/panel_model.h"
-#include "../ui/sections/sections.h"
-#include "../ui/theme.h"
 #include "../ui/view_logic.h"
-#include "../ui/widgets/widgets.h"
 #if AMDNR_WITH_VULKAN
 #include <MinHook.h>
 #include "../vkshared/vk_raw.inc"
@@ -6195,22 +6192,6 @@ std::wstring ExportLogs()
     return out.wstring();
 }
 
-// The cascade gate for the sections still drawn in this file, read straight off the engine's flag.
-// ui::Shown and ui::GroupShown read the panel's copy; these go when the last section moves there.
-bool Shown(uint32_t bit)
-{
-    return (g.optional.load() & bit) != 0;
-}
-
-bool GroupShown(int grp)
-{
-    const uint32_t on = g.optional.load();
-    for (int i = 0; i < kOptCount; ++i)
-        if (kOpts[i].group == grp && (on & kOpts[i].bit) != 0)
-            return true;
-    return false;
-}
-
 // What the panel shows and does not own, read under the lock the present path holds while it
 // changes these. Copied out so drawing never happens with the lock held.
 PanelStatus ReadPanelStatus()
@@ -6266,9 +6247,13 @@ PanelSettings ReadPanelSettings()
     return s;
 }
 
-// What the panel changed, written back to the engine. Only the fields that moved: the part of the
-// overlay still drawn in this file writes the same atomics directly, and a whole-struct write would
-// put back what was read before it did.
+// The settings as the engine constructs them, before amd-nr.ini is read: what a fresh ini is
+// written with, and so what Factory Defaults restores. Captured once, in DllMain.
+PanelSettings g_factory;
+
+// What the panel changed, written back to the engine. Only the fields that moved: the render thread
+// writes some of these atomics too -- the scale cap's partner fields, the history flag -- and a
+// whole-struct write would put back what the panel read before it did.
 void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)
 {
 #define X(type, name, low, high)                                                                   \
@@ -6309,6 +6294,19 @@ void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)
 
 void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)
 {
+    if (actions.Has(PanelAction::FactoryDefaults))
+    {
+        ApplyPanelSettings(after, KeepPreferences(g_factory, after));
+        Log("menu: factory defaults restored; enabled, startup, hotkey, language and the panel's "
+            "arrangement kept");
+    }
+    if (actions.Has(PanelAction::Save))
+        SaveSettings();
+    if (actions.Has(PanelAction::Reload))
+    {
+        LoadSettings();
+        Log("menu: settings reloaded from the ini");
+    }
     if (actions.Has(PanelAction::LiftScaleCap))
     {
         // Letting go of Scale overrules a cap NoteJobCost put on. If this card still cannot carry
@@ -6330,253 +6328,55 @@ void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)
 
 // The overlay, rebuilt 22/09/2026. It used to carry 47 controls across eight headers; it carries
 // fifteen across five now. Nothing was deleted: every atomic, every LoadSettings line and every
-// SaveSettings line is untouched, so each hidden control still reads its key out of
-// amd-nr.ini and still writes it back. What went is the widget, and with it the chance of
-// somebody dragging a slider whose effect nobody here has established into a state that makes the
-// add-on look broken.
+// SaveSettings line is untouched, so each hidden control still reads its key out of amd-nr.ini and
+// still writes it back. What went is the widget, and with it the chance of somebody dragging a
+// slider whose effect nobody here has established into a state that makes the add-on look broken.
 //
-// It is written for a NARROW panel, because that is how this is used: the overlay is kept thin so
-// the game stays visible behind it. Three consequences, and they are the whole layout rule here:
-//
-//   * Labels are short. A checkbox label is not wrapped or clipped by ImGui, it simply runs off
-//     the right edge, so "Ligado desde o primeiro quadro" is a horizontal overflow waiting for a
-//     thin panel. What the control means goes in its (?), which has room.
-//   * No PushItemWidth. ImGui's default is 65% of the window, which tracks the width on its own;
-//     any fixed number of ems is right at one width and wrong at every other.
-//   * Anything that is a sentence goes through TextWrapped. ImGui::Text does not wrap.
-//
-// ponytail: no custom style, no indent, no section wrapper. ReShade's own look, which is what
-// every other add-on in the same overlay uses, and one less thing to be wrong on a light theme.
+// The panel itself is src/ui/, shared with the 32-bit bridge. This is the 64-bit side of it: fill
+// the panel's copy from the engine, draw, write back what changed, carry out what was asked.
 void OnOverlay(effect_runtime *runtime)
 {
     // Rebinding by capturing a real keypress. Only advances while the overlay is open, which is
     // where the button is.
     static hotkey::Capture capture;
-    PanelStatus status = ReadPanelStatus();
-    status.hotkeyArmed = capture.armed;
-    PanelSettings panel = ReadPanelSettings();
-    const PanelSettings before = panel;
-    PanelActions actions;
-    SetLanguage(panel.language);
-
-    bool on = g.enabled.load();
-    if (ImGui::Checkbox(T("Enabled", "Ligado"), &on))
-    {
-        g.enabled.store(on);
-        Log("menu: %s", on ? "on" : "off");
-    }
-    ImGui::SameLine();
-    StatusLine(status, panel);
-
-    bool start = g.startOn.load();
-    if (ImGui::Checkbox(T("On at startup", "Ligar ao abrir o jogo"), &start))
-    {
-        g.startOn.store(start);
-        Log("menu: start enabled %d", start ? 1 : 0);
-    }
-    Help("Whether Enabled is already ticked when the game opens, instead of waiting for the "
-         "hotkey every time.",
-         "Se o Ligado já vem marcado quando o jogo abre, em vez de esperar a tecla de atalho "
-         "toda vez.");
-
-    bool altTab = g.disableOnAltTab.load();
-    if (ImGui::Checkbox(T("Off on alt-tab", "Desligar no alt-tab"), &altTab))
-    {
-        g.disableOnAltTab.store(altTab);
-        Log("menu: disable on alt-tab %d", altTab ? 1 : 0);
-    }
-    Help("Switches the effect off when the game stops being the window in front, and leaves it "
-         "off -- turn it back on with the hotkey. A minimised window is always sat out, "
-         "separately, and that one does resume on its own.",
-
-         "Desliga o efeito quando o jogo deixa de ser a janela da frente, e deixa desligado -- "
-         "religue na tecla de atalho. Janela minimizada é outra coisa: sempre pulada, e essa "
-         "volta sozinha.");
-
-    {
-        if (HotkeyButton(status))
-            capture.Toggle();
-
-        // ReShade's key state, never GetAsyncKeyState: it hooks that one and answers 0 for every
-        // key while the overlay is blocking the keyboard, which is the whole time this panel is
-        // open. See hotkey_capture.h.
-        int boundKey = 0, boundMods = 0;
-        if (capture.Poll([runtime](int vk) { return runtime->is_key_down(static_cast<uint32_t>(vk)); },
-                         boundKey, boundMods))
-        {
-            g.toggleKey.store(boundKey);
-            g.toggleMods.store(boundMods);
-            Log("menu: toggle bound to %s", HotkeyName().c_str());
-        }
-    }
-
-    int lang = g.language.load();
-    if (ImGui::Combo(T("Language", "Idioma"), &lang, "English\0Português\0"))
-    {
-        g.language.store(lang);
-        Log("menu: language %d", lang);
-    }
-
-    // The status column. It used to be a collapsing section of its own, which spent a header and
-    // a click on five lines of text that never need either -- and which, being at the bottom,
-    // reported the skip rate somewhere you would only look after you already suspected it.
-    //
-    // Now it runs down the right edge, opposite the switches, in vertical space those rows
-    // already occupy. Reading order is the point: the left column is what you change, the right
-    // column is what happened, and the two are side by side.
-    {
-        std::lock_guard guard(g.lock);
-        const uint64_t seen = g.frame + g.skipped;
-        const double pct = seen != 0 ? 100.0 * static_cast<double>(g.skipped) / seen : 0.0;
-        // A skipped frame reuses whatever the network textures hold, and a job still running is
-        // writing them while compose reads them. A few percent is invisible; a third of the
-        // frames is a correction that changes every frame, which reads as flicker.
-        const bool skipping = seen > 300 && pct >= 10.0;
-        RightLine(skipping ? &kWarn : nullptr, "%s", ProfileForThisProcess().note);
-        if (g.outWidth != 0)
-            RightLine(nullptr, T("%ux%u to %ux%u", "%ux%u para %ux%u"), g.outWidth, g.outHeight,
-                      g.netWidth, g.netHeight);
-        // What used to be an eleven-control Guides tab. Every one of those switches is on by
-        // default and picks itself: depth and motion are taken when the game hands them over and
-        // estimated when it does not, the companion effect is used when it is installed. The
-        // switches are still there, one cascade entry away, for a target where the detector picks
-        // the wrong buffer; this line is what a person actually needs, which is what the network
-        // is being fed.
-        RightLine(nullptr, T("depth %s, motion %s", "profundidade %s, movimento %s"),
-                  g.guideDepth.external && g.gameDepthActive ? T("effect", "effect")
-                  : g.gameDepthActive                        ? T("game", "jogo")
-                  : g.depthSnapshot                          ? T("snapshot", "snapshot")
-                                                             : T("none", "nenhuma"),
-                  g.guideMotion.external && g.gameMotionActive ? T("effect", "effect")
-                  : g.gameMotionActive                         ? T("game", "jogo")
-                                                               : T("estimated", "estimado"));
-        if (g.probeStillPct.load() >= 0)
-            RightLine(nullptr, T("depth %.4f..%.4f, %d%% still",
-                                 "profundidade %.4f..%.4f, %d%% parado"),
-                      static_cast<double>(g.probeDepthMin.load()),
-                      static_cast<double>(g.probeDepthMax.load()), g.probeStillPct.load());
-        if (skipping)
-            Note(kWarn, T("The network is not finishing inside a frame, and that is the flicker. "
-                          "Lower Scale and set Passes to 1.",
-                          "A rede não está terminando dentro do quadro, e é isso o piscar. Baixe "
-                          "a Escala e ponha Passes em 1."));
-    }
-
-    DrawPerformance(panel, status, actions);
-
-    DrawImage(panel);
-
-    DrawDebug(panel, status, actions);
-
-    DrawExperimental(panel, status);
-
-    DrawGuides(panel, status);
-
-    DrawEngine(panel, status);
-
-    // The cascade. Everything this panel leaves off is one tick away, one control at a time,
-    // under the header it will appear beneath -- so turning something on tells you where to look
-    // for it. Nothing here is a second copy of anything: the same atomics, the same ini keys, the
-    // same per-frame writes. The only thing a bit decides is whether a widget is drawn.
-    if (ImGui::TreeNode(T("More settings", "Mais ajustes")))
-    {
-        ImGui::TextWrapped(T("Off screen by default, not off. Each of these reads and writes its "
-                             "own key in amd-nr.ini either way; ticking one only puts a "
-                             "control for it in the panel.",
-
-                             "Fora da tela por padrão, não desligados. Cada um destes lê e "
-                             "escreve a chave dele no amd-nr.ini de qualquer jeito; marcar "
-                             "um só põe um controle para ele no painel."));
-
-        uint32_t bits = g.optional.load();
-        const uint32_t before = bits;
-        for (int grp = 0; grp < kGrpCount; ++grp)
-        {
-            ImGui::SeparatorText(OptGroupName(grp));
-            for (int i = 0; i < kOptCount; ++i)
-            {
-                const OptRow &row = kOpts[i];
-                if (row.group != grp)
-                    continue;
-                bool onNow = (bits & row.bit) != 0;
-                if (ImGui::Checkbox(T(row.en, row.pt), &onNow))
-                    bits = onNow ? (bits | row.bit) : (bits & ~row.bit);
-            }
-        }
-        ImGui::Separator();
-        if (ImGui::Button(T("All", "Todos")))
-            bits = kOptAll;
-        ImGui::SameLine();
-        if (ImGui::Button(T("None", "Nenhum")))
-            bits = 0;
-        if (bits != before)
-        {
-            g.optional.store(bits);
-            Log("menu: optional controls now 0x%06x", bits);
-        }
-        ImGui::TreePop();
-    }
-
-    ImGui::Separator();
-    if (ImGui::Button(T("Save", "Salvar")))
-        SaveSettings();
-    Help("Writes everything to amd-nr.ini next to the exe. You do not have to press it -- "
-         "every control saves itself when you let go. This writes now, and logs that it happened.",
-         "Escreve tudo no amd-nr.ini ao lado do exe. Você não precisa apertar -- cada "
-         "controle se salva sozinho quando você solta. Isto escreve agora, e deixa registro no "
-         "log.");
-    ImGui::SameLine();
-    if (ImGui::Button(T("Reload", "Recarregar")))
-    {
-        LoadSettings();
-        Log("menu: settings reloaded from the ini");
-    }
-    Help("Re-reads amd-nr.ini, discarding anything changed here since the last save. This "
-         "is how a setting edited in the file is picked up without restarting the game.",
-         "Relê o amd-nr.ini, descartando qualquer coisa mudada aqui desde o último "
-         "salvamento. É assim que um ajuste editado no arquivo é aplicado sem reiniciar o jogo.");
-
-    // Asking somebody for a log means asking them to find the emulator's install directory first.
-    // This puts the four files that answer any question about a run -- the add-on's log, the
-    // runtime's, ReShade's, and the ini that produced them -- in a dated folder on the desktop.
-    ImGui::SameLine();
     static std::wstring exported;
     static bool exportFailed = false;
-    if (ImGui::Button(T("Export logs to desktop", "Exportar logs pra área de trabalho")))
+
+    PanelStatus status = ReadPanelStatus();
+    status.hotkeyArmed = capture.armed;
+    status.exportedPath = exported;
+    status.exportFailed = exportFailed;
+    PanelSettings panel = ReadPanelSettings();
+    const PanelSettings before = panel;
+
+    const PanelActions actions = DrawPanel(panel, status);
+
+    ApplyPanelSettings(before, panel);
+    HandlePanelActions(actions, panel);
+    if (actions.Has(PanelAction::ToggleHotkeyCapture))
+        capture.Toggle();
+    // ReShade's key state, never GetAsyncKeyState: it hooks that one and answers 0 for every key
+    // while the overlay is blocking the keyboard, which is the whole time this panel is open. See
+    // hotkey_capture.h.
+    int boundKey = 0, boundMods = 0;
+    if (capture.Poll([runtime](int vk) { return runtime->is_key_down(static_cast<uint32_t>(vk)); },
+                     boundKey, boundMods))
+    {
+        g.toggleKey.store(boundKey);
+        g.toggleMods.store(boundMods);
+        Log("menu: toggle bound to %s", HotkeyName().c_str());
+    }
+    if (actions.Has(PanelAction::ExportLogs))
     {
         SaveSettings(/*quiet=*/true);   // so the ini beside the logs is the run they describe
         exported = ExportLogs();
         exportFailed = exported.empty();
     }
-    Help("Copies amd-nr.log, the runtime's dlssnr_on_amd.log, ReShade.log and "
-         "amd-nr.ini into a dated folder on your desktop. The settings go with them because "
-         "a log without them cannot be compared against anything.\n\n"
-         "The logs are truncated every time the game starts, so export before relaunching.",
 
-         "Copia o amd-nr.log, o dlssnr_on_amd.log do runtime, o ReShade.log e o "
-         "amd-nr.ini para uma pasta datada na sua área de trabalho. Os ajustes vão junto "
-         "porque um log sem eles não dá para comparar com nada.\n\n"
-         "Os logs são truncados toda vez que o jogo abre, então exporte antes de relançar.");
-    if (exportFailed)
-        ImGui::TextColored(kDanger, T("Could not write to the desktop.",
-                                      "Não deu para escrever na área de trabalho."));
-    else if (!exported.empty())
-        ImGui::TextColored(kOk, T("Exported to %ls", "Exportado para %ls"), exported.c_str());
-
-    // The legend, which used to be six paragraphs and a four-entry tag table. One wrapped line:
-    // the tags are gone, and red and amber are the only marks a control can carry now.
-    ImGui::TextDisabled(T("Red: risks the display driver at this value. Amber: past what was "
-                          "measured here.",
-                          "Vermelho: neste valor arrisca o driver de vídeo. Âmbar: além do que "
-                          "foi medido aqui."));
-
-    ApplyPanelSettings(before, panel);
-    HandlePanelActions(actions, panel);
-
-    // Autosave. The button above stays -- it is still the only thing that says out loud that a write
-    // happened -- but nothing should be lost because somebody never scrolled this far. Written when a
-    // control settles rather than while it is being dragged: WritePrivateProfileString rewrites the
-    // whole file once per key, so a slider held down would be fifty full rewrites a second.
+    // Autosave. The Save button stays -- it is still the only thing that says out loud that a write
+    // happened -- but nothing should be lost because somebody never scrolled this far. Written when
+    // a control settles rather than while it is being dragged: WritePrivateProfileString rewrites
+    // the whole file once per key, so a slider held down would be fifty full rewrites a second.
     static uint64_t saved = SettingsFingerprint();
     if (const uint64_t now = SettingsFingerprint(); now != saved && !ImGui::IsAnyItemActive())
     {
@@ -6621,6 +6421,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
             // something to edit without being told which keys exist. On the run that writes it,
             // it has already read the settings for the reason its own comment gives, and a second
             // read here would only re-parse what it just wrote.
+            g_factory = ReadPanelSettings();  // the constructed defaults, before any ini is read
             if (!EnsureNeuralIni())
                 LoadSettings();
         }
