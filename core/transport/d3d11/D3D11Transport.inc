@@ -1,6 +1,6 @@
 // The D3D11 transport: our own D3D12 device beside the game's D3D11 one, the two sharing
-// textures and fences. The port is in transport.h; the guides this route prepares are in
-// d3d11_guides.inc.
+// textures and fences. The port is in FrameTransport.hpp; the guides this route prepares are in
+// D3D11Guides.inc.
 
 namespace d3d11route
 {

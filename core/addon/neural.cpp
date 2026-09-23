@@ -55,7 +55,7 @@ using namespace reshade::api;
 namespace
 {
 
-#include "../transport/transport.h"
+#include "../transport/FrameTransport.hpp"
 
 enum class Tier
 {
@@ -4356,7 +4356,7 @@ bool BringUpEngines(UINT &wanted)
     return true;
 }
 
-#include "../transport/transports.inc"
+#include "../transport/Transports.inc"
 
 // Which D3D12 buffer is the scene depth, decided once per present.
 //

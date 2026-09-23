@@ -1,4 +1,4 @@
-// The OpenGL transport: the port in transport.h over the route in gl_route.inc.
+// The OpenGL transport: the port in FrameTransport.hpp over the route in gl_route.inc.
 
 namespace glroute
 {

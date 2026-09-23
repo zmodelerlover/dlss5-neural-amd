@@ -1,4 +1,5 @@
-#pragma once
+#ifndef TRANSPORT_FRAMETRANSPORT_HPP
+#define TRANSPORT_FRAMETRANSPORT_HPP
 // The port every graphics API goes through. The network always runs on D3D12; a transport is how
 // one API's frame gets to it and back. One implementation per API, and TransportFor is the one
 // place that reads device_api -- adding an API is a new transport and a line there, and nothing
@@ -43,3 +44,5 @@ FrameTransport *TransportFor(reshade::api::device_api api);
 
 // Every transport compiled into this build, for the calls that are not about one device.
 std::span<FrameTransport *const> AllTransports();
+
+#endif

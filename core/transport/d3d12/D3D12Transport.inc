@@ -1,5 +1,5 @@
 // The native D3D12 transport: the game's own device runs the network, so there is nothing to
-// cross. The port is in transport.h.
+// cross. The port is in FrameTransport.hpp.
 
 namespace d3d12route
 {

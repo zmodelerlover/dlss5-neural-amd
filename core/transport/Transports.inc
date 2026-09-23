@@ -1,4 +1,4 @@
-// Every transport compiled into this build, and the factory that picks one. See transport.h.
+// Every transport compiled into this build, and the factory that picks one. See FrameTransport.hpp.
 
 // The guard every transport that crosses to our own D3D12 device runs first. Between a teardown
 // and the new swapchain being announced there is nothing safe to touch, and without the D3D12
@@ -14,17 +14,17 @@ bool CrossingReady(swapchain *sc)
     return false;
 }
 
-#include "d3d12/d3d12_guides.inc"
-#include "d3d12/transport_d3d12.inc"
-#include "d3d11/d3d11_guides.inc"
-#include "d3d11/transport_d3d11.inc"
+#include "d3d12/D3D12Guides.inc"
+#include "d3d12/D3D12Transport.inc"
+#include "d3d11/D3D11Guides.inc"
+#include "d3d11/D3D11Transport.inc"
 #if AMDNR_WITH_VULKAN
 #include "vulkan/vk_route.inc"
-#include "vulkan/transport_vulkan.inc"
+#include "vulkan/VulkanTransport.inc"
 #endif
 #if AMDNR_WITH_OPENGL
 #include "opengl/gl_route.inc"
-#include "opengl/transport_opengl.inc"
+#include "opengl/OpenGLTransport.inc"
 #endif
 
 // The one place that asks which API this is.

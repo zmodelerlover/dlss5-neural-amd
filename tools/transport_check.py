@@ -1,6 +1,6 @@
 """Only the transport factory may ask which graphics API it is on.
 
-Every per-API decision the add-on makes goes through the port in core/transport/transport.h; a
+Every per-API decision the add-on makes goes through the port in core/transport/FrameTransport.hpp; a
 `device_api::` anywhere else is the add-on branching on the API again, which is the coupling the
 port was built to remove.
 """
@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FACTORY = ROOT / "core/transport/transports.inc"
+FACTORY = ROOT / "core/transport/Transports.inc"
 SCOPE = [ROOT / "core/addon", ROOT / "core/transport", ROOT / "core/diagnostics/framecheck", ROOT / "core/x86bridge/host64.cpp"]
 
 bad = []
