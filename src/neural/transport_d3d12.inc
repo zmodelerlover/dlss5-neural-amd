@@ -7,6 +7,14 @@ namespace d3d12route
 struct Transport final : FrameTransport
 {
     const char *Name() const override { return "D3D12"; }
+    void OnTargetsBound(device *, uint32_t, const resource_view *, resource depth) override
+    {
+        TallyBoundDepth(depth);
+    }
+    void OnDepthCleared(command_list *cmd, device *dev, resource_view dsv) override
+    {
+        SnapshotBeforeClear(cmd, dev, dsv);
+    }
     void Present(device *dev, command_queue *queue, swapchain *sc) override
     {
         if (!LoadGraphicsApi())

@@ -1,7 +1,7 @@
 {
   "src/glprobe/glprobe.cpp": 1886,
   "src/neural/gl_route.inc": 1365,
-  "src/neural/neural.cpp": 5053,
+  "src/neural/neural.cpp": 4878,
   "src/neural/vk_route.inc": 1152,
   "src/session/session.cpp": 1129,
   "src/vkbridge/vkbridge.cpp": 687,

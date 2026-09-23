@@ -19,6 +19,20 @@ struct FrameTransport
     // Everything sized to the swapchain. Called on every transport compiled in, not only the
     // active one: a swapchain can be torn down from anywhere, before any present chose one.
     virtual void ReleaseSwapchainSized() {}
+    // Every render-target bind, with the depth-stencil when there is one (depth.handle 0 when
+    // not). Where a transport finds the game's own depth and motion to hand the network.
+    virtual void OnTargetsBound(reshade::api::device *dev, uint32_t count,
+                                const reshade::api::resource_view *rtvs, reshade::api::resource depth)
+    {
+        (void)dev, (void)count, (void)rtvs, (void)depth;
+    }
+    // Just before the game clears a depth-stencil: the one moment its contents still exist.
+    // The clear always goes ahead.
+    virtual void OnDepthCleared(reshade::api::command_list *cmd, reshade::api::device *dev,
+                                reshade::api::resource_view dsv)
+    {
+        (void)cmd, (void)dev, (void)dsv;
+    }
     // DllMain. Some routes have to hook before the game creates its device.
     virtual void OnAddonLoad() {}
     virtual void OnAddonUnload(bool processExit) { (void)processExit; }

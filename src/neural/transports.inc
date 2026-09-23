@@ -14,6 +14,7 @@ bool CrossingReady(swapchain *sc)
     return false;
 }
 
+#include "d3d12_guides.inc"
 #include "transport_d3d12.inc"
 #include "d3d11_guides.inc"
 #include "transport_d3d11.inc"

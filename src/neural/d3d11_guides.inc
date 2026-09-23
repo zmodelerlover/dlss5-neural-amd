@@ -203,4 +203,74 @@ bool PrepareGuide(Guide &guide, bool isDepth)
     return true;
 }
 
+// Observation is deliberately NOT gated on the Depth switch. It used to be, and that made the
+// question unanswerable: with the switch off -- the default -- this returned immediately, logged
+// nothing, and the status line then said "no candidate found", which reads as "this game has no
+// depth buffer" when it actually meant "nobody looked". Finding a candidate costs a pointer and a
+// GetDesc; only *using* it is gated, further down in the present path.
+//
+// D3D11 half of the observation. ReShade hands the render targets and the depth-stencil of
+// every bind; on D3D12 it hands the add-on only the swapchain (measured: zero depth binds in
+// 600 frames), which is why this path exists at all and why PCSX2 had to be moved to D3D11
+// before it could show a depth buffer.
+void ObserveD3D11(device *dev, const resource_view *rtvs, uint32_t count, resource depthRes)
+{
+    if (!g.settings.useGameGuides.load())
+        return;
+    // Not while ReShade is drawing its own effect chain. Every shader in that chain renders into
+    // screen-sized intermediates, and an optical-flow shader's are two-channel float ones the
+    // size of the screen -- which is the exact description this observation uses to recognise a
+    // velocity buffer. Without this gate the motion guide could settle on a provider's working
+    // texture, or on the companion effect's own previous-frame copy, and prefer it over the
+    // game's real one on nothing better than which got bound more often.
+    if (g.inEffects.load())
+        return;
+    const UINT screenW = g.outWidth, screenH = g.outHeight;
+    auto record = [](std::unordered_map<void *, Tallied> &tally, ID3D11Resource *native,
+                     const D3D11_TEXTURE2D_DESC &d) {
+        Tallied &slot = tally[native];
+        if (slot.res == nullptr)
+        {
+            slot.res = native;
+            slot.width = d.Width;
+            slot.height = d.Height;
+            slot.format = d.Format;
+        }
+        ++slot.binds;
+    };
+    if (depthRes.handle != 0)
+    {
+        auto *native = reinterpret_cast<ID3D11Resource *>(depthRes.handle);
+        ComPtr<ID3D11Texture2D> tex;
+        D3D11_TEXTURE2D_DESC d {};
+        if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&tex))))
+        {
+            tex->GetDesc(&d);
+            // Same two floors, for the same reason.
+            if (d.SampleDesc.Count == 1 && d.ArraySize == 1 &&
+                d.Width >= kGuideFloor && d.Height >= kGuideFloor &&
+                GuideDepthSrvFormat(d.Format) != DXGI_FORMAT_UNKNOWN &&
+                (screenW == 0 || screenH == 0 ||
+                 (d.Width * 2 >= screenW && d.Height * 2 >= screenH)))
+                record(g_depthTally, native, d);
+        }
+    }
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        if (rtvs[i].handle == 0)
+            continue;
+        const resource res = dev->get_resource_from_view(rtvs[i]);
+        if (res.handle == 0)
+            continue;
+        auto *native = reinterpret_cast<ID3D11Resource *>(res.handle);
+        ComPtr<ID3D11Texture2D> tex;
+        D3D11_TEXTURE2D_DESC d {};
+        if (FAILED(native->QueryInterface(IID_PPV_ARGS(&tex))))
+            continue;
+        tex->GetDesc(&d);
+        if (LooksLikeMotion(d, screenW, screenH))
+            record(g_motionTally, native, d);
+    }
+}
+
 }  // namespace d3d11route

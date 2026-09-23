@@ -100,6 +100,9 @@ jobs:
       - name: No source reaches OpenGL by linking to it
         run: python3 tools/opengl_import_check.py
 
+      - name: Only the transport factory asks which API it is on
+        run: python3 tools/transport_check.py
+
       # The panel both routes draw, run against a recorder in place of ReShade's ImGui: every
       # cascade tick shows its own control, Portuguese is complete, each button asks for its action.
       - name: The shared panel draws what each setting asks for

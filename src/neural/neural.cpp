@@ -3090,76 +3090,6 @@ void NoteJobCost(UINT64 ms)
         static_cast<unsigned long long>(ms), static_cast<double>(now), static_cast<double>(next));
 }
 
-// Observation is deliberately NOT gated on the Depth switch. It used to be, and that made the
-// question unanswerable: with the switch off -- the default -- this returned immediately, logged
-// nothing, and the status line then said "no candidate found", which reads as "this game has no
-// depth buffer" when it actually meant "nobody looked". Finding a candidate costs a pointer and a
-// GetDesc; only *using* it is gated, further down in the present path.
-//
-// D3D11 half of the observation. ReShade hands the render targets and the depth-stencil of
-// every bind; on D3D12 it hands the add-on only the swapchain (measured: zero depth binds in
-// 600 frames), which is why this path exists at all and why PCSX2 had to be moved to D3D11
-// before it could show a depth buffer.
-void ObserveD3D11(device *dev, const resource_view *rtvs, uint32_t count, resource depthRes)
-{
-    if (!g.settings.useGameGuides.load())
-        return;
-    // Not while ReShade is drawing its own effect chain. Every shader in that chain renders into
-    // screen-sized intermediates, and an optical-flow shader's are two-channel float ones the
-    // size of the screen -- which is the exact description this observation uses to recognise a
-    // velocity buffer. Without this gate the motion guide could settle on a provider's working
-    // texture, or on the companion effect's own previous-frame copy, and prefer it over the
-    // game's real one on nothing better than which got bound more often.
-    if (g.inEffects.load())
-        return;
-    const UINT screenW = g.outWidth, screenH = g.outHeight;
-    auto record = [](std::unordered_map<void *, Tallied> &tally, ID3D11Resource *native,
-                     const D3D11_TEXTURE2D_DESC &d) {
-        Tallied &slot = tally[native];
-        if (slot.res == nullptr)
-        {
-            slot.res = native;
-            slot.width = d.Width;
-            slot.height = d.Height;
-            slot.format = d.Format;
-        }
-        ++slot.binds;
-    };
-    if (depthRes.handle != 0)
-    {
-        auto *native = reinterpret_cast<ID3D11Resource *>(depthRes.handle);
-        ComPtr<ID3D11Texture2D> tex;
-        D3D11_TEXTURE2D_DESC d {};
-        if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&tex))))
-        {
-            tex->GetDesc(&d);
-            // Same two floors, for the same reason.
-            if (d.SampleDesc.Count == 1 && d.ArraySize == 1 &&
-                d.Width >= kGuideFloor && d.Height >= kGuideFloor &&
-                GuideDepthSrvFormat(d.Format) != DXGI_FORMAT_UNKNOWN &&
-                (screenW == 0 || screenH == 0 ||
-                 (d.Width * 2 >= screenW && d.Height * 2 >= screenH)))
-                record(g_depthTally, native, d);
-        }
-    }
-    for (uint32_t i = 0; i < count; ++i)
-    {
-        if (rtvs[i].handle == 0)
-            continue;
-        const resource res = dev->get_resource_from_view(rtvs[i]);
-        if (res.handle == 0)
-            continue;
-        auto *native = reinterpret_cast<ID3D11Resource *>(res.handle);
-        ComPtr<ID3D11Texture2D> tex;
-        D3D11_TEXTURE2D_DESC d {};
-        if (FAILED(native->QueryInterface(IID_PPV_ARGS(&tex))))
-            continue;
-        tex->GetDesc(&d);
-        if (LooksLikeMotion(d, screenW, screenH))
-            record(g_motionTally, native, d);
-    }
-}
-
 // True on a thread while this add-on is issuing commands into the host's API on its own account.
 //
 // On D3D11 and D3D12 that distinction never mattered: the bridge records into its own command
@@ -3237,68 +3167,32 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
     device *dev = cmd_list != nullptr ? cmd_list->get_device() : nullptr;
     if (dev == nullptr)
         return;
+    FrameTransport *transport = TransportFor(dev->get_api());
     const resource res = dsv.handle != 0 ? dev->get_resource_from_view(dsv) : resource { 0 };
-    if (dev->get_api() == device_api::d3d11)
+    if (dsv.handle != 0)
     {
-        std::lock_guard observe(g.lock);
-        ObserveD3D11(dev, rtvs, count, res);
-    }
-    if (dsv.handle == 0)
-        return;
-    ++g.depthEvents;
-    if (res.handle == 0)
-        return;
-
-    // Observation is API-agnostic on purpose. Registering the draw events did not make D3D12
-    // deliver a single depth-stencil bind in 600 frames, so the question "does this game expose
-    // depth to an add-on at all" can only be answered on the other API -- and answering it must
-    // not require the D3D11 bridge to already exist. ReShade's own resource_desc reads on both;
-    // the native ID3D12Resource cast below does not, so it stays behind the D3D12 check.
-    const bool d3d12 = dev->get_api() == device_api::d3d12;
-    {
-        static UINT logged = 0;
-        std::lock_guard observe(g.lock);
-        if (logged < 8)
+        ++g.depthEvents;
+        // Observation is API-agnostic on purpose. Registering the draw events did not make D3D12
+        // deliver a single depth-stencil bind in 600 frames, so the question "does this game expose
+        // depth to an add-on at all" can only be answered on the other API -- and answering it must
+        // not require the D3D11 bridge to already exist. ReShade's own resource_desc reads on both;
+        // the native reads do not, so they are each transport's own.
+        if (res.handle != 0)
         {
-            ++logged;
-            const resource_desc rd = dev->get_resource_desc(res);
-            // Name the API rather than assuming it is the other one. This observation is
-            // API-agnostic and Vulkan reaches it too, where "D3D11" would be a plain lie in the
-            // one log a Vulkan problem is diagnosed from.
-            const char *api = dev->get_api() == device_api::d3d12   ? "D3D12"
-                              : dev->get_api() == device_api::d3d11 ? "D3D11"
-                              : dev->get_api() == device_api::vulkan ? "Vulkan"
-                              : dev->get_api() == device_api::opengl ? "OpenGL"
-                                                                     : "other API";
-            Log("depth seen (%s): %ux%u format %u samples %u", api,
-                rd.texture.width, rd.texture.height, static_cast<unsigned>(rd.texture.format),
-                rd.texture.samples);
+            static UINT logged = 0;
+            std::lock_guard observe(g.lock);
+            if (logged < 8)
+            {
+                ++logged;
+                const resource_desc rd = dev->get_resource_desc(res);
+                Log("depth seen (%s): %ux%u format %u samples %u",
+                    transport != nullptr ? transport->Name() : "other API", rd.texture.width,
+                    rd.texture.height, static_cast<unsigned>(rd.texture.format), rd.texture.samples);
+            }
         }
     }
-    if (!d3d12)
-        return;
-    auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
-    std::lock_guard guard(g.lock);
-    if (native == g.depthBest.Get())
-        ++g.depthBinds;  // the status line's running total, which outlives one present
-    const auto d = native->GetDesc();
-    static UINT seen = 0;  // separate from the API-agnostic counter above
-    const bool readable = DepthReadFormat(d.Format) != DXGI_FORMAT_UNKNOWN;
-    const bool denied = (d.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0;
-    if (seen < 8)
-    {
-        ++seen;
-        Log("depth seen: %llux%u format %d flags 0x%x samples %u array %u -> %s",
-            static_cast<unsigned long long>(d.Width), d.Height, static_cast<int>(d.Format),
-            static_cast<unsigned>(d.Flags), d.SampleDesc.Count, d.DepthOrArraySize,
-            (!readable ? "format not readable" : denied ? "shader resource denied" : "taken"));
-    }
-    if (d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || d.SampleDesc.Count != 1 ||
-        d.DepthOrArraySize != 1 || !readable || denied)
-        return;
-    if (!ScreenShaped(d.Width, d.Height, g.outWidth, g.outHeight))
-        return;
-    ++TallyD12Depth(native, d).binds;
+    if (transport != nullptr)
+        transport->OnTargetsBound(dev, count, rtvs, res);
 }
 
 // Subscribing to the draw events is what makes ReShade track render-target state on the game's
@@ -3318,79 +3212,10 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
     if (g_selfIssued || cmd_list == nullptr || dsv.handle == 0)
         return false;
     device *dev = cmd_list->get_device();
-    if (dev == nullptr || dev->get_api() != device_api::d3d12)
+    if (dev == nullptr)
         return false;
-    const resource res = dev->get_resource_from_view(dsv);
-    if (res.handle == 0)
-        return false;
-    auto *native = reinterpret_cast<ID3D12Resource *>(res.handle);
-
-    std::lock_guard guard(g.lock);
-    // Counted for whichever candidate this is, not only for the one holding the slot: "the game
-    // clears it every frame" is how the scene depth is told from a buffer that is merely the same
-    // size, and that has to be known about a challenger before it can win. Recorded rather than
-    // looked up, so a clear that comes before this present's first bind still counts.
-    {
-        const auto cd = native->GetDesc();
-        if (ScreenShaped(cd.Width, cd.Height, g.outWidth, g.outHeight) &&
-            DepthReadFormat(cd.Format) != DXGI_FORMAT_UNKNOWN &&
-            (cd.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0 &&
-            cd.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && cd.SampleDesc.Count == 1 &&
-            cd.DepthOrArraySize == 1)
-            ++TallyD12Depth(native, cd).clears;
-    }
-    if (!g.settings.useDepth.load() || native != g.depthBest.Get() || g.device == nullptr)
-        return false;
-    ++g.depthClears;
-
-    const auto d = native->GetDesc();
-    if (g.depthSnapshot == nullptr || g.depthSnapshot->GetDesc().Width != d.Width ||
-        g.depthSnapshot->GetDesc().Height != d.Height)
-    {
-        g.depthSnapshot.Reset();
-        auto sd = d;
-        sd.Format = DepthAliasFormat(d.Format);
-        // ALLOW_DEPTH_STENCIL, and not NONE, for the same reason the live-buffer alias path uses
-        // it. R32G8X24_TYPELESS without the flag is a plain one-plane 64-bit texture; the game's
-        // depth-stencil resource is planar. CopyResource between those two layouts is not a valid
-        // copy, and D3D12 does not refuse it -- it just produces garbage. Every probe read on the
-        // result came back min -3e38, max 2e36, mean NaN, which then sailed through the "min is
-        // not max, so it is real depth" check below and was handed to the network as depth.
-        sd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-        sd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        if (sd.Format == DXGI_FORMAT_UNKNOWN)
-            return false;
-        D3D12_HEAP_PROPERTIES hp {};
-        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
-        if (FAILED(g.device->CreateCommittedResource(
-                &hp, D3D12_HEAP_FLAG_NONE, &sd, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                nullptr, IID_PPV_ARGS(&g.depthSnapshot))))
-        {
-            Log("depth snapshot allocation failed (%llux%u format %d).",
-                static_cast<unsigned long long>(d.Width), d.Height, static_cast<int>(sd.Format));
-            return false;
-        }
-        Log("depth snapshot: %llux%u, taken before each clear.",
-            static_cast<unsigned long long>(d.Width), d.Height);
-    }
-
-    auto *cmd = reinterpret_cast<ID3D12GraphicsCommandList *>(cmd_list->get_native());
-    if (cmd == nullptr)
-        return false;
-    // A clear needs the resource in DEPTH_WRITE, so that is the state it is in right now.
-    Barrier(cmd, native, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    Barrier(cmd, g.depthSnapshot.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-    cmd->CopyResource(g.depthSnapshot.Get(), native);
-    Barrier(cmd, g.depthSnapshot.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Barrier(cmd, native, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    if (!g.loggedSnapshot)
-    {
-        g.loggedSnapshot = true;
-        Log("depth: first snapshot copied before a clear. If the engine log still says depth off, "
-            "the copy is happening but the engine is refusing the resource.");
-    }
+    if (FrameTransport *transport = TransportFor(dev->get_api()))
+        transport->OnDepthCleared(cmd_list, dev, dsv);
     return false;
 }
 

@@ -392,6 +392,11 @@ void BridgePresent(device *dev, swapchain *sc)
 struct Transport final : FrameTransport
 {
     const char *Name() const override { return "D3D11"; }
+    void OnTargetsBound(device *dev, uint32_t count, const resource_view *rtvs, resource depth) override
+    {
+        std::lock_guard observe(g.lock);
+        ObserveD3D11(dev, rtvs, count, depth);
+    }
     void Present(device *dev, command_queue *, swapchain *sc) override
     {
         // Between a teardown and the new swapchain being announced there is nothing safe to
