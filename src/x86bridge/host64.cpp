@@ -16,25 +16,25 @@ struct Host {
     WireSettings factoryDefaults{};
     uint64_t settingsRevision=1,lastCommand=0,processedFrames=0,skippedFrames=0;
     void ForceInline(){
-        if(!g.inlineMode.load())Log("x86bridge forced same-frame: Inline=0 is unsupported on this route");
-        g.inlineMode.store(true);
+        if(!g.settings.inlineMode.load())Log("x86bridge forced same-frame: Inline=0 is unsupported on this route");
+        g.settings.inlineMode.store(true);
     }
     WireSettings ExportSettings(){
         WireSettings s;s.settings_revision=settingsRevision;
-#define X(type,name,low,high) s.name=static_cast<type>(g.name.load());
+#define X(type,name,low,high) s.name=static_cast<type>(g.settings.name.load());
 #include "settings_fields.inc"
 #undef X
-        for(unsigned i=0;i<3;++i){s.passOverride[i]=g.passOverride[i].load();s.passStructure[i]=g.passStructure[i].load();s.passTone[i]=g.passTone[i].load();s.passSkin[i]=g.passSkin[i].load();}
+        for(unsigned i=0;i<3;++i){s.passOverride[i]=g.settings.passOverride[i].load();s.passStructure[i]=g.settings.passStructure[i].load();s.passTone[i]=g.settings.passTone[i].load();s.passSkin[i]=g.settings.passSkin[i].load();}
         return s;
     }
     bool ApplySettings(WireSettings s){
         if(!NewRevision(s.settings_revision,settingsRevision))return false;
         if(!NormalizeSettings(s))return false;
-        const bool historyChanged=g.useHistory.load()!=(s.useHistory!=0);
-#define X(type,name,low,high) g.name.store(s.name);
+        const bool historyChanged=g.settings.useHistory.load()!=(s.useHistory!=0);
+#define X(type,name,low,high) g.settings.name.store(s.name);
 #include "settings_fields.inc"
 #undef X
-        for(unsigned i=0;i<3;++i){g.passOverride[i].store(s.passOverride[i]!=0);g.passStructure[i].store(s.passStructure[i]);g.passTone[i].store(s.passTone[i]);g.passSkin[i].store(s.passSkin[i]);}
+        for(unsigned i=0;i<3;++i){g.settings.passOverride[i].store(s.passOverride[i]!=0);g.settings.passStructure[i].store(s.passStructure[i]);g.settings.passTone[i].store(s.passTone[i]);g.settings.passSkin[i].store(s.passSkin[i]);}
         if(historyChanged)g.historyValid.store(false);
         settingsRevision=s.settings_revision;return true;
     }
@@ -65,7 +65,7 @@ struct Host {
         std::error_code ec;const bool existed=std::filesystem::exists(ini,ec);
         EnsureNeuralIni();
         if(!existed&&!ec){
-            g.colourStrength.store(0.25f);g.structure.store(1);g.skin.store(-1);g.passes.store(1);
+            g.settings.colourStrength.store(0.25f);g.settings.structure.store(1);g.settings.skin.store(-1);g.settings.passes.store(1);
             WritePrivateProfileStringW(L"amd-nr",L"ColourStrength",L"0.25",ini.c_str());
             WritePrivateProfileStringW(L"amd-nr",L"Structure",L"1",ini.c_str());
             // -1 is the engine's automatic. A fresh ini used to write 1 here, which switched it off
@@ -78,10 +78,10 @@ struct Host {
     void RestoreFactoryDefaults(){
         // No INI access. Restore constructed upstream defaults plus the five x86 overrides.
         auto s=FactorySettings(factoryDefaults,ExportSettings());
-        const bool historyChanged=(s.useHistory!=0)!=g.useHistory.load();
-        const bool guidesChanged=historyChanged||(s.useMotion!=0)!=g.useMotion.load()||
-            (s.useDepth!=0)!=g.useDepth.load()||(s.useGameGuides!=0)!=g.useGameGuides.load()||s.temporalMode!=g.temporalMode.load()||
-            s.motionScale!=g.motionScale.load()||s.flowGate!=g.flowGate.load()||s.flowRatio!=g.flowRatio.load();
+        const bool historyChanged=(s.useHistory!=0)!=g.settings.useHistory.load();
+        const bool guidesChanged=historyChanged||(s.useMotion!=0)!=g.settings.useMotion.load()||
+            (s.useDepth!=0)!=g.settings.useDepth.load()||(s.useGameGuides!=0)!=g.settings.useGameGuides.load()||s.temporalMode!=g.settings.temporalMode.load()||
+            s.motionScale!=g.settings.motionScale.load()||s.flowGate!=g.settings.flowGate.load()||s.flowRatio!=g.settings.flowRatio.load();
         Require(ApplySettings(s),"factory defaults rejected");
         if(guidesChanged&&!historyChanged)g.historyValid.store(false);
     }
@@ -151,7 +151,7 @@ struct Host {
         UINT wanted=WantedPasses();if(!BringUpEngines(wanted)){g.status.unavailable=true;return Result::Original;}
         g.loadedPasses=wanted;
         const UINT w=spec.colour.width,h=spec.colour.height;const auto fmt=static_cast<DXGI_FORMAT>(spec.colour.format);
-        if(!EnsureResources(w,h,fmt,g.scale.load())){g.status.unavailable=true;return Result::Original;}
+        if(!EnsureResources(w,h,fmt,g.settings.scale.load())){g.status.unavailable=true;return Result::Original;}
         if(!g.bridge.crossLocal && !CreateTexture(w,h,fmt,g.bridge.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
     bool runNetwork = true;
     const bool jobPending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
@@ -266,8 +266,8 @@ struct Host {
         Require((!f.depthValid||spec.depth.valid)&&(!f.motionValid||spec.motion.valid),"unbuilt guide requested");
         lastFrame=f.id;
         if(f.resetHistory)g.historyValid.store(false);
-        g.guideDepth.ready=f.depthValid&&g.useGameGuides.load()&&g.useDepth.load();
-        g.guideMotion.ready=f.motionValid&&g.useGameGuides.load()&&g.useMotion.load();
+        g.guideDepth.ready=f.depthValid&&g.settings.useGameGuides.load()&&g.settings.useDepth.load();
+        g.guideMotion.ready=f.motionValid&&g.settings.useGameGuides.load()&&g.settings.useMotion.load();
         const auto result=transport?CopyOnly():Neural();
         if(result==Result::Neural||result==Result::Transport)++processedFrames;else ++skippedFrames;
         ++g.status.frame;
@@ -289,20 +289,20 @@ struct Host {
             switch(h.kind){
             case Kind::GetState:case Kind::Status:Snapshot(h.kind);break;
             case Kind::SetState:{WireSettings s;Require(Receive(pipe.value,parent.value,&s,sizeof(s)),"SET_STATE body");
-                const float wanted=g.scale.load();
+                const float wanted=g.settings.scale.load();
                 const bool applied=ApplySettings(s);
                 // A new Scale arriving is the person overruling the cap NoteJobCost put on. Letting go
                 // of the slider on an unchanged value sends no revision; that one arrives as the
                 // LiftScaleCap command below, as it does on the 64-bit route.
-                if(applied&&g.scale.load()!=wanted){g.scaleCap.store(0.0f);g.longJobs=0;}
+                if(applied&&g.settings.scale.load()!=wanted){g.scaleCap.store(0.0f);g.longJobs=0;}
                 Snapshot(h.kind,applied?Result::Ready:Result::Error);break;}
             case Kind::SaveSettings:SaveSettings();Snapshot(h.kind);break;
-            case Kind::ReloadSettings:{const bool history=g.useHistory.load();LoadSettings();ForceInline();if(history!=g.useHistory.load())g.historyValid.store(false);++settingsRevision;Snapshot(h.kind);break;}
+            case Kind::ReloadSettings:{const bool history=g.settings.useHistory.load();LoadSettings();ForceInline();if(history!=g.settings.useHistory.load())g.historyValid.store(false);++settingsRevision;Snapshot(h.kind);break;}
             case Kind::Command:{WireCommand c;Require(Receive(pipe.value,parent.value,&c,sizeof(c)),"COMMAND body");
                 const bool accepted=NewCommand(c,lastCommand)&&(c.code==CommandCode::FactoryDefaults||!transport);
                 if(accepted){lastCommand=c.id;if(c.code==CommandCode::FactoryDefaults)RestoreFactoryDefaults();
                     else if(c.code==CommandCode::LiftScaleCap){g.scaleCap.store(0.0f);g.longJobs=0;}
-                    else {g.measured=false;g.measureTries=0;g.measureNow.store(true);}}
+                    else {g.measured=false;g.measureTries=0;g.settings.measureNow.store(true);}}
                 Snapshot(h.kind,accepted?Result::Ready:Result::Error);break;}
             case Kind::Build:{Build b;Require(Receive(pipe.value,parent.value,&b,sizeof(b)),"BUILD body");Resources(b);Reply(h.kind,Result::Ready);break;}
             case Kind::Frame:{Frame f;Require(Receive(pipe.value,parent.value,&f,sizeof(f)),"FRAME body");try{Result result=FrameWork(f);Reply(h.kind,result,f.id);}

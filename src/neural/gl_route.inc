@@ -856,10 +856,10 @@ bool Ensure(Route &r, UINT w, UINT h)
     if (!r.semaphores && !r.loggedSemaphores)
     {
         SelfIssued selfIssued;
-        r.semaphores = g.glSemaphores.load() && ImportFences(r);
+        r.semaphores = g.settings.glSemaphores.load() && ImportFences(r);
         r.loggedSemaphores = true;
         Log("opengl: imported fences %s. %s", r.semaphores ? "in use"
-                                                 : g.glSemaphores.load() ? "unavailable"
+                                                 : g.settings.glSemaphores.load() ? "unavailable"
                                                                          : "off by GlSemaphores=0",
             r.semaphores ? "The hand-over between the two APIs runs on the GPU; the first frame "
                            "is still confirmed on the CPU before the stall is dropped."
@@ -1084,7 +1084,7 @@ void Present(command_queue *queue, swapchain *sc)
     const bool transportOnly = g.stage.load() < 3;
     if (!transportOnly)
     {
-        if (!EnsureResources(r.width, r.height, kCrossingFormat, g.scale.load()))
+        if (!EnsureResources(r.width, r.height, kCrossingFormat, g.settings.scale.load()))
         {
             g.status.unavailable = true;
             if (*g.status.reason == 0)
@@ -1125,7 +1125,7 @@ void Present(command_queue *queue, swapchain *sc)
     // paces the game to the network, which is what the D3D11 and Vulkan routes have always done
     // and what makes the number on screen mean something. GlHoldFrames in the ini raises it for
     // anyone who wants the present rate instead.
-    const unsigned kMaxHeld = static_cast<unsigned>(g.glHoldFrames.load());
+    const unsigned kMaxHeld = static_cast<unsigned>(g.settings.glHoldFrames.load());
 
     auto jobPending = [&] {
         return !transportOnly &&

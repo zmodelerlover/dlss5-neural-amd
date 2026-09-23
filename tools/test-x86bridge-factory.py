@@ -12,7 +12,7 @@ fields=re.findall(r'^X\((\w+), (\w+),', read(n/'settings_fields.inc'), re.M)
 initial=[]
 for typ,name in fields:
  m=re.search(r'std::atomic<[^>]+>\s+'+name+r'\s*\{([^}]+)\}',u);assert m,name
- initial.append(name+'.store('+m[1].strip()+');')
+ initial.append('settings.'+name+'.store('+m[1].strip()+');')
 methods=h[h.index('    WireSettings ExportSettings()'):h.index('    WireStatus ExportStatus()')]
 methods+=h[h.index('    void CaptureFactoryDefaults()'):h.index('    void EnsureX86Ini()')]
 restore=h[h.index('    void RestoreFactoryDefaults()'):h.index('    void Init(')]
@@ -29,12 +29,14 @@ constexpr int VK_END=35;
 void Require(bool b,const char*){assert(b);}
 struct Watch {bool value=true;unsigned writes=0;void store(bool v){value=v;++writes;}bool load(){return value;}};
 struct Engine {
+ struct {
 #define X(type,name,low,high) std::atomic<type> name{};
 #include "settings_fields.inc"
 #undef X
- Watch historyValid;
  std::atomic<bool> passOverride[3]{};
  std::atomic<float> passStructure[3]{},passTone[3]{},passSkin[3]{};
+ } settings;
+ Watch historyValid;
  Engine(){'''+''.join(initial)+'''}
 }g;
 struct Host{uint64_t settingsRevision=1;WireSettings factoryDefaults{};

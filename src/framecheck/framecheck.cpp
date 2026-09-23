@@ -117,8 +117,8 @@ void Run(const std::filesystem::path &input, int frames)
     g_log = _wfopen((ExeDirectory() / L"amd-nr.log").c_str(), L"w");
     Check(g_log != nullptr, "open log");
     LoadSettings();
-    Check(g.inlineMode && g.passes >= 1 && g.passes <= 3 && !g.useMotion && !g.useHistory &&
-          !g.useDepth && !g.useGameGuides && g.temporalMode == 1 && g.encoding == 0,
+    Check(g.settings.inlineMode && g.settings.passes >= 1 && g.settings.passes <= 3 && !g.settings.useMotion && !g.settings.useHistory &&
+          !g.settings.useDepth && !g.settings.useGameGuides && g.settings.temporalMode == 1 && g.settings.encoding == 0,
           "requires inline, 1..3 passes, SDR, temporal forced off and all guides/history off");
     std::ifstream in(input, std::ios::binary);
     std::string magic; UINT w = 0, h = 0, maxValue = 0;
@@ -145,7 +145,7 @@ void Run(const std::filesystem::path &input, int frames)
     Check(CreateWorkDevice(adapter.Get(), ad.AdapterLuid), "work device");
     g.device = g.bridge.workDevice; g.queue = g.bridge.workQueue;
     Hr(g.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence)), "pass fence");
-    Check(InitPipeline() && EnsureResources(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, g.scale), "pipeline/resources");
+    Check(InitPipeline() && EnsureResources(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, g.settings.scale), "pipeline/resources");
     ComPtr<ID3D12Resource> source;
     Check(CreateTexture(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, source, "fixture"), "source");
     const Layout l(source.Get());

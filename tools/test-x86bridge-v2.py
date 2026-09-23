@@ -49,16 +49,19 @@ state=r'''#include "control_state.h"
 #include <cstring>
 using namespace x86bridge;
 struct Engine {
+ struct {
 #define X(type,name,low,high) std::atomic<type> name{};
 #include "settings_fields.inc"
 #undef X
- std::atomic<bool> historyValid{true},passOverride[3]{};
+ std::atomic<bool> passOverride[3]{};
  std::atomic<float> passStructure[3]{},passTone[3]{},passSkin[3]{};
+ } settings;
+ std::atomic<bool> historyValid{true};
 }g;
 struct Host{uint64_t settingsRevision=1;
 '''+methods+r'''};
 int main(){Host host;WireSettings s; s.settings_revision=2;s.skin=-1;s.useHistory=1;s.scale=.5f;s.structure=1;s.tone=1;
- g.useHistory.store(1);assert(host.ApplySettings(s));assert(g.historyValid.load());assert(g.skin.load()==-1);assert(g.inlineMode.load()==1);
+ g.settings.useHistory.store(1);assert(host.ApplySettings(s));assert(g.historyValid.load());assert(g.settings.skin.load()==-1);assert(g.settings.inlineMode.load()==1);
  auto before=host.ExportSettings();assert(!host.ApplySettings(s));auto after=host.ExportSettings();assert(std::memcmp(&before,&after,sizeof(before))==0);
  s.settings_revision=3;s.scale=std::numeric_limits<float>::infinity();assert(!host.ApplySettings(s));after=host.ExportSettings();assert(std::memcmp(&before,&after,sizeof(before))==0);
  s.scale=.5f;s.useHistory=0;assert(host.ApplySettings(s));assert(!g.historyValid.load());
@@ -117,7 +120,7 @@ assert 'It does not smear' in ui and 'smearing when the camera turns' not in ui
 assert 'ImGui::IsItemDeactivated()' in ui and 'PanelAction::LiftScaleCap' in ui
 # A route difference is data, never a preprocessor branch inside the panel.
 assert re.findall(r'^\s*#\s*if\w*\s+(\w+)',ui,re.M)==['RESHADE_API_VERSION']
-assert 'g.inlineMode.store(true)' in h and 'LoadSettings();ForceInline();' in h
+assert 'g.settings.inlineMode.store(true)' in h and 'LoadSettings();ForceInline();' in h
 assert 'register_overlay("AMD Neural Rendering (32-bit)",OnOverlay32)' in front
 assert h.index('SaveSettings();Snapshot')>h.index('case Kind::SaveSettings:')
 fields=read(n/'settings_fields.inc')

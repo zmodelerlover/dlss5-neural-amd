@@ -997,7 +997,7 @@ void Present(command_queue *queue, swapchain *sc)
     // RecordNetwork wrote descriptors through them -- an access violation, not a failure. This
     // is the other half of the first Vulkan crash; bringing the engine up alone was never going
     // to be enough.
-    if (!EnsureResources(r.width, r.height, r.format, g.scale.load()))
+    if (!EnsureResources(r.width, r.height, r.format, g.settings.scale.load()))
     {
         g.status.unavailable = true;
         if (*g.status.reason == 0)
