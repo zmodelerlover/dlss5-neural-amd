@@ -1,7 +1,7 @@
 #pragma once
 // The bridge's settings on the wire, and the panel's copy of them. Both are generated from
 // settings_fields.inc, so each field has the same name and the same type on both sides and the copy
-// is a plain assignment. Kept here rather than in src/ui/: the panel knows nothing about the pipe.
+// is a plain assignment. Kept here rather than in core/ui/: the panel knows nothing about the pipe.
 #include "bridge_ipc.h"
 #include "../ui/panel_model.h"
 

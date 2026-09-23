@@ -65,7 +65,7 @@ def main(argv):
     digest = hashlib.sha256(bytes(data)).hexdigest()
     print(f"\nwrote:  {dst}")
     print(f"sha256: {digest}")
-    print("\nput this hash in kRuntimeSha256, in src/neural/neural.cpp:")
+    print("\nput this hash in kRuntimeSha256, in core/addon/neural.cpp:")
     print("{" + ", ".join("0x%02x" % b for b in bytes.fromhex(digest)) + "}")
     return 0
 

@@ -1,6 +1,6 @@
 """Compile the companion effect's pixel shaders, so a typo in it is not found in a game.
 
-shaders/AMD_Neural_Feed.fx is ReShade FX, not HLSL: build.ps1 never looks at it and fxc
+effects/AMD_Neural_Feed.fx is ReShade FX, not HLSL: build.ps1 never looks at it and fxc
 cannot read it, so until now the only thing that compiled it was ReShade, on the user's
 machine, after an install. This rewrites the ReShade-specific syntax into plain Shader Model 5
 -- samplers become a Texture2D plus a SamplerState, tex2Dlod becomes SampleLevel, uniforms
@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FX = ROOT / "shaders" / "AMD_Neural_Feed.fx"
+FX = ROOT / "effects" / "AMD_Neural_Feed.fx"
 
 # Entry point -> how many render targets its pass binds. Checked against the signature, because
 # a pass that binds three targets and a shader that writes two is a silent half-written texture.

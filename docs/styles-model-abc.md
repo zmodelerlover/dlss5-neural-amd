@@ -102,7 +102,7 @@ and there are two conventions for one field:
 RenoDX's string is *"Selects Neural Rendering Model A, Model B, or Model C through the prerelease
 DLSSNR.Style field."* Deep Fried Chicken's panel writes `NRStyle`, a three-entry combo; AMDNR-Feeder
 mirrors that panel one-for-one and has the list verbatim from the add-on's string table
-(`src/amd-nr-feed32.cpp`):
+(`core/amd-nr-feed32.cpp`):
 
 ```c
 static const char *const kNRStyleItems[] = { "Default", "Natural", "Cinematic" };

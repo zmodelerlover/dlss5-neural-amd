@@ -2,7 +2,7 @@
 // ReShade's ImGui for an add-on: imgui.h declares the API, reshade_overlay.hpp defines it as calls
 // through the function table ReShade hands over in register_addon. The table pointer is a static
 // inside an inline function, so every translation unit of one module shares the one instance --
-// the files in src/ui/ can be compiled separately and still draw into the overlay ReShade set up.
+// the files in core/ui/ can be compiled separately and still draw into the overlay ReShade set up.
 // No windows.h on this path, which is what lets the panel be syntax-checked on any compiler.
 #include <imgui.h>
 

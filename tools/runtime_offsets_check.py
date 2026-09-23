@@ -1,6 +1,6 @@
 """Check the add-on's hardcoded runtime offsets against the runtime binary itself.
 
-Every address in `src/neural/runtime_offsets.h` is a raw write into someone else's DLL, and a wrong
+Every address in `core/addon/runtime_offsets.h` is a raw write into someone else's DLL, and a wrong
 one does not fail politely -- it writes into read-only memory, or calls into the middle of an
 unrelated function. The only thing standing between a bad port and that used to be reading the
 disassembly carefully. This is that reading, written down so it runs.
@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-HEADER = ROOT / "src/neural/runtime_offsets.h"
+HEADER = ROOT / "core/addon/runtime_offsets.h"
 SOURCES = ROOT / "src"
 
 
@@ -106,7 +106,7 @@ def main(argv):
     # lets CI run it. No binary ships with this project, so everything below it cannot run there --
     # and this is the check that matters most, because the crash it catches survived a clean build,
     # a green suite and two code reviews.
-    print(f"{HEADER.relative_to(ROOT).as_posix()} and every source under src/\n")
+    print(f"{HEADER.relative_to(ROOT).as_posix()} and every source under core/\n")
     stray = stray_literals()
     check(not stray, f"no source file writes an offset of its own ({len(stray)} found)")
     for path, number, value in stray:
@@ -122,7 +122,7 @@ def main(argv):
     print(f"\n{dll}\n")
 
     # -- The file is the build these offsets belong to -------------------------------------------
-    source = (ROOT / "src/neural/neural.cpp").read_text(encoding="utf-8", errors="replace")
+    source = (ROOT / "core/addon/neural.cpp").read_text(encoding="utf-8", errors="replace")
     digest = re.search(r"kRuntimeSha256\[32\]\s*=\s*\{(.*?)\}", source, re.S)
     size = re.search(r"kRuntimeSize\s*=\s*(\d+)", source)
     want_sha = bytes(int(b, 16) for b in re.findall(r"0x([0-9a-fA-F]{2})", digest.group(1))).hex()

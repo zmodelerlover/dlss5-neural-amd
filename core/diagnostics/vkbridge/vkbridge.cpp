@@ -23,7 +23,7 @@
 //
 // Build:  .\build.ps1 -Target vkbridge -Exe      Run:  .\build\amd-nr-vkbridge.exe
 
-#include "../vkshared/vk_raw.inc"
+#include "../../shared/vk_raw.inc"
 
 #include <d3d12.h>
 #include <dxgi1_6.h>

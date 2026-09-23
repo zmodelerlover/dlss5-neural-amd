@@ -1,15 +1,15 @@
 from pathlib import Path
 import os,re,subprocess,tempfile,shutil
-r=Path(__file__).resolve().parents[1];n=r/'src/x86bridge';u=r/'src/ui'
+r=Path(__file__).resolve().parents[3];n=r/'core/x86bridge';u=r/'core/ui'
 read=lambda path:path.read_text(encoding='utf-8-sig')
 compiler=os.environ.get('CXX') or shutil.which('g++')
 if not compiler:raise SystemExit('Set CXX to a C++20 compiler')
-# The panel is one implementation in src/ui/, drawn by both routes. It needs no windows.h, so every
+# The panel is one implementation in core/ui/, drawn by both routes. It needs no windows.h, so every
 # file of it is compiled here against the real bundled imgui.h and ReShade's function table, with
 # the warnings that the MSVC build does not turn into errors.
 for f in sorted(u.rglob('*.cpp')):
  subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-fsyntax-only','-I'+str(r/'3rdparty/reshade'),str(f)],check=True)
-print('PASS shared panel source syntax against real bundled imgui.h and reshade_overlay.hpp, every file of src/ui')
+print('PASS shared panel source syntax against real bundled imgui.h and reshade_overlay.hpp, every file of core/ui')
 
 # The bridge hands the panel a copy of the wire settings and takes the edit back. Every field has
 # to survive the trip, the revision has to stay the wire's own, and the one panel-only field --

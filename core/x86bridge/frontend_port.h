@@ -5,7 +5,7 @@
 #include <reshade.hpp>
 
 #include "bridge_ipc.h"
-#include "../neural/hotkey_capture.h"
+#include "../shared/hotkey_capture.h"
 
 #include <cstdint>
 #include <mutex>

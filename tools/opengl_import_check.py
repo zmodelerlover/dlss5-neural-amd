@@ -16,7 +16,7 @@ What it proves:
     function pointers, because a bare call is a linked import. Comments and string literals are
     stripped first, so the loader's own `FromModule("glGetError", ...)` and the route's
     explanatory comments do not trip it.
-  * **No `#pragma comment(lib, ...)` names opengl32**, in any source under `src/`.
+  * **No `#pragma comment(lib, ...)` names opengl32**, in any source under `core/`.
   * **The build's link line does not name `opengl32.lib`.** One list of libraries serves every
     target in `build.ps1`, so adding it for `glinfo` or `glprobe` would put it in the add-on too.
   * Given a binary: **`opengl32.dll` appears in neither its import table nor its delay-load table**,
@@ -178,7 +178,7 @@ def main(argv):
         if not ok:
             bad.append(said)
 
-    print("every source under src/, and build.ps1\n")
+    print("every source under core/, and build.ps1\n")
 
     calls = bare_calls()
     check(not calls, f"no source calls a gl/wgl entry point by name ({len(calls)} found)")

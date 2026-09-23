@@ -2,7 +2,7 @@
 // What the panel reads and writes, and nothing else. The panel is one implementation shared by the
 // 64-bit add-on and the 32-bit bridge; each side fills these from what it has -- the engine's
 // atomics on one, the shadow of the helper's state on the other -- and applies back what changed.
-// Nothing in src/ui/ may know which side it is on except through the data here.
+// Nothing in core/ui/ may know which side it is on except through the data here.
 
 #include <cstdint>
 #include <string>
@@ -90,7 +90,7 @@ enum class GuideSource
 };
 
 // What the panel only shows. Where the two routes really differ, the difference is a field here,
-// never an #ifdef in src/ui/.
+// never an #ifdef in core/ui/.
 struct PanelStatus
 {
     RunState run = RunState::Ready;

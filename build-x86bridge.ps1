@@ -75,30 +75,30 @@ try {
         if(!(Test-Path -LiteralPath $cl)){throw "Missing native compiler: $cl"}
         $env:LIB=@((Join-Path $msvc.FullName "lib\$arch"),(Join-Path $SdkPath "Lib\$SdkVersion\ucrt\$arch"),(Join-Path $SdkPath "Lib\$SdkVersion\um\$arch")) -join ';'
         $proto=Join-Path $out "protocol-$arch.exe"
-        & $cl @flags (Join-Path $root 'src/x86bridge/protocol_test.cpp') "/Fo$out\protocol-$arch.obj" /link "/OUT:$proto" 2>&1 | Tee-Object -FilePath (Join-Path $out "protocol-build-$arch.log")
+        & $cl @flags (Join-Path $root 'core/x86bridge/protocol_test.cpp') "/Fo$out\protocol-$arch.obj" /link "/OUT:$proto" 2>&1 | Tee-Object -FilePath (Join-Path $out "protocol-build-$arch.log")
         if($LASTEXITCODE -ne 0){throw "Protocol compile failed: $arch"}
         & $proto | Tee-Object -FilePath (Join-Path $out "protocol-test-$arch.log")
         if($LASTEXITCODE -ne 0){throw "Protocol test failed: $arch"}
         $ioTest=Join-Path $out "io-test-$arch.exe"
-        & $cl @flags (Join-Path $root 'src/x86bridge/io_test.cpp') "/Fo$out\io-test-$arch.obj" /link "/OUT:$ioTest" 2>&1 | Tee-Object -FilePath (Join-Path $out "io-test-build-$arch.log")
+        & $cl @flags (Join-Path $root 'core/x86bridge/io_test.cpp') "/Fo$out\io-test-$arch.obj" /link "/OUT:$ioTest" 2>&1 | Tee-Object -FilePath (Join-Path $out "io-test-build-$arch.log")
         if($LASTEXITCODE -ne 0){throw "IPC test compile failed: $arch"}
         & $ioTest | Tee-Object -FilePath (Join-Path $out "io-test-$arch.log")
         if($LASTEXITCODE -ne 0){throw "IPC test failed: $arch"}
         $captureTest=Join-Path $out "capture-test-$arch.exe"
-        & $cl @flags (Join-Path $root 'src/x86bridge/capture_test.cpp') "/Fo$out\capture-test-$arch.obj" /link "/OUT:$captureTest" user32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out "capture-test-build-$arch.log")
+        & $cl @flags (Join-Path $root 'core/x86bridge/capture_test.cpp') "/Fo$out\capture-test-$arch.obj" /link "/OUT:$captureTest" user32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out "capture-test-build-$arch.log")
         if($LASTEXITCODE -ne 0){throw "Hotkey capture test compile failed: $arch"}
         & $captureTest | Tee-Object -FilePath (Join-Path $out "capture-test-$arch.log")
         if($LASTEXITCODE -ne 0){throw "Hotkey capture test failed: $arch"}
-        # The shared panel in src/ui is one object per file, and the x86 and x64 builds of the same
+        # The shared panel in core/ui is one object per file, and the x86 and x64 builds of the same
         # file share a name, so each architecture gets its own object folder.
         $obj=Join-Path $out "obj-$arch";New-Item -ItemType Directory -Force -Path $obj | Out-Null
-        $ui=Get-ChildItem (Join-Path $root 'src/ui') -Recurse -Filter *.cpp | ForEach-Object FullName
+        $ui=Get-ChildItem (Join-Path $root 'core/ui') -Recurse -Filter *.cpp | Where-Object { $_.Directory.Name -ne 'tests' } | ForEach-Object FullName
         if($arch -eq 'x86'){
             $binary=Join-Path $out 'amd-nr.addon32'
-            & $cl @flags /LD (Join-Path $root 'src/x86bridge/frontend32.cpp') (Join-Path $root 'src/x86bridge/panel32.cpp') $ui "/Fo$obj\" /link /DLL "/OUT:$binary" user32.lib d3d9.lib d3d11.lib dxgi.lib d3dcompiler.lib shell32.lib ole32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x86.log')
+            & $cl @flags /LD (Join-Path $root 'core/x86bridge/frontend32.cpp') (Join-Path $root 'core/x86bridge/panel32.cpp') $ui "/Fo$obj\" /link /DLL "/OUT:$binary" user32.lib d3d9.lib d3d11.lib dxgi.lib d3dcompiler.lib shell32.lib ole32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x86.log')
         }else{
             $binary=Join-Path $out 'amd-nr-host64.exe'
-            & $cl @flags (Join-Path $root 'src/x86bridge/host64.cpp') $ui "/Fo$obj\" /link "/OUT:$binary" user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x64.log')
+            & $cl @flags (Join-Path $root 'core/x86bridge/host64.cpp') $ui "/Fo$obj\" /link "/OUT:$binary" user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib 2>&1 | Tee-Object -FilePath (Join-Path $out 'build-x64.log')
         }
         if($LASTEXITCODE -ne 0){throw "Compile failed: $arch"}
         PE $binary $(if($arch -eq 'x86'){0x14c}else{0x8664})

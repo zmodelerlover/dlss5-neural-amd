@@ -1,6 +1,6 @@
 // Additive x64 process boundary. The upstream engine is compiled verbatim in this TU.
 #define AMDNR_WITH_VULKAN 0
-#include "../neural/neural.cpp"
+#include "../addon/neural.cpp"
 #include "bridge_io.h"
 #include "control_state.h"
 #include <stdexcept>

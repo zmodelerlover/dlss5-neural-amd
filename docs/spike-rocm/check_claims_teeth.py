@@ -17,7 +17,7 @@ blob = open(DLL, "rb").read()
 # C1 the running DLL is the PATCHED one, not the original the reports quote
 sha = hashlib.sha256(blob).hexdigest()
 patches = json.load(open(os.path.join(REPO, "tools/runtime-patches.json")))
-src = open(os.path.join(REPO, "src/neural/neural.cpp"), encoding="utf8", errors="ignore").read()
+src = open(os.path.join(REPO, "core/addon/neural.cpp"), encoding="utf8", errors="ignore").read()
 pin = "".join(re.findall(r"0x([0-9a-f]{2})", src.split("kRuntimeSha256[32] = {")[1].split("};")[0]))
 ck("C1 shipped DLL sha256 == neural.cpp kRuntimeSha256 (patched build)", sha == pin, sha[:16])
 ck("C1b shipped DLL sha256 != runtime-patches original_sha256", sha != patches["original_sha256"])
@@ -63,7 +63,7 @@ ck("C4b no CreateFence with D3D12_FENCE_FLAG_SHARED on g.fence",
    src.count("CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence))") == 2)
 
 # C5 the controls the add-on writes are the option struct, not the engine object
-off = open(os.path.join(REPO, "src/neural/runtime_offsets.h"), encoding="utf8", errors="ignore").read()
+off = open(os.path.join(REPO, "core/addon/runtime_offsets.h"), encoding="utf8", errors="ignore").read()
 ck("C5 kLocalTone is 0x97b30 (option struct), not 0x96f98 (engine object)",
    "kLocalTone = 0x97b30" in off and "0x96f98" not in off)
 

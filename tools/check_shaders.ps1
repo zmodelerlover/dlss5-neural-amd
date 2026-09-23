@@ -22,7 +22,7 @@ if ($sdk -and (Test-Path (Join-Path $sdk 'bin'))) {
 }
 if (-not $fxc) { throw 'fxc.exe not found. Install the Windows 10/11 SDK.' }
 
-$src = Get-Content (Join-Path $root 'src\neural\neural.cpp') -Raw
+$src = Get-Content (Join-Path $root 'core\addon\neural.cpp') -Raw
 $tmp = Join-Path $env:TEMP ('amd-nr-shaders-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 

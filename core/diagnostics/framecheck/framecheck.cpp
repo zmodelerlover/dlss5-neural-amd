@@ -6,7 +6,7 @@
 // textures plus capture.csv (formats/dimensions) and timings.csv (GPU and wall ms).
 // This includes the production implementation so experiments cannot silently use
 // a second copy of its shaders or runtime ABI. It never registers with ReShade.
-#include "../neural/neural.cpp"
+#include "../../addon/neural.cpp"
 #include <chrono>
 #include <stdexcept>
 

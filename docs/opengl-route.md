@@ -17,7 +17,7 @@ it came out of a run; where a rule appears, it cost something to learn.
 
 The network is not portable and is not ours. `InitEngine` writes an `ID3D12Device*` and an
 `ID3D12CommandQueue*` into fixed offsets inside `dlssnr_amd_pass1.dll` and matches a HIP device by
-LUID (`src/neural/neural.cpp`). That device is **ours** — `CreateWorkDevice` builds a private D3D12
+LUID (`core/addon/neural.cpp`). That device is **ours** — `CreateWorkDevice` builds a private D3D12
 device on the same adapter as the game — not the host's. Every route in this project is therefore
 the same idea with a different transport: get the presented frame onto our device, run the network,
 put the result back.
@@ -49,7 +49,7 @@ about 350 lines shorter than the Vulkan one despite doing more per frame.
 
 ## What the driver allows: `glprobe`
 
-`src/glprobe/glprobe.cpp`, built with `.\build.ps1 -Target glprobe -Exe`, answers the driver's half
+`core/diagnostics/glprobe/glprobe.cpp`, built with `.\build.ps1 -Target glprobe -Exe`, answers the driver's half
 of the question with no game and no ReShade. Vulkan could be asked with a query
 (`vkprobe`); OpenGL cannot — the extension string says which entry points exist, never whether an
 import will be refused — so this one builds the crossing for real and reports what happened. Every
@@ -88,7 +88,7 @@ The probe exits 0 when the route is possible, and prints a verdict either way.
 
 ## What ReShade hands an add-on: `glinfo`
 
-`src/glinfo/glinfo.cpp` is a small add-on that answers the other half, which needs a game. The
+`core/diagnostics/glinfo/glinfo.cpp` is a small add-on that answers the other half, which needs a game. The
 existing `probe` add-on cannot: it filters its inventory to `resource_type::texture_2d`, and under
 OpenGL nothing it sees is one — it reports "2 distinct render targets" and prints no rows.
 
@@ -134,8 +134,8 @@ both work on this driver in a 3.3 core context as well.
 
 ## The route
 
-`src/neural/gl_route.inc`, included from `neural.cpp` behind `AMDNR_WITH_OPENGL`
-(`src/neural/build_config.h`). Integration is five small edits, mirroring the Vulkan ones: the
+`core/transport/opengl/gl_route.inc`, included from `neural.cpp` behind `AMDNR_WITH_OPENGL`
+(`core/addon/build_config.h`). Integration is five small edits, mirroring the Vulkan ones: the
 include, the `device_api::opengl` branch in `OnPresent`, a call in `ReleaseSwapchainSized`, the API
 name in the status log, and the description string. There is no `DllMain` work at all — unlike
 Vulkan, nothing has to be arranged before the host's device exists.
@@ -403,9 +403,9 @@ In the order the value falls out:
 
 | Path | |
 |---|---|
-| `src/neural/gl_route.inc` | the route |
-| `src/neural/build_config.h` | `AMDNR_WITH_OPENGL` |
-| `src/neural/neural.cpp` | the branch in `OnPresent`, the teardown hook, `SelfIssued` |
-| `src/glprobe/glprobe.cpp` | the offline driver probe (`-Target glprobe -Exe`) |
-| `src/glinfo/glinfo.cpp` | the in-game ReShade probe (`-Target glinfo`) |
+| `core/transport/opengl/gl_route.inc` | the route |
+| `core/addon/build_config.h` | `AMDNR_WITH_OPENGL` |
+| `core/addon/neural.cpp` | the branch in `OnPresent`, the teardown hook, `SelfIssued` |
+| `core/diagnostics/glprobe/glprobe.cpp` | the offline driver probe (`-Target glprobe -Exe`) |
+| `core/diagnostics/glinfo/glinfo.cpp` | the in-game ReShade probe (`-Target glinfo`) |
 | `tools/opengl_import_check.py` | the contract test: nothing links to OpenGL, in source or in the built add-on |

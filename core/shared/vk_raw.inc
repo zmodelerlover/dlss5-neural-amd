@@ -10,7 +10,7 @@
 // is VkPhysicalDeviceProperties, which carries ~500 bytes of limits this code never touches --
 // that is a sized byte block with the two read fields taken at their spec offsets.
 //
-// Used by src/vkbridge (the transport harness) and by the add-on's Vulkan route.
+// Used by core/diagnostics/vkbridge (the transport harness) and by the add-on's Vulkan route.
 
 #pragma once
 

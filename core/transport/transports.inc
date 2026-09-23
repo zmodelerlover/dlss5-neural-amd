@@ -14,17 +14,17 @@ bool CrossingReady(swapchain *sc)
     return false;
 }
 
-#include "d3d12_guides.inc"
-#include "transport_d3d12.inc"
-#include "d3d11_guides.inc"
-#include "transport_d3d11.inc"
+#include "d3d12/d3d12_guides.inc"
+#include "d3d12/transport_d3d12.inc"
+#include "d3d11/d3d11_guides.inc"
+#include "d3d11/transport_d3d11.inc"
 #if AMDNR_WITH_VULKAN
-#include "vk_route.inc"
-#include "transport_vulkan.inc"
+#include "vulkan/vk_route.inc"
+#include "vulkan/transport_vulkan.inc"
 #endif
 #if AMDNR_WITH_OPENGL
-#include "gl_route.inc"
-#include "transport_opengl.inc"
+#include "opengl/gl_route.inc"
+#include "opengl/transport_opengl.inc"
 #endif
 
 // The one place that asks which API this is.

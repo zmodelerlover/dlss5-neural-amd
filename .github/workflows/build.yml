@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Test x86 bridge contracts and control flow
-        run: python3 tools/test-x86bridge.py
+        run: python3 core/x86bridge/tests/test-x86bridge.py
 
       # No runtime binary ships with this project, so the half of this check that reads one cannot
       # run here. The half that can is the one that matters: every address written into the runtime
@@ -107,7 +107,7 @@ jobs:
       # cascade tick shows its own control, Portuguese is complete, each button asks for its action.
       - name: The shared panel draws what each setting asks for
         run: |
-          g++ -std=c++20 -Wall -Wextra -Werror -I3rdparty/reshade tools/panel_check.cpp src/ui/*.cpp src/ui/*/*.cpp -o panel_check
+          g++ -std=c++20 -Wall -Wextra -Werror -I3rdparty/reshade core/ui/tests/panel_check.cpp core/ui/*.cpp core/ui/sections/*.cpp core/ui/widgets/*.cpp -o panel_check
           ./panel_check
 
       # 500 lines per file of our own. The ones already over it are grandfathered at their

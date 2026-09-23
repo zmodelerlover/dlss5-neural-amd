@@ -97,7 +97,7 @@ emulator, every game without one — the add-on has to *estimate* motion by comp
 and what it can afford next to the network is two levels of block matching with a search radius
 of four.
 
-A dedicated optical-flow shader is not on that budget. `shaders/AMD_Neural_Feed.fx` lets the
+A dedicated optical-flow shader is not on that budget. `effects/AMD_Neural_Feed.fx` lets the
 add-on read one instead, and passes ReShade's depth buffer along with it.
 
 1. Install a motion-vector shader. **iMMERSE Launchpad** is the default and runs an eight-level

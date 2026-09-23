@@ -1,15 +1,15 @@
 """Portable x86 bridge contract and control-flow tests. Not GPU validation."""
 from pathlib import Path
 import os,re,subprocess,tempfile,shutil
-root=Path(__file__).resolve().parents[1]
-new=root/'src/x86bridge'
+root=Path(__file__).resolve().parents[3]
+new=root/'core/x86bridge'
 read=lambda path:path.read_text(encoding='utf-8-sig')
 f=read(new/'frontend32.cpp');h=read(new/'host64.cpp');ipc=read(new/'bridge_ipc.h');io=read(new/'bridge_io.h')
 for word in ['d3d12','amdhip','dlssnr_amd_pass','Packet','RecordFn','ID3D11Device5','ID3D11DeviceContext4','OpenSharedFence','SetEventOnCompletion']:
  assert word.lower() not in f.lower(),word
 for word in ['VORT','Generic Depth','async_home','amd_last_nr','g.sent_n','retryAfter','soft_timeout','ping-pong']:
  assert word not in f+h+ipc+io,word
-assert '#include "../neural/neural.cpp"' in h and '#define AMDNR_WITH_VULKAN 0' in h
+assert '#include "../addon/neural.cpp"' in h and '#define AMDNR_WITH_VULKAN 0' in h
 assert h.count('DllMain(')==0
 assert 'EnumAdapterByLuid' in h and 'got.LowPart==luid.LowPart&&got.HighPart==luid.HighPart' in h
 assert 'DuplicateHandle(GetCurrentProcess(),source.handle.value,g.process.value' in f
@@ -130,11 +130,11 @@ for word in ['FrameFlagClassicD3D9','EfficientClassicD3D9Scale','D3D9 timing avg
  assert word not in f,word
 
 # Verify the copied job-pending decision has identical executable text to upstream.
-u=read(root/'src/neural/neural.cpp')
+u=read(root/'core/addon/neural.cpp')
 # Ends at RenderEffectsAheadOfNetwork rather than at the comment after it: that call is the
 # D3D12 route's own business and has no counterpart in the bridge, so including it made this
 # compare a policy against a policy plus one unrelated line.
-t=read(root/'src/neural/transport_d3d11.inc')
+t=read(root/'core/transport/d3d11/transport_d3d11.inc')
 a=t[t.index('    bool runNetwork = true;',t.index('void BridgePresent')):t.index('    RenderEffectsAheadOfNetwork',t.index('void BridgePresent'))]
 b=h[h.index('    bool runNetwork = true;'):h.index('    const UINT i =',h.index('    bool runNetwork = true;'))]
 normal=lambda s:re.sub(r'\s+','',re.sub(r'//[^\n]*','',s))
@@ -146,7 +146,7 @@ for src in (u,f):
   assert fn not in src,fn
 # The guide-depth shader is one header both routes include, so they cannot compile different ones.
 for src in (u,f):
- assert '#include "../core/shaders/guide_depth.h"' in src and 'constexpr char kGuideDepthCs' not in src
+ assert '#include "../shaders/guide_depth.h"' in src and 'constexpr char kGuideDepthCs' not in src
 
 transport=h[h.index('    Result CopyOnly()'):h.index('    Result Neural()')]
 for call in ['InitHip(','InitEngine(','BringUpEngines(','RecordNetwork(','LoadLibrary','RuntimeHashMatches(']:assert call not in transport
@@ -205,6 +205,6 @@ int main(){char b[19]{};HANDLE pipe=reinterpret_cast<HANDLE>(2),peer=reinterpret
  subprocess.run([str(p/'io')],check=True)
 print('UNVALIDATED here: native MSVC/PE checks run in the Windows build; real ReShade/GPU/HIP/resize/crash tests remain manual.')
 
-subprocess.run([__import__('sys').executable,str(root/'tools/test-x86bridge-v2.py')],check=True)
+subprocess.run([__import__('sys').executable,str(root/'core/x86bridge/tests/test-x86bridge-v2.py')],check=True)
 
-subprocess.run([__import__('sys').executable,str(root/'tools/test-x86bridge-factory.py')],check=True)
+subprocess.run([__import__('sys').executable,str(root/'core/x86bridge/tests/test-x86bridge-factory.py')],check=True)

@@ -2,7 +2,7 @@
 //
 // Both defects this replaced are asserted here: the overlay key binding itself because the scan
 // started while it was still held, and a modifier alone being taken for a binding.
-#include "../neural/hotkey_capture.h"
+#include "../shared/hotkey_capture.h"
 
 #include <cassert>
 #include <cstdio>

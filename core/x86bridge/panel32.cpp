@@ -1,4 +1,4 @@
-// The 32-bit side of the shared panel in src/ui/. The panel draws from a copy of the helper's
+// The 32-bit side of the shared panel in core/ui/. The panel draws from a copy of the helper's
 // settings and reports what the helper said; this fills both, and turns what the person did into
 // requests the present path carries across. The overlay never talks on the pipe.
 #include <imgui.h>

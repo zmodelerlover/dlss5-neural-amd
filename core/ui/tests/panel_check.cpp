@@ -4,10 +4,10 @@
 // Defaults keeps -- then runs in a second with no game open. What only the game can show (the
 // engine, the pipe, the ini on disk) stays on the bench.
 //
-//   g++ -std=c++20 -I3rdparty/reshade tools/panel_check.cpp src/ui/*.cpp src/ui/*/*.cpp -o panel_check
-#include "../src/ui/imgui_api.h"
-#include "../src/ui/panel.h"
-#include "../src/ui/view_logic.h"
+//   g++ -std=c++20 -I3rdparty/reshade core/ui/tests/panel_check.cpp core/ui/*.cpp core/ui/sections/*.cpp core/ui/widgets/*.cpp -o panel_check
+#include "../imgui_api.h"
+#include "../panel.h"
+#include "../view_logic.h"
 
 #include <cstdarg>
 #include <cstdio>

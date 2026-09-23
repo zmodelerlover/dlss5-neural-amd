@@ -13,20 +13,20 @@
 #include <wrl/client.h>
 
 #include "build_config.h"
-#include "hotkey_capture.h"
-#include "ini_text.h"
-#include "log_export.h"
-#include "guide_choice.h"
+#include "../shared/hotkey_capture.h"
+#include "../shared/ini_text.h"
+#include "../shared/log_export.h"
+#include "../shared/guide_choice.h"
 #include "../ui/panel.h"
-#include "../core/shaders/guide_depth.h"
-#include "../core/shaders/motion.h"
-#include "../core/shaders/compose.h"
-#include "../core/shaders/input.h"
+#include "../shaders/guide_depth.h"
+#include "../shaders/motion.h"
+#include "../shaders/compose.h"
+#include "../shaders/input.h"
 #include "../ui/panel_model.h"
 #include "../ui/view_logic.h"
 #if AMDNR_WITH_VULKAN
 #include <MinHook.h>
-#include "../vkshared/vk_raw.inc"
+#include "../shared/vk_raw.inc"
 #endif
 
 #include <windows.h>
@@ -55,7 +55,7 @@ using namespace reshade::api;
 namespace
 {
 
-#include "transport.h"
+#include "../transport/transport.h"
 
 enum class Tier
 {
@@ -633,7 +633,7 @@ bool ScreenShaped(UINT64 w, UINT h, UINT screenW, UINT screenH)
 
 
 // The optional-control bits (ui::Opt), the section hues, T and the widgets are the panel's, in
-// src/ui/, shared with the 32-bit bridge. Unqualified here so the code that reads them reads the
+// core/ui/, shared with the 32-bit bridge. Unqualified here so the code that reads them reads the
 // same as it did when they were defined in this file.
 using namespace ui;
 
@@ -1008,7 +1008,7 @@ struct State
     Guide guideMotion { "motion" };
     ComPtr<ID3D11ComputeShader> guideDepthCs;
     bool guideDepthCsFailed = false;
-    // The companion effect, shaders/AMD_Neural_Feed.fx, when the user has installed it. It
+    // The companion effect, effects/AMD_Neural_Feed.fx, when the user has installed it. It
     // hands over a real optical-flow field -- iMMERSE Launchpad runs an eight-level pyramid,
     // against the two levels and radius of four this add-on can afford next to the network --
     // and ReShade's own depth buffer, which is curated per game in a way the bind observation
@@ -4356,7 +4356,7 @@ bool BringUpEngines(UINT &wanted)
     return true;
 }
 
-#include "transports.inc"
+#include "../transport/transports.inc"
 
 // Which D3D12 buffer is the scene depth, decided once per present.
 //
@@ -4741,7 +4741,7 @@ void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)
 // still writes it back. What went is the widget, and with it the chance of somebody dragging a
 // slider whose effect nobody here has established into a state that makes the add-on look broken.
 //
-// The panel itself is src/ui/, shared with the 32-bit bridge. This is the 64-bit side of it: fill
+// The panel itself is core/ui/, shared with the 32-bit bridge. This is the 64-bit side of it: fill
 // the panel's copy from the engine, draw, write back what changed, carry out what was asked.
 void OnOverlay(effect_runtime *runtime)
 {

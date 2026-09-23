@@ -17,12 +17,12 @@
 #include <string>
 #include "bridge_io.h"
 #include "control_state.h"
-#include "../neural/hotkey_capture.h"
-#include "../neural/ini_text.h"
+#include "../shared/hotkey_capture.h"
+#include "../shared/ini_text.h"
 #include "frontend_port.h"
-#include "../core/shaders/guide_depth.h"
-#include "../neural/log_export.h"
-#include "../neural/guide_choice.h"
+#include "../shaders/guide_depth.h"
+#include "../shared/log_export.h"
+#include "../shared/guide_choice.h"
 #include <cstring>
 using Microsoft::WRL::ComPtr;
 using namespace reshade::api;

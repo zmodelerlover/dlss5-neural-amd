@@ -99,20 +99,20 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # source move or split without the target's name having to follow it.
 $minHook = @('buffer.c', 'hook.c', 'trampoline.c', 'hde\hde64.c') |
     ForEach-Object { "3rdparty\minhook\src\$_" }
-# The panel, shared with the 32-bit bridge. Every .cpp under src\ui, so a new widget or section is a
+# The panel, shared with the 32-bit bridge. Every .cpp under core\ui but its tests, so a new widget or section is a
 # new file and nothing here. Object files land flat in build\, so no two of them may share a name.
-$ui = Get-ChildItem (Join-Path $root 'src\ui') -Recurse -Filter *.cpp |
+$ui = Get-ChildItem (Join-Path $root 'core\ui') -Recurse -Filter *.cpp | Where-Object { $_.Directory.Name -ne 'tests' } |
     ForEach-Object { $_.FullName.Substring($root.Length + 1) }
 $targets = @{
-    'neural'     = @('src\neural\neural.cpp') + $ui + $minHook
+    'neural'     = @('core\addon\neural.cpp') + $ui + $minHook
     # framecheck includes neural.cpp directly so it has the same Vulkan hook references as the add-on.
-    'framecheck' = @('src\framecheck\framecheck.cpp') + $ui + $minHook
-    'probe'      = @('src\probe\probe.cpp')
-    'session'    = @('src\session\session.cpp')
-    'glinfo'     = @('src\glinfo\glinfo.cpp')
-    'glprobe'    = @('src\glprobe\glprobe.cpp')
-    'vkprobe'    = @('src\vkprobe\vkprobe.cpp')
-    'vkbridge'   = @('src\vkbridge\vkbridge.cpp')
+    'framecheck' = @('core\diagnostics\framecheck\framecheck.cpp') + $ui + $minHook
+    'probe'      = @('core\diagnostics\probe\probe.cpp')
+    'session'    = @('core\diagnostics\session\session.cpp')
+    'glinfo'     = @('core\diagnostics\glinfo\glinfo.cpp')
+    'glprobe'    = @('core\diagnostics\glprobe\glprobe.cpp')
+    'vkprobe'    = @('core\diagnostics\vkprobe\vkprobe.cpp')
+    'vkbridge'   = @('core\diagnostics\vkbridge\vkbridge.cpp')
 }
 if (-not $targets.ContainsKey($Target)) {
     throw "unknown target '$Target'; known: $(($targets.Keys | Sort-Object) -join ', ')"

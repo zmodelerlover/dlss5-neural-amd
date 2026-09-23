@@ -1,11 +1,11 @@
 """Compile the actual additive host factory methods against captured upstream defaults."""
 from pathlib import Path
 import os,re,subprocess,tempfile,shutil
-r=Path(__file__).resolve().parents[1];n=r/'src/x86bridge'
+r=Path(__file__).resolve().parents[3];n=r/'core/x86bridge'
 read=lambda path:path.read_text(encoding='utf-8-sig')
 compiler=os.environ.get('CXX') or shutil.which('g++')
 if not compiler:raise SystemExit('Set CXX to a C++20 compiler')
-h=read(n/'host64.cpp');u=read(r/'src/neural/neural.cpp');front=read(n/'frontend32.cpp')
+h=read(n/'host64.cpp');u=read(r/'core/addon/neural.cpp');front=read(n/'frontend32.cpp')
 adapter=read(n/'panel32.cpp')
 fields=re.findall(r'^X\((\w+), (\w+),', read(n/'settings_fields.inc'), re.M)
 # Every test initial value comes from the original State declaration, not a second default table.

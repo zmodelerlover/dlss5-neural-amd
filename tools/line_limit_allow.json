@@ -1,11 +1,11 @@
 {
-  "src/glprobe/glprobe.cpp": 1886,
-  "src/neural/gl_route.inc": 1365,
-  "src/neural/neural.cpp": 4878,
-  "src/neural/vk_route.inc": 1152,
-  "src/session/session.cpp": 1129,
-  "src/vkbridge/vkbridge.cpp": 687,
-  "src/vkprobe/vkprobe.cpp": 579,
-  "src/vkshared/vk_raw.inc": 751,
-  "src/x86bridge/frontend32.cpp": 1304
+  "core/diagnostics/glprobe/glprobe.cpp": 1886,
+  "core/transport/opengl/gl_route.inc": 1365,
+  "core/addon/neural.cpp": 4878,
+  "core/transport/vulkan/vk_route.inc": 1152,
+  "core/diagnostics/session/session.cpp": 1129,
+  "core/diagnostics/vkbridge/vkbridge.cpp": 687,
+  "core/diagnostics/vkprobe/vkprobe.cpp": 579,
+  "core/shared/vk_raw.inc": 751,
+  "core/x86bridge/frontend32.cpp": 1304
 }
