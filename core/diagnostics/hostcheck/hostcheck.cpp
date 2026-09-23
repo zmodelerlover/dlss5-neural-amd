@@ -1,15 +1,17 @@
 // hostcheck -- the smallest host each graphics API allows, presenting one fixed frame forever.
 //
 // framecheck proves the network pipeline without a host; this proves the transports, which only
-// exist inside one. Run with ReShade beside the exe (dxgi.dll, or opengl32.dll for OpenGL; the
-// Vulkan layer is registered system-wide), amd-nr.addon64 and hostcheck-capture.addon64 in its
-// add-on path. The capture add-on writes the composed back buffer to HOSTCHECK_OUT; the host
-// quits when that file appears. Comparing two add-on builds is then a byte compare per API.
+// exist inside one. Run with ReShade beside the exe (dxgi.dll, d3d9.dll for D3D9, opengl32.dll
+// for OpenGL; the Vulkan layer is registered system-wide), the add-on and the capture add-on in
+// its add-on path. Built x86 (build.ps1 -Arch x86), the same host drives the 32-bit bridge:
+// amd-nr.addon32 with its amd-nr-host64.exe. The capture add-on writes the composed back buffer
+// to HOSTCHECK_OUT, and the host quits when that file appears.
 //
-//   amd-nr-hostcheck.exe d3d11|d3d12|vulkan|opengl frame.ppm
+//   amd-nr-hostcheck.exe d3d9|d3d11|d3d12|vulkan|opengl frame.ppm
 //
 // The window sits off every monitor and never takes focus: nothing shows on the desktop.
 #include <windows.h>
+#include <wrl/client.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -87,6 +89,7 @@ int Loop(const std::function<bool()> &present)
     return 4;
 }
 
+int RunD3D9(const Image &img);
 int RunD3D11(const Image &img);
 int RunD3D12(const Image &img);
 int RunVulkan(const Image &img);
@@ -94,6 +97,7 @@ int RunOpenGL(const Image &img);
 
 } // namespace hostcheck
 
+#include "host_d3d9.inc"
 #include "host_d3d11.inc"
 #include "host_d3d12.inc"
 #include "host_opengl.inc"
@@ -104,11 +108,12 @@ int wmain(int argc, wchar_t **argv)
     using namespace hostcheck;
     Image img;
     if (argc != 3 || !LoadPpm(argv[2], img)) {
-        std::fprintf(stderr, "usage: amd-nr-hostcheck.exe d3d11|d3d12|vulkan|opengl frame.ppm\n");
+        std::fprintf(stderr, "usage: amd-nr-hostcheck.exe d3d9|d3d11|d3d12|vulkan|opengl frame.ppm\n");
         return 2;
     }
     const std::wstring api = argv[1];
-    const int result = api == L"d3d11"    ? RunD3D11(img)
+    const int result = api == L"d3d9"     ? RunD3D9(img)
+                       : api == L"d3d11"  ? RunD3D11(img)
                        : api == L"d3d12"  ? RunD3D12(img)
                        : api == L"vulkan" ? RunVulkan(img)
                        : api == L"opengl" ? RunOpenGL(img)

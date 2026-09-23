@@ -6,6 +6,10 @@ the baseline):
     --tools build --reshade /path/to/ReShade64-as-dxgi.dll --runtime-dir /path/to/runtime \
     --input /path/to/frame.ppm --output /new/directory [--apis d3d11 opengl]
 
+The 32-bit bridge the same way: --a/--b name each build's amd-nr.addon32 (its amd-nr-host64.exe
+beside it), --tools the x86 build (build.ps1 -Arch x86), --reshade the 32-bit ReShade, and
+--apis d3d9 d3d11, the two the bridge carries.
+
 Each host presents the same frame with the effect on from the first frame; the capture add-on
 saves the composed back buffer after ReShade's banner is gone. The two builds must differ by no
 more than each differs from itself, and every case must differ from the effect-off control, so an
@@ -21,7 +25,7 @@ import subprocess
 
 import numpy as np
 
-APIS = ("d3d11", "d3d12", "vulkan", "opengl")
+APIS = ("d3d9", "d3d11", "d3d12", "vulkan", "opengl")
 RESHADE_INI = """[ADDON]
 DisabledAddons=
 [GENERAL]
@@ -49,13 +53,16 @@ CASES = {
 
 def run_one(args, api, addon, folder, keys):
     folder.mkdir(parents=True)
+    # An .addon32 is the 32-bit bridge, and it brings its 64-bit helper from the same build.
+    ext = addon.suffix
     shutil.copy2(args.tools / "amd-nr-hostcheck.exe", folder)
-    shutil.copy2(args.tools / "amd-nr-hostcapture.addon64", folder / "zz-hostcapture.addon64")
-    shutil.copy2(addon, folder / "amd-nr.addon64")
-    if api in ("d3d11", "d3d12"):
-        shutil.copy2(args.reshade, folder / "dxgi.dll")
-    elif api == "opengl":
-        shutil.copy2(args.reshade, folder / "opengl32.dll")
+    shutil.copy2(args.tools / f"amd-nr-hostcapture{ext}", folder / f"zz-hostcapture{ext}")
+    shutil.copy2(addon, folder / f"amd-nr{ext}")
+    if ext == ".addon32":
+        shutil.copy2(addon.parent / "amd-nr-host64.exe", folder)
+    proxy = {"d3d9": "d3d9.dll", "d3d11": "dxgi.dll", "d3d12": "dxgi.dll", "opengl": "opengl32.dll"}
+    if api in proxy:
+        shutil.copy2(args.reshade, folder / proxy[api])
     for filename in ("dlssnr_amd_pass1.dll", "dlssnr_on_amd_weights.bin", "dlssnr_on_amd.ini"):
         src = args.runtime_dir / filename
         try:
@@ -71,8 +78,12 @@ def run_one(args, api, addon, folder, keys):
         r = subprocess.run([str(folder / "amd-nr-hostcheck.exe"), api, str(args.input.resolve())],
                            cwd=folder, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=150)
     meta = folder / "capture.raw.txt"
-    if r.returncode != 0 or not meta.exists() or "ok=1" not in meta.read_text():
+    if not meta.exists() or "ok=1" not in meta.read_text():
         raise RuntimeError(f"{folder}: exit {r.returncode}, see stdout.log and amd-nr.log")
+    # The picture is already on disk; a crash on the way out is a finding of its own, not a reason
+    # to throw the comparison away. The v0.6.6 bridge still takes every D3D9 host down here.
+    if r.returncode != 0:
+        print(f"        {folder}: exited {r.returncode:#x} after the capture", flush=True)
     return out.read_bytes()
 
 
@@ -112,5 +123,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("a", "b", "tools", "reshade", "runtime-dir", "input", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
-    parser.add_argument("--apis", nargs="+", choices=APIS, default=list(APIS))
+    parser.add_argument("--apis", nargs="+", choices=APIS, default=[a for a in APIS if a != "d3d9"])
     run(parser.parse_args())

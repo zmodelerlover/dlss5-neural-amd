@@ -11,7 +11,10 @@ param(
     [string]$SdkVersion = '',
     # Targets are ReShade add-ons by default. -Exe builds a console program instead, for the
     # harnesses that answer a question without needing a host to inject into.
-    [switch]$Exe
+    [switch]$Exe,
+    # x86 is for the hostcheck pair only, which drives the 32-bit bridge the way the x64 pair
+    # drives the add-on. The bridge itself builds through build-x86bridge.ps1.
+    [ValidateSet('x64', 'x86')][string]$Arch = 'x64'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,7 +50,7 @@ if (-not $VsPath) {
 $msvcRoot = Join-Path $VsPath 'VC\Tools\MSVC'
 if (-not (Test-Path $msvcRoot)) { throw "MSVC tools not found under $msvcRoot" }
 $msvc = Get-ChildItem $msvcRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
-$cl = Join-Path $msvc.FullName 'bin\Hostx64\x64\cl.exe'
+$cl = Join-Path $msvc.FullName "bin\Hostx64\$Arch\cl.exe"
 if (-not (Test-Path $cl)) { throw "cl.exe not found at $cl" }
 
 # --- Windows SDK -------------------------------------------------------------------------
@@ -85,13 +88,14 @@ $env:INCLUDE = @(
 ) -join ';'
 
 $env:LIB = @(
-    (Join-Path $msvc.FullName 'lib\x64')
-    (Join-Path $SdkPath "Lib\$SdkVersion\ucrt\x64")
-    (Join-Path $SdkPath "Lib\$SdkVersion\um\x64")
+    (Join-Path $msvc.FullName "lib\$Arch")
+    (Join-Path $SdkPath "Lib\$SdkVersion\ucrt\$Arch")
+    (Join-Path $SdkPath "Lib\$SdkVersion\um\$Arch")
 ) -join ';'
 
 # --- compile -----------------------------------------------------------------------------
-$out = Join-Path $root 'build'
+# x86 objects share their names with the x64 ones, so they get a folder of their own.
+$out = Join-Path $root $(if ($Arch -eq 'x86') { 'build\x86' } else { 'build' })
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 # Every target names its own sources. The path used to be derived as src\<target>\<target>.cpp,
@@ -125,7 +129,7 @@ foreach ($s in $sources) { if (-not (Test-Path $s)) { throw "source not found: $
 # The neural add-on is the product and carries the product's name; every other target is a
 # diagnostic and keeps its own, prefixed.
 $stem = if ($Target -eq 'neural') { 'amd-nr' } else { "amd-nr-$Target" }
-$dll = Join-Path $out $(if ($Exe) { "$stem.exe" } else { "$stem.addon64" })
+$dll = Join-Path $out $(if ($Exe) { "$stem.exe" } elseif ($Arch -eq 'x86') { "$stem.addon32" } else { "$stem.addon64" })
 
 Push-Location $out
 try {

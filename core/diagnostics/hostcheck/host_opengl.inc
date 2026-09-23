@@ -47,6 +47,10 @@ int hostcheck::RunOpenGL(const Image &img)
     const size_t row = static_cast<size_t>(img.w) * 4;
     for (UINT y = 0; y < img.h; ++y)
         std::memcpy(&flipped[y * row], &img.rgba[(img.h - 1 - y) * row], row);
+    // Paced to the display like the other hosts, so the captured frame lands at the same time too.
+    auto getProc = reinterpret_cast<PROC(WINAPI *)(LPCSTR)>(fn("wglGetProcAddress"));
+    if (auto swapInterval = reinterpret_cast<BOOL(WINAPI *)(int)>(getProc("wglSwapIntervalEXT")))
+        swapInterval(1);
     viewport(0, 0, img.w, img.h);
     pixelStore(GL_UNPACK_ALIGNMENT, 1);
     return Loop([&] {
