@@ -5,7 +5,8 @@ r=Path(__file__).resolve().parents[1];n=r/'src/x86bridge'
 read=lambda path:path.read_text(encoding='utf-8-sig')
 compiler=os.environ.get('CXX') or shutil.which('g++')
 if not compiler:raise SystemExit('Set CXX to a C++20 compiler')
-h=read(n/'host64.cpp');u=read(r/'src/neural/neural.cpp');ui=read(n/'overlay32.inc');front=read(n/'frontend32.cpp')
+h=read(n/'host64.cpp');u=read(r/'src/neural/neural.cpp');front=read(n/'frontend32.cpp')
+adapter=read(n/'panel32.cpp')
 fields=re.findall(r'^X\((\w+), (\w+),', read(n/'settings_fields.inc'), re.M)
 # Every test initial value comes from the original State declaration, not a second default table.
 initial=[]
@@ -61,5 +62,5 @@ with tempfile.TemporaryDirectory(prefix='factory-test-') as d:
  subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-I'+str(n),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],cwd=p,check=True)
 assert 'CaptureFactoryDefaults();EnsureX86Ini();LoadSettings();' in h
-assert 'controls.factory=true' in ui and 'Kind::Command,&c,sizeof(c),true' in front
+assert 'controls.factory=true' in adapter and 'Kind::Command,&c,sizeof(c),true' in front
 print('PASS factory: captured original defaults, x86 overrides, preferences preserved, history reset once, INI byte-identical, snapshot updated, replay rejected; actual host methods compiled/executed with engine atomics doubled')

@@ -19,6 +19,8 @@
 #include "control_state.h"
 #include "../neural/hotkey_capture.h"
 #include "../neural/ini_text.h"
+#include "frontend_port.h"
+#include "../neural/log_export.h"
 #include <cstring>
 using Microsoft::WRL::ComPtr;
 using namespace reshade::api;
@@ -284,19 +286,8 @@ struct StageProbe {
 // outlast the gap between the overlay's draw callbacks, which is far longer than a frame:
 // 672 ms was measured with the panel open, against the 500 ms this used to allow.
 constexpr uint64_t kCaptureIdleMs=3000;
-struct Controls32 {
-    x86bridge::WireSettings shadow{};x86bridge::WireStatus status{};
-    bool synced=false,syncRequested=false,save=false,reload=false,factory=false,measure=false,preSyncEnableChanged=false;
-    // The log export the panel's button asks for, and what to tell the person afterwards. The
-    // copying itself happens on the present path with the other control traffic: the overlay
-    // callback owns no transaction, here or anywhere else.
-    bool exportLogs=false,exportFailed=false;std::wstring exportedPath;
-    hotkey::Capture capture;
-    // Stamped by the overlay callback, the only place ReShade hands a runtime over. The key
-    // scan runs on the present path and needs it to read ReShade's own key state.
-    effect_runtime* runtime=nullptr;
-    uint64_t sentRevision=0,savedRevision=0,commandId=0,lastStatusAt=0,overlayAt=0;
-} controls;
+// The control traffic lives in frontend_port.h, shared with the panel adapter in panel32.cpp.
+using frontend32::Controls32;using frontend32::controls;
 void OperationalSettings(){
     const auto& s=controls.shadow;
     if(g.toggleKey!=s.toggleKey||g.toggleMods!=s.toggleMods)g.keyDown=true;
@@ -310,7 +301,7 @@ void OperationalChanged(){
 }
 void StopHost(){
     // A fatal partial operation is never followed by texture reuse in a new frame.
-    controls.synced=false;controls.status={};controls.save=controls.reload=controls.factory=controls.measure=false;controls.capture.Cancel();
+    controls.synced=false;controls.status={};controls.save=controls.reload=controls.factory=controls.measure=controls.liftCap=false;controls.capture.Cancel();
     g.pipe.reset();if(g.process&&WaitForSingleObject(g.process.value,0)!=WAIT_OBJECT_0){
         TerminateProcess(g.process.value,7);WaitForSingleObject(g.process.value,x86bridge::IpcTimeoutMs);
     }
@@ -1031,34 +1022,14 @@ bool StateRequest(x86bridge::Kind kind,const void* body=nullptr,uint32_t bytes=0
     if(replace){controls.shadow=snapshot.settings;controls.sentRevision=snapshot.settings.settings_revision;controls.synced=true;OperationalSettings();}
     return true;
 }
-// Copies this run's logs and the settings that produced them to a dated folder on the desktop,
-// the same button the 64-bit panel has. Two differences, both from the shape of this route: there
-// are two logs rather than one, and they are not in the same place -- the frontend writes beside
-// the add-on, the helper writes beside the game -- so each name is looked for in both.
-//
-// SHGetKnownFolderPath rather than %USERPROFILE%\Desktop: a desktop redirected into OneDrive is
-// ordinary now, and the guessed path would silently write somewhere nobody looks.
+// The same export the 64-bit panel has (log_export.h), with this route's two logs, looked for both
+// beside the add-on and beside the game.
 std::wstring ExportBridgeLogs(){
-    PWSTR desktop=nullptr;
-    if(FAILED(SHGetKnownFolderPath(FOLDERID_Desktop,0,nullptr,&desktop)))return L"";
-    std::filesystem::path out(desktop);CoTaskMemFree(desktop);
-    wchar_t stamp[32]{};SYSTEMTIME now{};GetLocalTime(&now);
-    std::swprintf(stamp,32,L"amd-nr-logs-%04u%02u%02u-%02u%02u%02u",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond);
-    out/=stamp;
-    std::error_code ec;std::filesystem::create_directories(out,ec);if(ec)return L"";
     wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);
-    const std::filesystem::path places[]{Directory(),std::filesystem::path(exe).parent_path()};
-    const wchar_t* wanted[]{L"amd-nr-x86.log",L"amd-nr-x86-host.log",L"dlssnr_on_amd.log",L"ReShade.log",L"amd-nr.ini"};
-    int copied=0;
-    for(const wchar_t* name:wanted)for(const auto& dir:places){
-        const auto from=dir/name;
-        if(!std::filesystem::exists(from,ec))continue;
-        std::filesystem::copy_file(from,out/name,std::filesystem::copy_options::overwrite_existing,ec);
-        if(!ec){++copied;break;}
-    }
-    if(copied==0){std::filesystem::remove(out,ec);return L"";}
-    Log("menu: exported %d file(s) to %ls",copied,out.c_str());
-    return out.wstring();
+    const auto r=logexport::ToDesktop({Directory(),std::filesystem::path(exe).parent_path()},
+        {L"amd-nr-x86.log",L"amd-nr-x86-host.log",L"dlssnr_on_amd.log",L"ReShade.log",L"amd-nr.ini"});
+    if(r.copied!=0)Log("menu: exported %d file(s) to %ls",r.copied,r.folder.c_str());
+    return r.folder.wstring();
 }
 // Called only from OnPresent, with g.lock held. Never from ImGui or a worker.
 bool SyncControls(){
@@ -1087,6 +1058,11 @@ bool SyncControls(){
         if(!StateRequest(Kind::Command,&c,sizeof(c),true))return false;controls.factory=false;}
     if(controls.measure){x86bridge::WireCommand c;c.id=++controls.commandId;
         if(!StateRequest(Kind::Command,&c,sizeof(c)))return false;controls.measure=false;}
+    // Letting go of Scale on the value it already had. A helper older than this command refuses it,
+    // and that costs the lift and nothing else, so a refusal here is not a fault: the status request
+    // below is what finds a pipe that has really gone.
+    if(controls.liftCap){x86bridge::WireCommand c;c.id=++controls.commandId;c.code=x86bridge::CommandCode::LiftScaleCap;
+        StateRequest(Kind::Command,&c,sizeof(c));controls.liftCap=false;}
     const uint64_t now=GetTickCount64();
     if(now-controls.lastStatusAt>=250){if(!StateRequest(Kind::Status))return false;controls.lastStatusAt=now;}
     return true;
@@ -1114,7 +1090,6 @@ void SetAsync(bool async){
     WritePrivateProfileStringW(L"amd-nr",L"Async",async?L"1":L"0",
         (Directory()/L"amd-nr.ini").wstring().c_str());
 }
-#include "overlay32.inc"
 void ClearGuide(Guide& v){
     v.chosen.Reset();v.snap.Reset();v.srv.Reset();v.uav.Reset();v.bridge.Destroy();
     v.challenger=nullptr;v.challengerFrames=0;v.chosenBinds=0;v.width=v.height=v.snapW=v.snapH=0;
@@ -1422,6 +1397,27 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
 }
 extern "C" __declspec(dllexport) const char* NAME="AMD Neural Rendering (32-bit)";
 extern "C" __declspec(dllexport) const char* DESCRIPTION="Native D3D9/D3D11 x86 to original x64 neural engine; same-frame CPU barriers.";
+// The frontend's side of frontend_port.h: the few things the panel adapter reads or switches.
+namespace frontend32 {
+Controls32 controls;
+std::mutex& FrameLock(){return g.lock;}
+bool HostFailed(){return g.failed;}
+void RetryHost(){g.failed=false;}
+bool Pipelined(){return g.async;}
+void SwitchPipelining(bool on){SetAsync(on);}
+void ApplyOperational(){OperationalSettings();}
+std::vector<std::string> GuideCandidates(){
+    std::vector<std::string> lines;char line[128];
+    for(const Guide* v:{&g.guideDepth,&g.guideMotion}){
+        std::snprintf(line,sizeof(line),"%s candidate=%d %ux%u format=%u last_capture_valid=%d",
+                      v==&g.guideDepth?"Depth":"Motion",v->chosen.Get()!=nullptr,v->width,v->height,
+                      static_cast<unsigned>(v->format),v->ready);
+        lines.push_back(line);
+    }
+    return lines;
+}
+} // namespace frontend32
+using frontend32::OnOverlay32;
 BOOL APIENTRY DllMain(HMODULE module,DWORD reason,LPVOID){
     if(reason==DLL_PROCESS_ATTACH){
         addonModule=module;

@@ -7,6 +7,5 @@
   "src/vkbridge/vkbridge.cpp": 687,
   "src/vkprobe/vkprobe.cpp": 579,
   "src/vkshared/vk_raw.inc": 751,
-  "src/x86bridge/frontend32.cpp": 1445,
-  "src/x86bridge/overlay32.inc": 1508
+  "src/x86bridge/frontend32.cpp": 1445
 }

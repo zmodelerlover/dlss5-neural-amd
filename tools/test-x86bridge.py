@@ -88,7 +88,7 @@ assert 'L"Async",1,ini.c_str()' in f
 # persists one key rather than rewriting the file, which would drop Timing and the helper's own
 # settings. It must not issue IPC or GPU work: the switch costs at most one frame either way
 # precisely because nothing has to be reconciled.
-setasync=f[f.index('void SetAsync(bool async){'):f.index('#include "overlay32.inc"')]
+setasync=f[f.index('void SetAsync(bool async){'):f.index('void ClearGuide(')]
 assert 'if(g.async==async)return;' in setasync and 'WritePrivateProfileStringW(L"amd-nr",L"Async"' in setasync
 assert 'presentation switched to' in setasync
 for unsafe in ['Request(','Post(','Collect(','FlushAndWait','CopyResource','StopHost']:
