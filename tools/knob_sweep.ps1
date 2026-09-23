@@ -1,7 +1,7 @@
 # Runs one game session with one of the runtime's undocumented environment knobs set, archives the
 # two logs, and tabulates the residual measurement across the runs collected so far.
 #
-# The knobs were found by reading dlssnr_amd_pass1.dll (spike/rocm-custom-kernel/README.md section 9.2).
+# The knobs were found by reading dlssnr_amd_pass1.dll (docs/spike-rocm/README.md section 9.2).
 # The runtime reads each one with getenv, so none of them can be toggled from the overlay: a knob
 # costs one relaunch. That is the only reason this script exists.
 #

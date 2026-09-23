@@ -1,6 +1,6 @@
 # How close this is to what NVIDIA shows, and how to compare
 
-Written after the ETS2 measurement on an RTX 3050 (`handoffs/RESULTADO-nvidia-preset-style-ets2-20260921.md`)
+Written after the ETS2 measurement on an RTX 3050 (`docs/handoffs/RESULTADO-nvidia-preset-style-ets2-20260921.md`)
 and a read of the public reference for the NVIDIA-side composition, the OptiScaler DLSS-NR fork
 (`y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG`, branch `dlss-neural-rendering`,
 `OptiScaler/shaders/dlssnr/precompile/dlssnr.hlsl`), whose README states its composition is

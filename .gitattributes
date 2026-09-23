@@ -11,4 +11,4 @@ external/reshade/*.hpp -text
 # Checksum lists are fed to sha256sum -c, which chokes on the CR. Keep them LF.
 tools/SHA256SUMS.txt -text
 
-media/* binary
+docs/media/* binary

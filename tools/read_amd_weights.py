@@ -15,7 +15,7 @@ validated by two independent totals, so a wrong reading cannot pass quietly.
 On the v0.3.0 weights shipped beside the runtime: count 153, base 5673, and both checks hold --
 the index ends exactly at `base`, and base + sum(sizes) == the file size, 147,689,451 bytes.
 
-WHY THIS MATTERS, measured 22/09/2026 (spike/rocm-custom-kernel/README.md):
+WHY THIS MATTERS, measured 22/09/2026 (docs/spike-rocm/README.md):
 
     All 153 tensor names appear verbatim inside NVIDIA's nvngx_dlssnr.dll, and a 25-tensor sample
     of the blobs is BYTE-IDENTICAL inside it.

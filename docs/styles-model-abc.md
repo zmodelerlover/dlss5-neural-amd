@@ -30,7 +30,7 @@ Everything below about the grading vector stands, byte for byte. What was wrong 
   **On AMD a Model is its grade and nothing else.** The network half has no input to reach: the
   original conclusion of this document stands for this runtime.
 - Measured on NVIDIA hardware (ETS2, D3D11 via RenoDX's D3D12 proxy, RTX 3050, driver 610.62;
-  `handoffs/RESULTADO-nvidia-preset-style-ets2-20260921.md`): switching Model writes **only**
+  `docs/handoffs/RESULTADO-nvidia-preset-style-ets2-20260921.md`): switching Model writes **only**
   `DLSSNR.Style` plus a one-frame `DLSSNR.Reset` pulse. Tone, Structure, Skin, Intensity, AutoMask
   and Preset are untouched. RenoDX defaults: Style 0, Intensity 1, LocalTone 1, LocalStructure 1,
   Skin 1, AutoMask 1, MVecScale 1/1, DepthInverted 0 (the DLL's own default is 1; RenoDX sends 0

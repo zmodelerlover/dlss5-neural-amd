@@ -24,7 +24,7 @@ k_qkv_attn, k_attention, k_ffwd, k_conv_res, k_expand, k_contract2, k_dec_upsamp
 k_post_block_1h_32_fp8, k_export, k_reproject, k_repack, k_mean, and the GPU-side fence pair
 k_flag_set / k_flag_wait. Two module globals matter: g_e4m3_lut (512 bytes) and DlssNrEngine::SH.
 
-Two things this found the hard way, both in spike/rocm-custom-kernel/README.md:
+Two things this found the hard way, both in docs/spike-rocm/README.md:
 
   * hipModuleLoadData accepts a carved entry verbatim -- a bare ELF, no re-bundling. The kernels
     can be called by mangled name from our own process.

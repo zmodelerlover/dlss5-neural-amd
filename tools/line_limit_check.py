@@ -10,7 +10,7 @@ the time, in `tools/line_limit_allow.json`. That list is a ratchet: an entry may
 listed file that grows fails, and so does one that has come under the limit or no longer exists,
 so the entry has to be deleted rather than left behind to excuse the next file with that name.
 
-Scanned: tracked files under src/, tools/, spike/ and shaders/, plus the scripts at the root.
+Scanned: tracked files under src/, tools/, docs/spike-rocm/ and shaders/, plus the scripts at the root.
 external/ is vendored and binaries are not code.
 """
 
@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ALLOW = ROOT / "tools/line_limit_allow.json"
 LIMIT = 500
-SCANNED = ("src/", "tools/", "spike/", "shaders/")
+SCANNED = ("src/", "tools/", "docs/spike-rocm/", "shaders/")
 SKIPPED_SUFFIXES = {".md", ".json", ".txt", ".csv"}
 
 
@@ -36,7 +36,7 @@ def tracked():
             continue
         data = (ROOT / name).read_bytes()
         if b"\0" in data:
-            continue  # a binary, such as the carved .co kernels under spike/
+            continue  # a binary, such as the carved .co kernels under docs/spike-rocm/
         yield name, data.count(b"\n") + (0 if data.endswith(b"\n") or not data else 1)
 
 
