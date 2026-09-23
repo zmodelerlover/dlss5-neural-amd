@@ -15,6 +15,11 @@
 #include "build_config.h"
 #include "hotkey_capture.h"
 #include "ini_text.h"
+#include "../ui/i18n.h"
+#include "../ui/panel_model.h"
+#include "../ui/theme.h"
+#include "../ui/view_logic.h"
+#include "../ui/widgets/widgets.h"
 #if AMDNR_WITH_VULKAN
 #include <MinHook.h>
 #include "../vkshared/vk_raw.inc"
@@ -1117,42 +1122,10 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally)
     tally.clear();
 }
 
-// Which optional controls have a widget. One bit each, saved as HiddenShown in the ini.
-//
-// This replaces a single "show everything" switch. That switch had the shape of the problem the
-// rebuild was fixing: the answer to "this panel has too much on it" is not a second panel with
-// all of it back. Here a person turns on the two controls they actually want and the rest stays
-// off, which is a panel that grows by what somebody asked for rather than by what exists.
-//
-// Table-driven so the cascade that toggles a bit and the gate that reads it cannot drift apart:
-// a new control is one enumerator, one row, and one Shown() at the call site.
-enum Opt : uint32_t
-{
-    kOptCompose      = 1u << 0,
-    kOptGuard        = 1u << 1,
-    kOptGuardPerPass = 1u << 2,
-    kOptLocalTone    = 1u << 3,
-    kOptTaper        = 1u << 4,
-    kOptPerPass      = 1u << 5,
-    kOptBicubic      = 1u << 6,
-    kOptFeed         = 1u << 7,
-    kOptGameGuides   = 1u << 8,
-    kOptDepth        = 1u << 9,
-    kOptDepthInv     = 1u << 10,
-    kOptDepthStretch = 1u << 11,
-    kOptHistory      = 1u << 12,
-    kOptMotion       = 1u << 13,
-    kOptMotionScale  = 1u << 14,
-    kOptFlowGate     = 1u << 15,
-    kOptFlowAccept   = 1u << 16,
-    kOptMask         = 1u << 17,
-    kOptTemporal     = 1u << 18,
-    kOptTonemap      = 1u << 19,
-    kOptToneChannels = 1u << 20,
-    kOptOutputScale  = 1u << 21,
-    kOptMeasure      = 1u << 22,
-};
-constexpr uint32_t kOptAll = (1u << 23) - 1u;
+// The optional-control bits (ui::Opt), the section hues, T and the widgets are the panel's, in
+// src/ui/, shared with the 32-bit bridge. Unqualified here so the code that reads them reads the
+// same as it did when they were defined in this file.
+using namespace ui;
 
 struct State
 {
@@ -6165,131 +6138,6 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             g.depthBest != nullptr ? "found" : "none");
 }
 
-// Anything that makes one evaluation slower is a driver-reset risk while the game is waiting on
-// the GPU for it, so the warning goes next to the control rather than in a readme.
-void Note(const ImVec4 &colour, const char *text)
-{
-    ImGui::PushStyleColor(ImGuiCol_Text, colour);
-    ImGui::TextWrapped("%s", text);
-    ImGui::PopStyleColor();
-}
-
-// The panel's colour rule, in one place, because a hue that means two things means nothing.
-//
-// TWO FAMILIES, AND THEY NEVER MIX.
-//
-//   STATE is a report on what is true right now, and it is always earned by a measurement or by
-//   a documented failure -- never by a threshold on a slider. The old panel painted Timing,
-//   Scale and Passes amber the moment Scale went over 0.50 or Passes over 1, which is most of a
-//   working configuration: amber that is on whenever somebody is using the add-on teaches people
-//   to ignore amber, and then the one that matters goes unread. Scale 0.75 with every frame
-//   finishing on time is not a warning about anything. So amber now comes from the skip rate,
-//   from the card's own cap having fired, or from a switch whose off state was seen to break the
-//   picture -- things the add-on observed, not things it assumed.
-//
-//   SECTION is an identity, not a judgement. Each header carries its own hue so a thin panel
-//   reads as regions instead of as one long list, and nothing inside a section is tinted by it.
-//   Blue is the picture, green is speed, violet is instrumentation, amber is provisional, teal
-//   is what feeds the network, salmon is somebody else's struct.
-const ImVec4 kWarn { 1.00f, 0.80f, 0.30f, 1.00f };
-const ImVec4 kDanger { 1.00f, 0.45f, 0.35f, 1.00f };
-const ImVec4 kOk { 0.38f, 0.86f, 0.48f, 1.00f };
-
-//
-// The hues are held near full brightness and away from each other, and none of them is allowed
-// to drop towards the header's own fill: a muted tint on a mid-grey header band is a hue you
-// have to look for, and a label you have to look for is not doing the job of telling you which
-// region you are in. Read at a glance from across the room, or it is decoration.
-const ImVec4 kHueImage { 0.40f, 0.78f, 1.00f, 1.00f };          // blue -- the picture
-const ImVec4 kHuePerf { 0.35f, 1.00f, 0.55f, 1.00f };           // green -- speed
-const ImVec4 kHueDebug { 0.78f, 0.60f, 1.00f, 1.00f };          // violet -- instrumentation
-const ImVec4 kHueExperimental { 1.00f, 0.72f, 0.22f, 1.00f };   // amber -- provisional
-const ImVec4 kHueGuides { 0.25f, 0.95f, 0.95f, 1.00f };         // cyan -- what feeds the network
-const ImVec4 kHueEngine { 1.00f, 0.55f, 0.42f, 1.00f };         // salmon -- somebody else's struct
-
-// A section header in its own hue. ImGui draws a header's label with ImGuiCol_Text, so this is
-// the whole of it -- no style var, nothing to restore beyond the one push.
-bool SectionHeader(const ImVec4 &hue, const char *title, bool defaultOpen = false)
-{
-    ImGui::PushStyleColor(ImGuiCol_Text, hue);
-    const bool open = ImGui::CollapsingHeader(title, defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
-    ImGui::PopStyleColor();
-    return open;
-}
-
-// Every user-visible string in the overlay goes through this. Two literals at the call site
-// instead of an id, a table and a lookup: the translation is then impossible to get out of sync
-// with the text it translates, and adding a control cannot leave a dangling key behind.
-// ponytail: a real string table earns its keep at a third language, not at two.
-const char *T(const char *en, const char *pt)
-{
-    return g.language.load() == 0 ? en : pt;
-}
-
-// A tooltip instead of a paragraph. Every control had its explanation printed underneath it,
-// which made the panel a wall of grey text you had to read past to reach the next slider. The
-// text is worth keeping -- most of it is a measured result, not a description -- so it moves
-// behind the marker and the panel goes back to being a panel.
-void Help(const char *en, const char *pt)
-{
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (!ImGui::IsItemHovered())
-        return;
-    ImGui::BeginTooltip();
-    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
-    ImGui::TextUnformatted(T(en, pt));
-    ImGui::PopTextWrapPos();
-    ImGui::EndTooltip();
-}
-
-// Paints a control red or amber while its CURRENT VALUE is one that has caused trouble. Scoped
-// so it can be declared in an if-init and still wrap the widget:
-//     if (Risk r(kDanger, cond); ImGui::SliderFloat(...))
-// ImGui draws a widget's label with ImGuiCol_Text, so pushing the colour colours the control.
-//
-// This is the only marking left on a control. The MEASURED / TRACED / UNKNOWN / INERT tags that
-// used to follow every label are gone: they were provenance, which belongs in the handoffs and
-// in the comments here, and they cost eight to twelve characters on every row of a panel that
-// has to stay narrow. Red and amber stay because they are about the value in front of you rather
-// than about how the control came to be known.
-struct Risk
-{
-    bool on;
-    Risk(const ImVec4 &colour, bool active) : on(active)
-    {
-        if (on)
-            ImGui::PushStyleColor(ImGuiCol_Text, colour);
-    }
-    ~Risk()
-    {
-        if (on)
-            ImGui::PopStyleColor();
-    }
-    Risk(const Risk &) = delete;
-    Risk &operator=(const Risk &) = delete;
-};
-
-void StatusLine()
-{
-    if (g.unavailable)
-        ImGui::TextColored(kDanger, T("Unavailable: %s", "Indisponível: %s"), g.reason);
-    else if (g.failed)
-        ImGui::TextColored(kDanger, T("Error -- see the log.", "Erro -- veja o log."));
-    else if (!g.enabled.load())
-        ImGui::TextDisabled(T("off", "desligado"));
-    else if (g.frame == 0)
-        ImGui::TextColored(kWarn, T("no frames yet", "nenhum quadro ainda"));
-    else
-    {
-        const uint64_t seen = g.frame + g.skipped;
-        const double pct = seen != 0 ? 100.0 * static_cast<double>(g.skipped) / seen : 0.0;
-        ImGui::TextColored(pct >= 10.0 ? kWarn : ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
-                           T("%llu frames, %.0f%% skipped", "%llu quadros, %.0f%% pulados"),
-                           static_cast<unsigned long long>(g.frame), pct);
-    }
-}
-
 // Copies this run's logs and the settings that produced them to a dated folder on the desktop.
 //
 // Every question worth asking about a run needs the same four files, and asking somebody to find
@@ -6347,91 +6195,75 @@ std::wstring ExportLogs()
     return out.wstring();
 }
 
-// Which header a row belongs under, in the cascade and in the panel alike.
-enum OptGroup { kGrpPerf, kGrpImage, kGrpDebug, kGrpGuides, kGrpEngine, kGrpCount };
-const char *OptGroupName(int grp)
-{
-    static const char *en[] { "Performance", "Image", "Debug", "Guides", "Engine" };
-    static const char *pt[] { "Desempenho", "Imagem", "Debug", "Guias", "Motor" };
-    return T(en[grp], pt[grp]);
-}
-
-struct OptRow
-{
-    uint32_t bit;
-    int group;
-    const char *en, *pt;
-};
-const OptRow kOpts[] {
-    { kOptCompose,      kGrpImage,  "Composition",       "Composição" },
-    { kOptGuard,        kGrpImage,  "Highlight guard",   "Trava de realce" },
-    { kOptGuardPerPass, kGrpImage,  "Guard per pass",    "Trava por passe" },
-    { kOptLocalTone,    kGrpImage,  "Local tone",        "Tom local" },
-    { kOptTaper,        kGrpPerf,   "Taper passes",      "Diminuir passes" },
-    { kOptPerPass,      kGrpPerf,   "Per-pass settings", "Ajustes por passe" },
-    { kOptBicubic,      kGrpPerf,   "Bicubic upsample",  "Upsample bicúbico" },
-    { kOptMeasure,      kGrpDebug,  "Measure residual",  "Medir resíduo" },
-    { kOptFeed,         kGrpGuides, "Use Feed.fx",       "Usar o Feed.fx" },
-    { kOptGameGuides,   kGrpGuides, "Read from the game","Ler do jogo" },
-    { kOptDepth,        kGrpGuides, "Depth",             "Profundidade" },
-    { kOptDepthInv,     kGrpGuides, "Depth inverted",    "Profundidade invertida" },
-    { kOptDepthStretch, kGrpGuides, "Stretch depth",     "Esticar profundidade" },
-    { kOptHistory,      kGrpGuides, "History",           "Histórico" },
-    { kOptMotion,       kGrpGuides, "Motion",            "Movimento" },
-    { kOptMotionScale,  kGrpGuides, "Motion scale",      "Escala do movimento" },
-    { kOptFlowGate,     kGrpGuides, "Flow gate",         "Portão do fluxo" },
-    { kOptFlowAccept,   kGrpGuides, "Flow accept",       "Aceite do fluxo" },
-    { kOptMask,         kGrpEngine, "Character mask",    "Máscara de personagem" },
-    { kOptTemporal,     kGrpEngine, "Temporal",          "Temporal" },
-    { kOptTonemap,      kGrpEngine, "Tonemap",           "Tonemap" },
-    { kOptToneChannels, kGrpEngine, "Tone channels",     "Canais de tom" },
-    { kOptOutputScale,  kGrpEngine, "Output scale",      "Escala de saída" },
-};
-
+// The cascade gate for the sections still drawn in this file, read straight off the engine's flag.
+// ui::Shown and ui::GroupShown read the panel's copy; these go when the last section moves there.
 bool Shown(uint32_t bit)
 {
     return (g.optional.load() & bit) != 0;
 }
 
-// Whether a whole group has anything turned on, which is what decides if its header is drawn.
 bool GroupShown(int grp)
 {
     const uint32_t on = g.optional.load();
-    for (const OptRow &r : kOpts)
-        if (r.group == grp && (on & r.bit) != 0)
+    for (int i = 0; i < kOptCount; ++i)
+        if (kOpts[i].group == grp && (on & kOpts[i].bit) != 0)
             return true;
     return false;
 }
 
-// Status, run-state and what the network is being fed, printed down the right edge opposite the
-// switches on the left. It used to be a collapsing section of its own, which spent a header and
-// a click on four lines of text that never need a click. Right-aligned into space the rows on
-// the left already occupy, so it costs no height at all.
-//
-// On a panel too thin to hold both, the line is drawn on its own row underneath instead of
-// overlapping the control to its left: thin is the normal case here, so it has to degrade rather
-// than collide.
-void RightLine(const ImVec4 *colour, const char *fmt, ...)
+// What the panel shows and does not own, read under the lock the present path holds while it
+// changes these. Copied out so drawing never happens with the lock held.
+PanelStatus ReadPanelStatus()
 {
-    char text[192];
-    va_list args;
-    va_start(args, fmt);
-    std::vsnprintf(text, sizeof(text), fmt, args);
-    va_end(args);
+    PanelStatus st;
+    std::lock_guard guard(g.lock);
+    st.run = g.unavailable ? RunState::Unavailable : g.failed ? RunState::Error : RunState::Ready;
+    st.reason = g.reason;
+    st.processed = g.frame;
+    st.skipped = g.skipped;
+    st.routeNote = ProfileForThisProcess().note;
+    st.outWidth = g.outWidth;
+    st.outHeight = g.outHeight;
+    st.netWidth = g.netWidth;
+    st.netHeight = g.netHeight;
+    st.scaleCap = g.scaleCap.load();
+    st.depthSource = g.guideDepth.external && g.gameDepthActive ? GuideSource::Effect
+                     : g.gameDepthActive                        ? GuideSource::Game
+                     : g.depthSnapshot                          ? GuideSource::Snapshot
+                                                                : GuideSource::None;
+    st.motionSource = g.guideMotion.external && g.gameMotionActive ? GuideSource::Effect
+                      : g.gameMotionActive                         ? GuideSource::Game
+                                                                   : GuideSource::Estimated;
+    st.gameMotionActive = g.gameMotionActive;
+    st.stillPct = g.probeStillPct.load();
+    st.depthMin = g.probeDepthMin.load();
+    st.depthMax = g.probeDepthMax.load();
+    st.stage = g.stage.load();
+    st.events = g.events;
+    st.noBridge = g.noBridge.load();
+    st.noBackBuffer = g.noBackBuffer.load();
+    st.hotkeyName = HotkeyName();
+    st.hasFeedEffect = true;
+    st.feedStatus = g.feedStatus;
+    return st;
+}
 
-    // Measured off what is left on the line rather than off the window: ReShade's add-on ImGui is
-    // a function table and GetWindowContentRegionMax is not in it, so this uses the three calls
-    // that are -- and they give the same answer without needing to know the indent.
-    const float width = ImGui::CalcTextSize(text).x;
-    ImGui::SameLine();
-    if (const float avail = ImGui::GetContentRegionAvail().x; avail >= width)
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - width);
-    else
-        ImGui::NewLine();
-    // Not TextDisabled: this column is the only place the run reports itself, so it reads at
-    // full weight rather than at the 50% grey a hint gets.
-    ImGui::TextColored(colour != nullptr ? *colour : ImVec4(0.72f, 0.78f, 0.86f, 1.00f),
-                       "%s", text);
+// The panel's plain copy of the settings, filled from the engine's atomics.
+PanelSettings ReadPanelSettings()
+{
+    PanelSettings s;
+#define X(type, name, low, high) s.name = static_cast<type>(g.name.load());
+#include "../x86bridge/settings_fields.inc"
+#undef X
+    for (int i = 0; i < kMaxPasses; ++i)
+    {
+        s.passOverride[i] = g.passOverride[i].load() ? 1u : 0u;
+        s.passStructure[i] = g.passStructure[i].load();
+        s.passTone[i] = g.passTone[i].load();
+        s.passSkin[i] = g.passSkin[i].load();
+    }
+    s.useFeedEffect = g.useFeedEffect.load() ? 1u : 0u;
+    return s;
 }
 
 // The overlay, rebuilt 22/09/2026. It used to carry 47 controls across eight headers; it carries
@@ -6455,6 +6287,14 @@ void RightLine(const ImVec4 *colour, const char *fmt, ...)
 // every other add-on in the same overlay uses, and one less thing to be wrong on a light theme.
 void OnOverlay(effect_runtime *runtime)
 {
+    // Rebinding by capturing a real keypress. Only advances while the overlay is open, which is
+    // where the button is.
+    static hotkey::Capture capture;
+    PanelStatus status = ReadPanelStatus();
+    status.hotkeyArmed = capture.armed;
+    const PanelSettings panel = ReadPanelSettings();
+    SetLanguage(panel.language);
+
     bool on = g.enabled.load();
     if (ImGui::Checkbox(T("Enabled", "Ligado"), &on))
     {
@@ -6462,7 +6302,7 @@ void OnOverlay(effect_runtime *runtime)
         Log("menu: %s", on ? "on" : "off");
     }
     ImGui::SameLine();
-    StatusLine();
+    StatusLine(status, panel);
 
     bool start = g.startOn.load();
     if (ImGui::Checkbox(T("On at startup", "Ligar ao abrir o jogo"), &start))
@@ -6490,19 +6330,8 @@ void OnOverlay(effect_runtime *runtime)
          "volta sozinha.");
 
     {
-        // Rebinding by capturing a real keypress, rather than by typing a virtual-key code.
-        // Only advances while the overlay is open, which is where the button is.
-        static hotkey::Capture capture;
-        const std::string hotkey = HotkeyName();
-        if (ImGui::Button(capture.armed ? T("press a key", "aperte uma tecla") : hotkey.c_str(),
-                          ImVec2(ImGui::GetFontSize() * 7.0f, 0.0f)))
+        if (HotkeyButton(status))
             capture.Toggle();
-        ImGui::SameLine();
-        ImGui::TextUnformatted(T("Hotkey", "Tecla"));
-        Help("Click, then press the combination you want. Esc cancels. A key with no modifier "
-             "fires during normal play, so pick one the game does not use.",
-             "Clique e aperte a combinação que quiser. Esc cancela. Uma tecla sem modificador "
-             "dispara durante o jogo, então escolha uma que o jogo não use.");
 
         // ReShade's key state, never GetAsyncKeyState: it hooks that one and answers 0 for every
         // key while the overlay is blocking the keyboard, which is the whole time this panel is
@@ -7494,8 +7323,9 @@ void OnOverlay(effect_runtime *runtime)
         for (int grp = 0; grp < kGrpCount; ++grp)
         {
             ImGui::SeparatorText(OptGroupName(grp));
-            for (const OptRow &row : kOpts)
+            for (int i = 0; i < kOptCount; ++i)
             {
+                const OptRow &row = kOpts[i];
                 if (row.group != grp)
                     continue;
                 bool onNow = (bits & row.bit) != 0;

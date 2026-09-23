@@ -99,10 +99,14 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # source move or split without the target's name having to follow it.
 $minHook = @('buffer.c', 'hook.c', 'trampoline.c', 'hde\hde64.c') |
     ForEach-Object { "external\minhook\src\$_" }
+# The panel, shared with the 32-bit bridge. Every .cpp under src\ui, so a new widget or section is a
+# new file and nothing here. Object files land flat in build\, so no two of them may share a name.
+$ui = Get-ChildItem (Join-Path $root 'src\ui') -Recurse -Filter *.cpp |
+    ForEach-Object { $_.FullName.Substring($root.Length + 1) }
 $targets = @{
-    'neural'     = @('src\neural\neural.cpp') + $minHook
+    'neural'     = @('src\neural\neural.cpp') + $ui + $minHook
     # framecheck includes neural.cpp directly so it has the same Vulkan hook references as the add-on.
-    'framecheck' = @('src\framecheck\framecheck.cpp') + $minHook
+    'framecheck' = @('src\framecheck\framecheck.cpp') + $ui + $minHook
     'probe'      = @('src\probe\probe.cpp')
     'session'    = @('src\session\session.cpp')
     'glinfo'     = @('src\glinfo\glinfo.cpp')
