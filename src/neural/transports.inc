@@ -14,6 +14,7 @@ bool CrossingReady(swapchain *sc)
     return false;
 }
 
+#include "transport_d3d12.inc"
 #include "d3d11_guides.inc"
 #include "transport_d3d11.inc"
 #if AMDNR_WITH_VULKAN
@@ -30,6 +31,8 @@ FrameTransport *TransportFor(device_api api)
 {
     switch (api)
     {
+    case device_api::d3d12:
+        return &d3d12route::transport;
     case device_api::d3d11:
         return &d3d11route::transport;
 #if AMDNR_WITH_VULKAN
@@ -49,6 +52,7 @@ std::span<FrameTransport *const> AllTransports()
 {
     // OpenGL first: the order the core released them in before they were transports.
     static FrameTransport *const all[] {
+        &d3d12route::transport,
         &d3d11route::transport,
 #if AMDNR_WITH_OPENGL
         &glroute::transport,
