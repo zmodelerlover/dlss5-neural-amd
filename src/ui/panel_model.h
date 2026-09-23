@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace ui {
 
@@ -126,8 +127,9 @@ struct PanelStatus
     // network is out of reach while the helper is only copying frames (transportOnly).
     bool helperProcess = false;
     bool transportOnly = false;
-    uint32_t loadedPasses = 0, activePasses = 0;
-    std::string depthCandidate, motionCandidate;
+    // Lines the route adds under Debug, already worded: the bridge has two processes, two logs and
+    // a guide detector whose pick is worth seeing, and none of that is the panel's to interpret.
+    std::vector<std::string> routeDiagnostics;
 };
 
 // What the panel asks for and cannot do itself: the owner of each is on the adapter's side --
