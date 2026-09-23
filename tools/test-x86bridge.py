@@ -138,15 +138,11 @@ a=u[u.index('    bool runNetwork = true;',u.index('void BridgePresent')):u.index
 b=h[h.index('    bool runNetwork = true;'):h.index('    const UINT i =',h.index('    bool runNetwork = true;'))]
 normal=lambda s:re.sub(r'\s+','',re.sub(r'//[^\n]*','',s))
 assert normal(a)==normal(b),'job pending policy differs'
-# Guide decisions and conversion kernel are executable copies of upstream, not new heuristics.
-def function(text,name):
- clean=re.sub(r'//[^\n]*','',text)
- pos=clean.index(name+'(');start=clean.index('{',pos);depth=1;end=start+1
- while depth:
-  depth+=(clean[end]=='{')-(clean[end]=='}');end+=1
- return normal(clean[pos:end])
-for fn in ['GuideDepthSrvFormat','LooksLikeMotion','SettleGuide']:
- assert function(u,fn)==function(f,fn),fn
+# The guide selection is one header both routes include, so the two cannot pick differently.
+for src in (u,f):
+ assert 'guide_choice.h"' in src
+ for fn in ['DXGI_FORMAT GuideDepthSrvFormat(','bool LooksLikeMotion(','void SettleGuide(','struct Tallied']:
+  assert fn not in src,fn
 # The guide-depth shader is one header both routes include, so they cannot compile different ones.
 for src in (u,f):
  assert '#include "../core/shaders/guide_depth.h"' in src and 'constexpr char kGuideDepthCs' not in src
