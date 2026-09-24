@@ -814,6 +814,7 @@ struct State
         std::atomic<float> motionMaxPx { 0.0f };
         std::atomic<int> historyGuard { 0 };  // Lab: the reference's history filters, core/temporal/smooth.inc
         std::atomic<float> outputSmooth { 0.0f }, outputSmoothLimit { 10.0f };
+        std::atomic<int> fixedSeed { 0 };  // Lab: the pre-block's noise seed pinned, core/temporal/seed.inc
         // 97b10 DepthInverted. 1 is both runtimes' own default; RenoDX writes 0 explicitly on its
         // Present route (ETS2 trace, where its depth was a dummy, so that 0 says nothing about any
         // game's real buffer). Exposed so the two can be told apart on a game with real depth; no run
@@ -1427,6 +1428,7 @@ void LoadSettings()
     g.settings.historyGuard.store(std::clamp(static_cast<int>(num(L"HistoryGuard", 0.0f)), 0, 1));
     g.settings.outputSmooth.store(std::clamp(num(L"OutputSmooth", 0.0f), 0.0f, 1.0f));
     g.settings.outputSmoothLimit.store(num(L"OutputSmoothLimit", 10.0f));
+    g.settings.fixedSeed.store(std::clamp(static_cast<int>(num(L"FixedSeed", 0.0f)), 0, 1));
     g.settings.autoMask.store(static_cast<int>(num(L"AutoMask", 1.0f)));
     g.settings.toneChannels.store(static_cast<int>(num(L"ToneChannels", 0.0f)));
     {
@@ -3492,6 +3494,7 @@ bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
 #include "../temporal/stabilize.inc"
 #include "../temporal/motion_feed.inc"
 #include "../temporal/smooth.inc"
+#include "../temporal/seed.inc"
 
 // Everything the network does in one frame, recorded into whatever command list it is handed.
 // `colourSrc` is the image to work from and must already be readable as a shader resource; the
@@ -3991,6 +3994,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                 i + 1, static_cast<double>(tune.tone), static_cast<double>(tune.structure),
                 static_cast<double>(tune.skin), autoMask, static_cast<double>(outScale));
         }
+        PinSeed(r);
         const bool handed = ArmHistory(r, slot);
         if (handed)
             PrepareHistory(cmd, slot);

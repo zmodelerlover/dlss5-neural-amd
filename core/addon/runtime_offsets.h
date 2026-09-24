@@ -28,6 +28,11 @@ namespace rt
 constexpr size_t kDevice = 0x96f68;          // ID3D12Device *, handed over before init
 constexpr size_t kQueue = 0x96f70;           // ID3D12CommandQueue *, the present queue it records on
 constexpr size_t kEngineObject = 0x96f78;    // the object kInitFn takes as its first argument
+constexpr size_t kFrameCounter = 0x96fb0;    // engine+0x38: the evaluation count the pre-block kernel is
+                                             // handed -- its noise seed. The worker bumps it after every
+                                             // job; the record entry zeroes it after the warm-up job
+constexpr size_t kSelfCheckFrame = 0x97058;  // engine+0xe0: the count on which the worker reads the
+                                             // pre-block back for its zero-bytes self-check
 
 constexpr size_t kHistory = 0x97090;         // ID3D12Resource *, last frame's output
 constexpr size_t kHistoryOn = 0x97098;       // whether to read it
