@@ -14,7 +14,10 @@ param(
     [switch]$Exe,
     # x86 is for the hostcheck pair only, which drives the 32-bit bridge the way the x64 pair
     # drives the add-on. The bridge itself builds through build-x86bridge.ps1.
-    [ValidateSet('x64', 'x86')][string]$Arch = 'x64'
+    [ValidateSet('x64', 'x86')][string]$Arch = 'x64',
+    # Lab only: a FidelityFX SDK checkout (the folder holding Kits\). Compiles its optical flow and
+    # DX12 backend into the target and defines AMDNR_WITH_FFX; the flow's shaders are generated first.
+    [string]$Ffx = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,6 +110,24 @@ $minHook = @('buffer.c', 'hook.c', 'trampoline.c', 'hde\hde64.c') |
 # new file and nothing here. Object files land flat in build\, so no two of them may share a name.
 $ui = Get-ChildItem (Join-Path $root 'core\ui') -Recurse -Filter *.cpp | Where-Object { $_.Directory.Name -ne 'tests' } |
     ForEach-Object { $_.FullName.Substring($root.Length + 1) }
+$ffxSources = @()
+$ffxFlags = @()
+if ($Ffx) {
+    $sdk = (Resolve-Path $Ffx).Path
+    $kit = Join-Path $sdk 'Kits\FidelityFX'
+    $gen = Join-Path $root 'build\ffx-of'
+    $dxc = Join-Path $SdkPath "bin\$SdkVersion\x64\dxc.exe"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\gen_ffx_opticalflow.ps1') `
+        -SdkDirectory $sdk -OutputDirectory $gen -DxcPath $dxc
+    if ($LASTEXITCODE -ne 0) { throw "optical flow shader generation failed" }
+    $env:INCLUDE = (@($env:INCLUDE) + @('api\include', 'api\internal', 'backend\dx12', 'upscalers\include', 'framegeneration\fsr3\include',
+        'framegeneration\fsr3\internal' | ForEach-Object { Join-Path $kit $_ }) + @($gen, (Join-Path $root 'core\temporal'))) -join ';'
+    $ffxSources = @('api\internal\ffx_assert.cpp', 'api\internal\ffx_message.cpp', 'api\internal\ffx_object_management.cpp',
+        'backend\dx12\ffx_backends_dx12.cpp', 'backend\dx12\ffx_dx12.cpp', 'framegeneration\fsr3\internal\ffx_opticalflow.cpp',
+        'framegeneration\fsr3\internal\ffx_opticalflow_shaderblobs.cpp') | ForEach-Object { Join-Path $kit $_ }
+    # _WINDOWS: the SDK's message code only compiles with it, as in the reference's build.
+    $ffxFlags = @('/DAMDNR_WITH_FFX=1', '/D_WINDOWS', '/wd4505', '/wd4201')
+}
 $targets = @{
     'neural'     = @('core\addon\neural.cpp') + $ui + $minHook
     # framecheck includes neural.cpp directly so it has the same Vulkan hook references as the add-on.
@@ -123,7 +144,7 @@ $targets = @{
 if (-not $targets.ContainsKey($Target)) {
     throw "unknown target '$Target'; known: $(($targets.Keys | Sort-Object) -join ', ')"
 }
-$sources = $targets[$Target] | ForEach-Object { Join-Path $root $_ }
+$sources = @($targets[$Target] | ForEach-Object { Join-Path $root $_ }) + $ffxSources
 foreach ($s in $sources) { if (-not (Test-Path $s)) { throw "source not found: $s" } }
 
 # The neural add-on is the product and carries the product's name; every other target is a
@@ -138,7 +159,7 @@ try {
     # msvcp140.dll beside the executable; /MD lets that private copy override the runtime used
     # to build the add-on and can make DllMain fail after ReShade has registered the module.
     & $cl /nologo /utf-8 /std:c++20 /EHsc /O2 /MT /W3 /DNDEBUG /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS `
-          /DNOMINMAX /DWIN32_LEAN_AND_MEAN `
+          /DNOMINMAX /DWIN32_LEAN_AND_MEAN @ffxFlags `
           /Fo"$out\" $(if (-not $Exe) { '/LD' }) $sources /link $(if (-not $Exe) { '/DLL' }) /OUT:"$dll" `
           user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib
     if ($LASTEXITCODE -ne 0) { throw "compilation failed ($LASTEXITCODE)" }

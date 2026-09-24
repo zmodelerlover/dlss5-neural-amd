@@ -22,6 +22,7 @@
 #include "../shaders/motion.h"
 #include "../shaders/compose.h"
 #include "../shaders/input.h"
+#include "../temporal/ffx.h"
 #include "../ui/panel_model.h"
 #include "../ui/view_logic.h"
 #if AMDNR_WITH_VULKAN
@@ -806,6 +807,13 @@ struct State
         // not something that can be read off the resource, so leave the knob: -1 flips the direction,
         // and a value other than 1 rescales. Watch Debug View "Motion vectors" while panning.
         std::atomic<float> motionScale { 1.0f };
+        // Lab: FidelityFX optical flow as the motion source. See core/temporal/optical_flow.inc.
+        std::atomic<int> opticalFlow { 0 };
+        std::atomic<int> stabilise { 0 };  // Lab: FSR3 1x ahead of the network, core/temporal/stabilize.inc
+        std::atomic<int> motionCompat { 0 };  // Lab: the reference's motion feed, core/temporal/motion_feed.inc
+        std::atomic<float> motionMaxPx { 0.0f };
+        std::atomic<int> historyGuard { 0 };  // Lab: the reference's history filters, core/temporal/smooth.inc
+        std::atomic<float> outputSmooth { 0.0f }, outputSmoothLimit { 10.0f };
         // 97b10 DepthInverted. 1 is both runtimes' own default; RenoDX writes 0 explicitly on its
         // Present route (ETS2 trace, where its depth was a dummy, so that 0 says nothing about any
         // game's real buffer). Exposed so the two can be told apart on a game with real depth; no run
@@ -1412,6 +1420,13 @@ void LoadSettings()
     g.settings.toggleMods.store(std::clamp(static_cast<int>(num(L"ToggleMods", 1.0f)), 0, 7));
     g.settings.disableOnAltTab.store(flag(L"DisableOnAltTab", false));
     g.settings.motionScale.store(num(L"MotionScale", g.settings.motionScale.load()));
+    g.settings.opticalFlow.store(std::clamp(static_cast<int>(num(L"OpticalFlow", 0.0f)), 0, 2));
+    g.settings.stabilise.store(std::clamp(static_cast<int>(num(L"Stabilise", 0.0f)), 0, 2));
+    g.settings.motionCompat.store(std::clamp(static_cast<int>(num(L"MotionCompat", 0.0f)), 0, 1));
+    g.settings.motionMaxPx.store(std::max(0.0f, num(L"MotionMaxPx", 0.0f)));
+    g.settings.historyGuard.store(std::clamp(static_cast<int>(num(L"HistoryGuard", 0.0f)), 0, 1));
+    g.settings.outputSmooth.store(std::clamp(num(L"OutputSmooth", 0.0f), 0.0f, 1.0f));
+    g.settings.outputSmoothLimit.store(num(L"OutputSmoothLimit", 10.0f));
     g.settings.autoMask.store(static_cast<int>(num(L"AutoMask", 1.0f)));
     g.settings.toneChannels.store(static_cast<int>(num(L"ToneChannels", 0.0f)));
     {
@@ -2844,7 +2859,7 @@ bool InitPipeline()
         !CompileShader(shaders::kFlowShader, sizeof(shaders::kFlowShader), "flow", g.flowPipeline) ||
         !CompileShader(shaders::kFlowUpShader, sizeof(shaders::kFlowUpShader), "flowup", g.flowUpPipeline))
         return false;
-    D3D12_DESCRIPTOR_HEAP_DESC hd { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 32,
+    D3D12_DESCRIPTOR_HEAP_DESC hd { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 128,
                                     D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
     return SUCCEEDED(g.device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g.heap)));
 }
@@ -3473,6 +3488,10 @@ bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
 }
 
 #include "../temporal/history.inc"
+#include "../temporal/optical_flow.inc"
+#include "../temporal/stabilize.inc"
+#include "../temporal/motion_feed.inc"
+#include "../temporal/smooth.inc"
 
 // Everything the network does in one frame, recorded into whatever command list it is handed.
 // `colourSrc` is the image to work from and must already be readable as a shader resource; the
@@ -3500,14 +3519,16 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav {};
     uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 
-    srv.Format = ColourReadFormat(colourFmt);
+    // Lab: optical flow and FSR3 1x ahead of the pass, which then reads their frame. See stabilize.inc.
+    const Ahead ahead = RunAhead(cmd, runNetwork, colourSrc, colourFmt);
+    srv.Format = ColourReadFormat(ahead.fmt);
     for (UINT i = 0; i < 3; ++i)
-        g.device->CreateShaderResourceView(colourSrc, &srv, slot(i));
+        g.device->CreateShaderResourceView(ahead.src, &srv, slot(i));
     uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     g.device->CreateUnorderedAccessView(g.netColour.Get(), nullptr, &uav, slot(3));
 
-    srv.Format = ColourReadFormat(colourFmt);
-    g.device->CreateShaderResourceView(colourSrc, &srv, slot(8));
+    srv.Format = ColourReadFormat(ahead.fmt);
+    g.device->CreateShaderResourceView(ahead.src, &srv, slot(8));
     srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     g.device->CreateShaderResourceView(g.netResidual.Get(), &srv, slot(9));
     // Network Output reaches the shader as view 2, which is the same path the debug view has
@@ -3625,7 +3646,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // exists to replace: an engine knows where every surface was because it has the previous
     // transform, while a block match over two images can only guess and, on PCSX2, measured 99%
     // of blocks still. Resample it into the raster the engine reads and skip the estimator.
-    if (g.settings.useMotion.load() && g.gameMotionActive && g.guideMotion.local != nullptr &&
+    const int flow = g.settings.useMotion.load() ? g.settings.opticalFlow.load() : 0;
+    if (flow != 2 && g.settings.useMotion.load() && g.gameMotionActive && g.guideMotion.local != nullptr &&
         g.netMotion != nullptr)
     {
         const auto md = g.guideMotion.local->GetDesc();
@@ -3661,6 +3683,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                 static_cast<double>(mscale));
         }
     }
+    else if (flow != 0 && (ahead.flowRan || OpticalFlowReady(w, h)))
+        haveMotion = FlowMotion(cmd, ahead, colourSrc, colourFmt);
     else if (g.settings.useMotion.load() && g.flowSmall != nullptr)
     {
         // Swapped per estimator run, not per present: with the network sitting out every other
@@ -3813,6 +3837,9 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         }
     }
 
+    if (haveMotion)
+        FeedMotion(cmd);
+
     bool haveDepth = false;
     // Three ways depth can arrive, in descending order of how much it is worth. From the game
     // over the bridge: a real, full-range depth buffer an engine wrote and left alone -- this is
@@ -3964,7 +3991,9 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                 i + 1, static_cast<double>(tune.tone), static_cast<double>(tune.structure),
                 static_cast<double>(tune.skin), autoMask, static_cast<double>(outScale));
         }
-        ArmHistory(r, slot);
+        const bool handed = ArmHistory(r, slot);
+        if (handed)
+            PrepareHistory(cmd, slot);
         // 97b1d is Temporal, not "motion is valid" -- the engine's own ini reader reads the
         // key "Temporal" into this byte. The old name was a guess and it made the session-2
         // measurement look unexplained: Temporal=1 was the only run where the engine reported
@@ -4075,6 +4104,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // -- v0.2.17 did it with hipMemcpyAsync, v0.3.0 stores straight through
         // its own host pointer; either way, leave it to do so.
         ++accepted;
+        if (handed)
+            SmoothOutput(cmd, slot);
         KeepHistory(cmd, slot, i + 1 == wanted);
 
         // Reported, not enforced. Whether the engine bumps the job id once per recording or once
