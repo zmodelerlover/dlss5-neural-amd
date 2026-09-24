@@ -11,4 +11,8 @@
 # Checksum lists are fed to sha256sum -c, which chokes on the CR. Keep them LF.
 tools/SHA256SUMS.txt -text
 
+# The companion effect is pinned by its SHA-256 in the installer's payload list: a checkout that
+# turned its LF into CRLF gave a copy that no longer matched the pin it was about to be released as.
+effects/*.fx -text
+
 docs/media/* binary

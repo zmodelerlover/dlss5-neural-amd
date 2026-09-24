@@ -28,6 +28,9 @@ $wanted = [ordered]@{
     'amd-nr.addon32'    = Join-Path $root 'build-x86bridge\amd-nr.addon32'
     'amd-nr-host64.exe' = Join-Path $root 'build-x86bridge\amd-nr-host64.exe'
     'payload.sha256'          = Join-Path $release 'payload.sha256'
+    # Not read by the version menu, which keeps the payload list's own copy, but the release is its
+    # mirror: v0.6.6 carried it only because it was added by hand.
+    'AMD_Neural_Feed.fx'      = Join-Path $root 'effects\AMD_Neural_Feed.fx'
 }
 
 $missing = $wanted.GetEnumerator() | Where-Object { -not (Test-Path -LiteralPath $_.Value) }
@@ -53,7 +56,7 @@ $upload = @($wanted.Values) + @($sums)
 Set-Content -LiteralPath (Join-Path $release 'upload.txt') -Value $upload -Encoding ASCII
 
 Write-Host ""
-Write-Host "release assets, all five:"
+Write-Host "release assets, all six:"
 $rows | Format-Table -AutoSize
 Write-Host "SHA256SUMS.txt -> $sums"
 Write-Host "upload list    -> $(Join-Path $release 'upload.txt')"
