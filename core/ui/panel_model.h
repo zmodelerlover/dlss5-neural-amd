@@ -20,6 +20,8 @@ namespace ui {
 //
 // Table-driven (kOpts in view_logic.h) so the cascade that toggles a bit and the gate that reads it
 // cannot drift apart: a new control is one enumerator, one row, and one Shown() at the call site.
+// The numbers are saved: amd-nr.ini keeps them as HiddenShown on both routes, so a new control takes
+// the next free bit and none is ever renumbered or reused.
 enum Opt : uint32_t
 {
     kOptCompose      = 1u << 0,
