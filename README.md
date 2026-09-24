@@ -128,7 +128,7 @@ tests and their thresholds are in the effect's own settings.
 | What you see | What it means |
 |---|---|
 | The add-on is not in the Add-ons tab | `ReShade.ini` has `DisabledAddons=` listing it under `[ADDON]`. ReShade writes that line if you ever untick the add-on. Delete the line. |
-| The status says the API is wrong | Only D3D11, D3D12, Vulkan and OpenGL are supported. Check for a per-game renderer override. |
+| The status says the API is wrong | Only D3D11, D3D12, Vulkan and OpenGL are supported, plus D3D8 and D3D9 in 32-bit games through the bridge. Check for a per-game renderer override. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 is not installed. HIP 6 does not count. |
 | `hash mismatch; refused` | The wrong `dlssnr_amd_pass1.dll`. Compare with `tools/SHA256SUMS.txt`. |
 | `missing:` followed by a file path | That file is not where the add-on looks. Put it at exactly that path. |
@@ -156,17 +156,25 @@ collects everything into one `.zip` and opens the folder. Nothing is sent anywhe
 You do not need to build anything to use this. If you want to:
 
 ```powershell
-.\build.ps1 -Target neural
+.\build.ps1 -Target neural       # amd-nr.addon64
+.\build-x86bridge.ps1            # amd-nr.addon32 and amd-nr-host64.exe, for 32-bit games
 ```
 
 You need Visual Studio with the C++ tools and the Windows SDK. The ReShade and Dear ImGui headers
 are already in `3rdparty/`.
 
+The code is laid out by layer. `core/addon/` is the add-on and the network calls, and every
+graphics API reaches it through one transport of its own in `core/transport/` (`d3d11`, `d3d12`,
+`vulkan`, `opengl`). `core/x86bridge/` is the 32-bit pair, `core/ui/` the panel both routes draw,
+`core/shaders/` the compute shaders, and `core/diagnostics/` the harnesses that test a build without
+a game.
+
 ## Limits
 
-- D3D11 is the only route where the game's own depth and motion vectors reach the network, and the
-  only one where the companion effect above can stand in for them. On D3D12 and Vulkan the add-on
-  only receives the final image.
+- D3D11 is the only route where the game's own motion vectors reach the network, and the only one
+  where the companion effect above can stand in for them. On D3D12 the add-on finds the game's
+  depth, captured before the game clears it, and estimates motion. On Vulkan and OpenGL it only
+  receives the final image.
 - FSR upscaling is not implemented and is not planned.
 - On 32-bit D3D9 without D3D9Ex, each frame crosses system memory twice. That costs a few
   milliseconds per frame regardless of the Resolution Scale.
@@ -198,7 +206,7 @@ This project is downstream of
 **[DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD)** by **danielblnc**. That project
 produces the runtime and the weights, which is everything the network needs to run. Neither is
 reimplemented or redistributed here. This repository adds the ReShade add-on around it: the D3D11,
-D3D12 and Vulkan routes, the 32-bit bridge, the guide capture and the overlay.
+D3D12, Vulkan and OpenGL routes, the 32-bit bridge, the guide capture and the overlay.
 
 It has its own terms. The MIT licence below covers only the code in this repository.
 

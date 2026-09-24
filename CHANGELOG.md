@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+The source is laid out by layer, one transport per graphics API, and both routes draw the same
+panel. The output was checked against v0.6.6 byte for byte in 26 settings that move the picture,
+with the temporal path (motion, history, depth) switched off for that check. Fixes a player would
+notice:
+
+- **A 32-bit D3D9 game no longer crashes on exit** (`0xC0000409`) with the effect on. Present in
+  v0.6.6.
+- **A resolution change in Async mode no longer switches the effect off for the rest of the
+  session** when the runtime is still busy.
+- **A resize no longer clears the game's D3D11 state**, which left an emulator that caches its own
+  state (PCSX2) drawing with nothing bound. On both the 64-bit and the 32-bit route.
+- The 32-bit helper lifts its scale cap when the slider is let go unchanged.
+- With the additive composition, the Guard help no longer leaves its `(?)` on its own.
+
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 
 Same pinned **DLSS-NR-on-AMD v0.3.0** runtime, same weights, and **the 64-bit add-on is
