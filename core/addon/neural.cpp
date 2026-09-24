@@ -4830,7 +4830,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
             // something to edit without being told which keys exist. On the run that writes it,
             // it has already read the settings for the reason its own comment gives, and a second
             // read here would only re-parse what it just wrote.
-            g_factory = ReadPanelSettings();  // the constructed defaults, before any ini is read
+            g_factory = ReadPanelSettings(); g_factory.scale = 1.0f;  // constructed defaults; Scale as a fresh ini ships it
             if (!EnsureNeuralIni())
                 LoadSettings();
         }

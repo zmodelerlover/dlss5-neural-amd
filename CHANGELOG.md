@@ -14,6 +14,9 @@ notice:
 - **A resize no longer clears the game's D3D11 state**, which left an emulator that caches its own
   state (PCSX2) drawing with nothing bound. On both the 64-bit and the 32-bit route.
 - The 32-bit helper lifts its scale cap when the slider is let go unchanged.
+- **Factory Defaults** is on the 64-bit panel too, as it was on the 32-bit one. It keeps the
+  language, the hotkey and which controls are shown, and sets Scale back to the 1.0 a fresh
+  `amd-nr.ini` starts with.
 - With the additive composition, the Guard help no longer leaves its `(?)` on its own.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
