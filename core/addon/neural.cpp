@@ -963,6 +963,7 @@ struct State
     bool loggedHistory = false;
     bool loggedEffectsFirst = false;
     UINT flowWidth = 0, flowHeight = 0;
+    UINT64 flowRuns = 0;  // estimator runs on the current lumaA/lumaB
     bool loggedFlow = false;
     // Separate from loggedFlow on purpose. The estimator logs on the first frame, long before a
     // game reaches a scene that binds a velocity buffer, and a single shared flag would mean the
@@ -2950,7 +2951,8 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
             // on, as the present does at 500 ms. ponytail: a raster of VRAM per stuck change.
             Log("raster: runtime job %u did not become idle in 5 s; parking its textures.", g.lastJob);
             if (netChanged)
-                g.parked.insert(g.parked.end(), { g.netColour, g.netMotion, g.netDepth });
+                g.parked.insert(g.parked.end(), { g.netColour, g.netMotion, g.netDepth, g.history[0],
+                                                  g.history[1], g.history[2] });
             ResetJobs();
         }
         else
@@ -3018,6 +3020,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
         }
         g.historyValid.store(0);
         g.flowWidth = fw;
+        g.flowRuns = 0;
         g.flowHeight = fh;
     }
     if (outChanged && !CreateTexture(w, h, composeFormat, g.composed, "composed"))
@@ -3469,6 +3472,8 @@ bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
     return changed;
 }
 
+#include "../temporal/history.inc"
+
 // Everything the network does in one frame, recorded into whatever command list it is handed.
 // `colourSrc` is the image to work from and must already be readable as a shader resource; the
 // composed result is left in g.composed and copied into `outTarget` when one is given. Pulling
@@ -3587,6 +3592,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // RecordFn re-captures the same frame with no lag) and costs one cheap dispatch.
     if (g.status.frame > 0)
         captureResidual();
+    RetireHistory(cmd);
 
     cmd->SetComputeRootSignature(g.root.Get());
     cmd->SetDescriptorHeaps(1, &heap);
@@ -3614,6 +3620,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // frame's luminance, then upsample into the raster the engine reads. The two luminance
     // textures swap every frame so this frame's becomes next frame's reference.
     bool haveMotion = false;
+    g_motionSinceEvaluation = false;  // see DropStaleHistory
     // The game's own velocity buffer, when there is one. This is the input the estimator below
     // exists to replace: an engine knows where every surface was because it has the previous
     // transform, while a block match over two images can only guess and, on PCSX2, measured 99%
@@ -3656,8 +3663,11 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     }
     else if (g.settings.useMotion.load() && g.flowSmall != nullptr)
     {
-        ID3D12Resource *cur = (g.status.frame & 1) ? g.lumaB.Get() : g.lumaA.Get();
-        ID3D12Resource *prev = (g.status.frame & 1) ? g.lumaA.Get() : g.lumaB.Get();
+        // Swapped per estimator run, not per present: with the network sitting out every other
+        // present, the present count had the same parity on every run and `prev` was never rewritten.
+        const bool odd = (g.flowRuns++ & 1) != 0;
+        ID3D12Resource *cur = odd ? g.lumaB.Get() : g.lumaA.Get();
+        ID3D12Resource *prev = odd ? g.lumaA.Get() : g.lumaB.Get();
         const UINT fw = g.flowWidth, fh = g.flowHeight;
 
         srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -3792,7 +3802,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             }
         }
 
-        haveMotion = g.status.frame > 1;
+        haveMotion = g_motionSinceEvaluation = g.flowRuns > 2;
         if (!g.loggedFlow)
         {
             g.loggedFlow = true;
@@ -3941,15 +3951,6 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     {
         const UINT slot = std::min(i, State::kMaxPasses - 1);
         HMODULE r = RuntimeFor(slot);
-        // Temporal history. The network is a denoiser: without a previous result to carry
-        // forward it starts from nothing every frame, and a motion vector -- which says where a
-        // pixel *was* -- has nothing to point at. This is the pair that turns motion from an
-        // input the engine merely reports into one it can use.
-        //
-        // Off by default because these are hardcoded offsets into one specific build: a wrong
-        // pointer here does not fail, it hangs the game.
-        // This pass's own previous output, not the chain's. See the declaration of history[].
-        //
         // Decided before the history is looked at, so a control that changed this frame drops
         // it now and not one frame late. See ControlsChanged for which controls and why.
         const PassTune tune = TuningFor(i);
@@ -3963,20 +3964,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                 i + 1, static_cast<double>(tune.tone), static_cast<double>(tune.structure),
                 static_cast<double>(tune.skin), autoMask, static_cast<double>(outScale));
         }
-        const bool wantHistory = g.settings.useHistory.load() &&
-                                 (g.historyValid.load() & (1u << slot)) != 0 &&
-                                 g.history[slot] != nullptr;
-        At<uint8_t>(r, rt::kHistoryOn) = wantHistory ? 1 : 0;
-        At<void *>(r, rt::kHistory) =
-            wantHistory ? static_cast<void *>(g.history[slot].Get()) : nullptr;
-        if (wantHistory && !g.loggedHistory)
-        {
-            g.loggedHistory = true;
-            Log("history: handing each pass its own previous output at %ux%u -- pass %u reads "
-                "what pass %u wrote last frame, not what the chain ended on. Watch the engine "
-                "log: it says history off there when it is ignoring this.",
-                g.netWidth, g.netHeight, slot + 1, slot + 1);
-        }
+        ArmHistory(r, slot);
         // 97b1d is Temporal, not "motion is valid" -- the engine's own ini reader reads the
         // key "Temporal" into this byte. The old name was a guess and it made the session-2
         // measurement look unexplained: Temporal=1 was the only run where the engine reported
@@ -4087,25 +4075,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // -- v0.2.17 did it with hipMemcpyAsync, v0.3.0 stores straight through
         // its own host pointer; either way, leave it to do so.
         ++accepted;
-
-        // Keep what this pass produced as this pass's history for the next frame. Recorded on
-        // the same list, straight after the pass, so on the GPU it reads what the pass wrote and
-        // lands before the next pass overwrites netColour. Doing it once after the loop -- which
-        // is what this used to do -- could only ever capture the last pass, so every earlier
-        // pass was handed a reference belonging to a different stage of the chain.
-        if (g.settings.useHistory.load() && g.history[slot] != nullptr)
-        {
-            Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE);
-            Barrier(cmd, g.history[slot].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_COPY_DEST);
-            cmd->CopyResource(g.history[slot].Get(), g.netColour.Get());
-            Barrier(cmd, g.history[slot].Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            g.historyValid.fetch_or(1u << slot);
-        }
+        KeepHistory(cmd, slot, i + 1 == wanted);
 
         // Reported, not enforced. Whether the engine bumps the job id once per recording or once
         // per submission is not established, so acting on this would risk breaking out of the
@@ -4291,24 +4261,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-    // Each pass took its own copy as it finished, so there is nothing to capture here any more.
-    // What is left is the invalidation, which is still a whole-chain decision.
-    if (!(g.settings.useHistory.load() && g.activePasses != 0))
-    {
-        // The chain did not run this frame -- skipped because the previous evaluation was still
-        // pending, or refused by the engine -- so the history texture still holds the frame
-        // before last, and it was never marked stale. Next frame the denoiser is handed a
-        // two-frame-old image together with one frame of motion, and every further skip widens
-        // the gap without ever clearing it: the history stayed valid from the first frame that
-        // set it until the resolution changed.
-        //
-        // That mismatch is the ghosting. It is worst precisely where frames get dropped -- loads,
-        // cutscenes, alt-tab, anything that stalls the queue -- which is where it gets reported.
-        // Invalidating costs the denoiser one frame of accumulation; not invalidating costs a
-        // smear that has no way to decay.
-        g.historyValid.store(0);
-    }
-
+    // Each pass took its own copy as it finished; the invalidation is a whole-chain decision.
+    DropStaleHistory(runNetwork);
     return true;
 }
 
