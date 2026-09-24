@@ -187,9 +187,35 @@ void LocalTone(PanelSettings &s)
          "desde então.");
 }
 
+void Smooth(PanelSettings &s)
+{
+    ImGui::SliderFloat(T("Output smoothing", "Suavização da saída"), &s.outputSmooth, 0.0f, 0.95f,
+                       s.outputSmooth > 0.0f ? "%.2f" : T("off", "desligada"), 0);
+    ImGui::SliderFloat(T("Smoothing limit", "Limite da suavização"), &s.outputSmoothLimit, 1.0f, 32.0f,
+                       "%.0f/255", 0);
+    Help("Where the network's answer differs from its previous answer (moved by the motion) by less "
+         "than the limit, it is blended toward it by the strength; larger differences pass untouched, "
+         "so real changes are not smeared. The reference ships 0.80 and 10/255.\n\n"
+         "Measured on recorded play with no game motion vectors: at 0.80 and 10/255 the screen "
+         "flickers 2 to 2.5 times less, with no loss of detail. 0.90 is 10-15% steadier still and "
+         "lags slow light changes a little more.",
+
+         "Onde a resposta da rede difere da resposta anterior (deslocada pelo movimento) menos que o "
+         "limite, ela é puxada para a anterior na força escolhida; diferenças maiores passam intactas, "
+         "então mudança de verdade não borra. A referência vem com 0,80 e 10/255.\n\n"
+         "Medido em jogo gravado, sem motion vectors do jogo: em 0,80 e 10/255 a tela pisca 2 a 2,5 "
+         "vezes menos, sem perder detalhe. 0,90 é mais 10-15% estável e atrasa um pouco mais mudanças "
+         "lentas de luz.");
+    if (s.outputSmooth > 0.0f && s.inlineMode == 0)
+        Note(kDanger, T("Only works with Timing on Same frame: in async the answer is not there yet "
+                        "when it would run, so right now it does nothing.",
+                        "Só funciona com Momento em Mesmo quadro: em assíncrono a resposta ainda não "
+                        "chegou quando ela rodaria, então agora ela não faz nada."));
+}
+
 } // namespace
 
-void DrawImage(PanelSettings &s)
+void DrawImage(PanelSettings &s, const PanelStatus &status)
 {
     if (!SectionHeader(kHueImage, T("Image", "Imagem"), true))
         return;
@@ -212,6 +238,8 @@ void DrawImage(PanelSettings &s)
     ImGui::EndDisabled();
     if (Shown(s, kOptLocalTone))
         LocalTone(s);
+    if (Shown(s, kOptSmooth) && !status.helperProcess)  // not on the bridge's wire
+        Smooth(s);
 }
 
 } // namespace ui

@@ -1337,10 +1337,9 @@ void LoadSettings()
     g.settings.scale.store(std::clamp(num(L"Scale", g.settings.scale.load()), 0.25f, 2.0f));
     g.settings.language.store(std::clamp(static_cast<int>(num(L"Language", 0.0f)), 0, 1));
     // Advanced=1 was the single switch this replaced; honour it once as "show all of them".
-    // Advanced=1 was the single switch this replaced; honour it once as "show all of them".
-    // kOptAll lives beside enum Opt, so a new bit widens both the mask and this in one edit.
-    g.settings.optional.store(static_cast<uint32_t>(num(L"HiddenShown",
-        static_cast<float>(flag(L"Advanced", false) ? kOptAll : g.settings.optional.load()))) & kOptAll);
+    // kOptAll lives beside enum Opt, so a new bit widens both the mask and this in one edit. Read as an integer: 25 bits do not survive float.
+    g.settings.optional.store(static_cast<uint32_t>(GetPrivateProfileIntW(L"amd-nr", L"HiddenShown",
+        static_cast<INT>(flag(L"Advanced", false) ? kOptAll : g.settings.optional.load()), ini.c_str())) & kOptAll);
     g.settings.passes.store(std::clamp(static_cast<int>(num(L"Passes", 1.0f)), 1,
                              static_cast<int>(State::kMaxPasses)));
     g.settings.serialPasses.store(flag(L"SerialPasses", true));
@@ -1451,13 +1450,14 @@ void LoadSettings()
     g.settings.diagnostics = flag(L"Diagnostics", false);
 
     Log("settings: scale %.2f passes %d intensity %.2f structure %.2f skin %.2f tone %.2f "
-        "inline %d bicubic %d motion %d history %d gate %.3f ratio %.2f debug %d",
+        "inline %d bicubic %d motion %d history %d gate %.3f ratio %.2f debug %d temporal %d seed %d smooth %.2f/%.0f",
         static_cast<double>(g.settings.scale.load()), g.settings.passes.load(),
         static_cast<double>(g.settings.intensity.load()), static_cast<double>(g.settings.structure.load()),
         static_cast<double>(g.settings.skin.load()), static_cast<double>(g.settings.tone.load()),
         g.settings.inlineMode.load() ? 1 : 0, g.settings.bicubic.load() ? 1 : 0, g.settings.useMotion.load() ? 1 : 0,
         g.settings.useHistory.load() ? 1 : 0, static_cast<double>(g.settings.flowGate.load()),
-        static_cast<double>(g.settings.flowRatio.load()), g.settings.debugView.load());
+        static_cast<double>(g.settings.flowRatio.load()), g.settings.debugView.load(), g.settings.temporalMode.load(),
+        g.settings.fixedSeed.load(), static_cast<double>(g.settings.outputSmooth.load()), static_cast<double>(g.settings.outputSmoothLimit.load()));
     Log("compose: %s, guard %.2f%s, colour strength %.2f, residual limit %.3f, edge fade %.3f, "
         "later passes %s",
         g.settings.ratioGuard.load() > 0.0f ? "ratio" : "additive",
@@ -1489,12 +1489,15 @@ void ForEachSetting(Num num, Flag flag)
     num(L"Scale", g.settings.scale.load());
     num(L"Passes", g.settings.passes.load());
     num(L"Language", g.settings.language.load());
-    num(L"HiddenShown", static_cast<float>(g.settings.optional.load()));
+    num(L"HiddenShown", static_cast<double>(g.settings.optional.load()));
     num(L"AutoMask", g.settings.autoMask.load());
     num(L"ToneChannels", g.settings.toneChannels.load());
     num(L"EngineScale", g.settings.engineScale.load());
     num(L"Tonemap", g.settings.tonemap.load());
     num(L"Temporal", g.settings.temporalMode.load());
+    num(L"FixedSeed", g.settings.fixedSeed.load());
+    num(L"OutputSmooth", g.settings.outputSmooth.load());
+    num(L"OutputSmoothLimit", g.settings.outputSmoothLimit.load());
     num(L"Intensity", g.settings.intensity.load());
     num(L"ResidualLimit", g.settings.residualLimit.load());
     num(L"EdgeFade", g.settings.residualFade.load());
@@ -1554,10 +1557,12 @@ void SaveSettings(bool quiet)
         [&](const wchar_t *key, double v) {
             wchar_t buf[64];
             static _locale_t c_locale = _create_locale(LC_NUMERIC, "C");
+            // Whole numbers in full: %.4g kept four digits, and HiddenShown is a bit mask past 10^7.
+            const wchar_t *fmt = v == std::floor(v) && std::fabs(v) < 1e9 ? L"%.0f" : L"%.4g";
             if (c_locale != nullptr)
-                _swprintf_s_l(buf, 64, L"%.4g", c_locale, v);
+                _swprintf_s_l(buf, 64, fmt, c_locale, v);
             else
-                swprintf_s(buf, 64, L"%.4g", v);
+                swprintf_s(buf, 64, fmt, v);
             WritePrivateProfileStringW(L"amd-nr", key, buf, ini.c_str());
         },
         [&](const wchar_t *key, bool v) {
@@ -1577,7 +1582,7 @@ uint64_t SettingsFingerprint()
         const float f = static_cast<float>(v);
         uint32_t bits = 0;
         std::memcpy(&bits, &f, sizeof(bits));
-        h = (h ^ bits) * 1099511628211ull;
+        h = (h ^ bits ^ (v == std::floor(v) ? static_cast<uint32_t>(static_cast<int64_t>(v)) : 0u)) * 1099511628211ull;
     };
     ForEachSetting([&](const wchar_t *, double v) { mix(v); },
                    [&](const wchar_t *, bool v) { mix(v ? 1.0 : 0.0); });
@@ -1683,6 +1688,7 @@ float HalfToFloat(uint16_t h)
     return (h & 0x8000) ? -v : v;
 }
 
+void DemoteMotion(double meanPx);  // core/temporal/motion_feed.inc
 void DrainReadbacks(UINT nw, UINT nh)
 {
     if (g.pendingGuides)
@@ -1793,7 +1799,9 @@ void DrainReadbacks(UINT nw, UINT nh)
                 // because junk must never end the search. It used to: the first probe fired on
                 // depth that was 1e38 and motion that was uninitialised, both passed, and the
                 // add-on stopped asking for the rest of the run.
-                if (depthReal && zero < n)
+                if (g.gameMotionActive && mag / (2.0 * n) > std::max(nw, nh))
+                    DemoteMotion(mag / (2.0 * n));
+                if (depthReal && zero < n && !g.guideMotion.failed)
                 {
                     g.guidesLookReal.store(true);
                     g.probeGuides.store(false);
@@ -3840,9 +3848,6 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         }
     }
 
-    if (haveMotion)
-        FeedMotion(cmd);
-
     bool haveDepth = false;
     // Three ways depth can arrive, in descending order of how much it is worth. From the game
     // over the bridge: a real, full-range depth buffer an engine wrote and left alone -- this is
@@ -3974,6 +3979,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                 static_cast<unsigned long long>(g.status.frame), haveDepth ? 1 : 0, haveMotion ? 1 : 0);
         }
     }
+    FeedMotion(cmd, haveMotion);  // after the probe's copy, so the probe reads the field as it came
 
     UINT accepted = 0;
     bool nativeFailure = false;
@@ -4633,6 +4639,7 @@ PanelSettings ReadPanelSettings()
     PanelSettings s;
 #define X(type, name, low, high) s.name = static_cast<type>(g.settings.name.load());
 #include "../x86bridge/settings_fields.inc"
+#include "../temporal/lab_fields.inc"
 #undef X
     for (int i = 0; i < kMaxPasses; ++i)
     {
@@ -4662,6 +4669,7 @@ void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)
             static_cast<double>(after.name));                                                      \
     }
 #include "../x86bridge/settings_fields.inc"
+#include "../temporal/lab_fields.inc"
 #undef X
     for (int i = 0; i < kMaxPasses; ++i)
     {

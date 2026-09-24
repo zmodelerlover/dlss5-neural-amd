@@ -10,6 +10,14 @@
 
 void PinSeed(HMODULE r)
 {
+    // Said once per change, so the log answers "is it on" without a line per job.
+    static int logged = -1;
+    if (const int on = g.settings.fixedSeed.load(); on != logged)
+    {
+        logged = on;
+        Log("noise seed: %s", on ? "pinned at 0 (FixedSeed=1, as the reference does)"
+                                 : "the engine's own count, one step per job (FixedSeed=0)");
+    }
     if (g.settings.fixedSeed.load() == 0)
         return;
     if (At<int>(r, rt::kFrameCounter) > 0)

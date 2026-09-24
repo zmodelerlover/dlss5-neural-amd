@@ -42,6 +42,9 @@ constexpr size_t kNativeFailure = 0x9729a;   // the engine gave up; the record e
 
 constexpr size_t kInlineMode = 0x977a0;      // 1 inline, 0 async. v0.3.0 reads the ini key `Async`,
                                              // which is this inverted; the byte itself did not change
+constexpr size_t kInlineActive = 0x977a1;    // the engine's own verdict, latched only when it (re)creates
+                                             // its staging (0x13b61/0x13bbf/0x141fc/0x165a1): 1 when
+                                             // kInlineMode asked and zero-copy + the flag PSO came up
 constexpr size_t kJobCounter = 0x977d4;      // interlocked; how far the engine has got
 
 constexpr size_t kWatchdogJobA = 0x97950;    // a pair of job ids its watchdog writes on a timeout --

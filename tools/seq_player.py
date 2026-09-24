@@ -18,6 +18,22 @@ user32, gdi32, kernel32 = ctypes.windll.user32, ctypes.windll.gdi32, ctypes.wind
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.DefWindowProcW.restype = ctypes.c_ssize_t
+kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+user32.CreateWindowExW.restype = wintypes.HWND
+user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU,
+                                   wintypes.HINSTANCE, wintypes.LPVOID]
+user32.GetDC.restype = wintypes.HDC
+user32.GetDC.argtypes = [wintypes.HWND]
+user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+user32.DestroyWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, wintypes.LPVOID]
+user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+gdi32.SetDIBitsToDevice.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.c_int, ctypes.c_int, wintypes.UINT, wintypes.UINT, ctypes.c_char_p,
+                                    ctypes.c_void_p, wintypes.UINT]
 
 
 class WNDCLASSW(ctypes.Structure):
@@ -75,6 +91,15 @@ def main():
     user32.AdjustWindowRect(ctypes.byref(rect), style, False)
     hwnd = user32.CreateWindowExW(0, "seq_player", f"seq-player {a.seq.name}", style | 0x10000000, 100, 100,
                                   rect.right - rect.left, rect.bottom - rect.top, None, None, wc.hInstance, None)
+    # A Magpie auto-scale profile starts on the foreground window, and Windows refuses the foreground
+    # to a process that does not own it: borrow the owner's input queue for the call.
+    owner = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    me = kernel32.GetCurrentThreadId()
+    user32.AttachThreadInput(me, owner, True)
+    user32.SetForegroundWindow(hwnd)
+    user32.AttachThreadInput(me, owner, False)
+    if user32.GetForegroundWindow() != hwnd:
+        print("seq_player: could not take the foreground; an auto-scale profile will not start", flush=True)
     hdc = user32.GetDC(hwnd)
     bmi = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, h, 1, 32, 0, 0, 0, 0, 0, 0)
     order = [0] * a.hold + [i for _ in range(a.loops) for i in range(len(frames))]

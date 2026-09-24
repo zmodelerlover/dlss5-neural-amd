@@ -28,6 +28,8 @@ const OptRow kOpts[] {
     { kOptTonemap,      kGrpEngine, "Tonemap",           "Tonemap" },
     { kOptToneChannels, kGrpEngine, "Tone channels",     "Canais de tom" },
     { kOptOutputScale,  kGrpEngine, "Output scale",      "Escala de saída" },
+    { kOptSmooth,       kGrpImage,  "Output smoothing",  "Suavização da saída" },
+    { kOptSeed,         kGrpEngine, "Fixed seed",        "Semente fixa" },
 };
 const int kOptCount = static_cast<int>(sizeof(kOpts) / sizeof(kOpts[0]));
 
@@ -44,7 +46,8 @@ uint32_t AvailableOpts(const PanelStatus &status)
     // claimed by it -- which is also what the All button writes.
     uint32_t bits = 0;
     for (int i = 0; i < kOptCount; ++i)
-        if (kOpts[i].bit != kOptFeed || status.hasFeedEffect)
+        if ((kOpts[i].bit != kOptFeed || status.hasFeedEffect) &&
+            !((kOpts[i].bit & kOptHostOnly) && status.helperProcess))
             bits |= kOpts[i].bit;
     return bits;
 }

@@ -238,7 +238,7 @@ void CascadeRows() {
     g_click = {"All"};
     const std::set<std::string> seen = Draw(s, st);
     CHECK(!seen.count("w:Use Feed.fx"), "32-bit cascade offers Use Feed.fx");
-    CHECK(s.optional == (ui::kOptAll & ~ui::kOptFeed), "All on the 32-bit route gave 0x%x",
+    CHECK(s.optional == (ui::kOptAll & ~(ui::kOptFeed | ui::kOptHostOnly)), "All on the 32-bit route gave 0x%x",
           s.optional);
     g_openMore = false;
     g_click.clear();

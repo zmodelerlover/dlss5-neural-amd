@@ -46,13 +46,36 @@ void Temporal(PanelSettings &s)
          "that turned out wrong; the engine's ini reader reads the key Temporal into it. That "
          "explains a measurement nobody could account for: Temporal=1 was the only run where the "
          "engine reported non-zero motion, which is what accumulating over time is for. Auto "
-         "turns it on whenever a motion field exists.",
+         "turns it on whenever a motion field exists.\n\n"
+         "Measured on recorded play: Auto starts accumulating only once the motion field counts "
+         "as real -- a few frames after every reset -- and the picture steps when it does. On "
+         "accumulates from the first frame and removes that step, at no cost anywhere else.",
 
          "Acumulação temporal. Este add-on rotulava esse byte como 'movimento válido' -- um "
          "chute errado; o leitor de ini do motor lê a chave Temporal nele. Isso explica uma "
          "medição que ninguém justificava: Temporal=1 foi a única execução em que o motor "
          "reportou movimento diferente de zero, que é para isso que acumular no tempo serve. "
-         "Automático liga sempre que existe campo de movimento.");
+         "Automático liga sempre que existe campo de movimento.\n\n"
+         "Medido em jogo gravado: Automático só começa a acumular quando o campo de movimento "
+         "conta como real -- alguns quadros depois de cada reset -- e a imagem dá um degrau "
+         "nessa hora. Ligado acumula desde o primeiro quadro e tira esse degrau, sem custo em "
+         "nenhum outro lugar.");
+}
+
+void Seed(PanelSettings &s)
+{
+    bool pinned = s.fixedSeed != 0;
+    if (ImGui::Checkbox(T("Fixed seed", "Semente fixa"), &pinned))
+        s.fixedSeed = pinned ? 1 : 0;
+    Help("The network mixes a noise pattern into its first block, and the engine changes it on "
+         "every evaluation: on a still frame with nothing temporal on, consecutive answers differ "
+         "by 0.44/255 on average and up to 15/255. Fixed keeps it at 0, as the reference does, and "
+         "that flicker is gone -- the same still frame gives the same answer bit for bit.",
+
+         "A rede mistura um padrão de ruído no primeiro bloco, e o motor troca esse padrão a cada "
+         "avaliação: num quadro parado sem nada temporal, respostas seguidas diferem 0,44/255 em "
+         "média e até 15/255. Fixa mantém em 0, como a referência faz, e esse tremor some -- o "
+         "mesmo quadro parado dá a mesma resposta bit a bit.");
 }
 
 void Tonemap(PanelSettings &s)
@@ -170,6 +193,8 @@ void DrawEngine(PanelSettings &s, const PanelStatus &status)
         Mask(s);
     if (Shown(s, kOptTemporal))
         Temporal(s);
+    if (Shown(s, kOptSeed) && !status.helperProcess)  // not on the bridge's wire
+        Seed(s);
     if (Shown(s, kOptTonemap))
         Tonemap(s);
     if (Shown(s, kOptToneChannels))

@@ -247,9 +247,8 @@ struct Host {
     }
     ID3D12CommandList *lists[] { cmd };
     g.bridge.workQueue->ExecuteCommandLists(1, lists);
-    if (g.activePasses != 0)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
-            g.bridge.workQueue.Get(), 1, lists);
+    if (g.activePasses != 0)  // every module that recorded: the last pass's copy runs nothing until told
+        NotifyRuntimes(g.bridge.workQueue.Get(), 1, lists);
     g.ringValue[i] = ++g.ringSerial;
     Check(g.bridge.workQueue->Signal(g.ringFence.Get(), g.ringSerial), "ring signal");
     g.completion = ++g.serial;
@@ -267,7 +266,7 @@ struct Host {
         lastFrame=f.id;
         if(f.resetHistory)g.historyValid.store(false);
         g.guideDepth.ready=f.depthValid&&g.settings.useGameGuides.load()&&g.settings.useDepth.load();
-        g.guideMotion.ready=f.motionValid&&g.settings.useGameGuides.load()&&g.settings.useMotion.load();
+        g.guideMotion.ready=f.motionValid&&g.settings.useGameGuides.load()&&g.settings.useMotion.load()&&!g.guideMotion.failed;
         const auto result=transport?CopyOnly():Neural();
         if(result==Result::Neural||result==Result::Transport)++processedFrames;else ++skippedFrames;
         ++g.status.frame;

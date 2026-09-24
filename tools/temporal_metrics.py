@@ -60,6 +60,78 @@ class Run:
         return self.rows.get(t, {}).get("ran") == "1"
 
 
+class RefRun:
+    """The reference's DLSS5_FLICKER_DUMP captures (Magpie-DLSS5-AMD 0.29 over seq_player, five
+    consecutive evaluations per folder; D:/lab-temporal/ref_run.ps1), placed on the sequence by
+    content. A dump holds the network input (`color`: the FSR3 output fitted onto the network
+    surface), `history` (the previous evaluation's output) and `motion` (after its feed), so
+    evaluation k's output is dump k+1's history. The five inputs are placed as one block of
+    consecutive frames, scored only where the sequence moves at all: in a still stretch neighbouring
+    frames differ too little to place one frame alone."""
+
+    def __init__(self, folders, seq):
+        nw, nh = next(((w, h) for w, h in ((1280, 720), (1600, 900)) if seq.w <= w and seq.h <= h), (1920, 1080))
+        # NativeInputGeometry::Make: the whole input fitted onto the network surface, centred
+        if seq.w * nh >= seq.h * nw:
+            fw, fh = nw, (seq.h * nw + seq.w // 2) // seq.w
+        else:
+            fw, fh = (seq.w * nh + seq.h // 2) // seq.h, nh
+        ys, xs = np.mgrid[0:seq.h, 0:seq.w].astype(np.float32)
+        gx, gy = (nw - fw) // 2 + (xs + .5) * fw / seq.w - .5, (nh - fh) // 2 + (ys + .5) * fh / seq.h - .5
+        same = (nw, nh) == (seq.w, seq.h)
+        to_seq = lambda a: a if same else sample(a, gx, gy)
+        lo = hi = None
+        for t in range(seq.n):
+            f = seq.frame(t)
+            lo, hi = (f, f) if lo is None else (np.minimum(lo, f), np.maximum(hi, f))
+        moving = (hi - lo).max(axis=-1) > 4 / 255
+        moving = moving if moving.any() else np.ones_like(moving)
+        self.out, self.fed, self.motion, self.src, self.rows, self.placed = {}, {}, {}, {}, {}, []
+        for folder in map(Path, folders):
+            dumps = sorted(folder.glob("flicker-*-color.rgba16f"), key=lambda p: int(p.name.split("-")[2]))
+            prefixes = [str(p)[:-len("-color.rgba16f")] for p in dumps]
+            if not dumps:
+                self.placed.append(dict(folder=folder.name, used=False, why="no dumps"))
+                continue
+            if any(p.stat().st_size != nw * nh * 8 for p in dumps):
+                # The add-on hooks the first FFX dispatch it sees; now and then that is the FSR4 upscale
+                # after it, and the network ran on the enlarged picture: not the route being measured.
+                self.placed.append(dict(folder=folder.name, used=False, why="network surface is not the input's"))
+                continue
+            colors = [to_seq(np.fromfile(p + "-color.rgba16f", np.float16).reshape(nh, nw, 4)[..., :3]
+                             .astype(np.float32)) for p in prefixes]
+            err = np.array([[np.abs(c - f)[moving].mean() for c in colors] for f in map(seq.frame, range(seq.n))]).T
+            n = len(colors)
+            o = int(np.argmin([sum(err[k, o + k] for k in range(n)) for o in range(seq.n - n + 1)]))
+            alone = err.argmin(axis=1).tolist()
+            block = [float(err[k, o + k]) for k in range(n)]
+            # Frames lost between dumps (the capture outran by a dump's stall) break the block: then
+            # the block fits far worse than each frame alone, and the folder says nothing about flicker.
+            fits = max(block) <= 2 * float(err.min(axis=1).max()) + 0.5 / 255
+            self.placed.append(dict(folder=folder.name, frames=[o, o + n - 1], alone=alone, used=fits,
+                                    err_255=[round(e * 255, 2) for e in block]))
+            if not fits:
+                continue
+            for k, p in enumerate(prefixes):
+                t = o + k
+                self.fed[t], self.src[t] = colors[k], folder
+                m = np.fromfile(p + "-motion.f32", np.float32).reshape(-1, 4)
+                shape = (seq.h, seq.w) if m.shape[0] == seq.w * seq.h else (nh, nw)
+                self.motion[t] = m.reshape(*shape, 4)[..., :2]
+                if k + 1 < n:
+                    hist = np.fromfile(prefixes[k + 1] + "-history.f32", np.float32).reshape(nh, nw, 4)[..., :3]
+                    self.out[t], self.rows[t] = to_seq(hist), {"ran": "1"}
+
+    def get(self, t, kind):
+        return dict(runtime=self.out, stabilised=self.fed, motion=self.motion).get(kind, {}).get(t)
+
+    def ran(self, t):
+        return t in self.out
+
+    def follows(self, t, t0):
+        return t == t0 + 1 and self.src.get(t) == self.src.get(t0)
+
+
 def resize_to(a, w, h):
     """Nearest resample of a (h', w', c) array onto w x h; the identity when sizes match."""
     if a.shape[1] == w and a.shape[0] == h:
@@ -114,7 +186,10 @@ class Seq:
         return load_ppm(self.dir / f"frame{t:04d}.ppm")
 
     def mv(self, t):
-        return np.fromfile(self.dir / f"mv{t:04d}.f32", np.float32).reshape(self.h, self.w, 2)
+        path = self.dir / f"mv{t:04d}.f32"
+        if not path.exists():  # recorded play (seq_from_video): no truth, its valid mask is the still part
+            return np.zeros((self.h, self.w, 2), np.float32)
+        return np.fromfile(path, np.float32).reshape(self.h, self.w, 2)
 
     def valid(self, t):
         return np.fromfile(self.dir / f"valid{t:04d}.u8", np.uint8).reshape(self.h, self.w).astype(bool)
@@ -167,6 +242,8 @@ def analyse(seq, run=None, spatial=None, kind="runtime"):
         frames.append(row)
         if t not in shown:
             continue
+        if last is not None and hasattr(run, "follows") and not run.follows(t, last[0]):
+            last = None  # separate reference captures: their outputs do not follow one another
         cur_in = seq.frame(t)
         out = run.get(t, kind) if run else None
         out = resize_to(out[..., :3], seq.w, seq.h) if out is not None else None
@@ -189,7 +266,7 @@ def analyse(seq, run=None, spatial=None, kind="runtime"):
         if out is not None:
             inner = np.ones((seq.h, seq.w), bool) if seq.hud is None else ~seq.hud
             row["detail"] = laplacian_var(out, inner) / max(laplacian_var(cur_in, inner), 1e-12)
-            if run.ran(t) and t > 0:
+            if run.ran(t) and t > 0 and seq.meta.get("truth", True):
                 cap = run.get(t, "motion")
                 if cap is not None:
                     k = cap.shape[1] / seq.w  # raster pixels per frame pixel
@@ -237,11 +314,30 @@ def main():
     p.add_argument("--spatial", type=Path)
     p.add_argument("--kind", default="runtime")
     p.add_argument("--json", type=Path)
+    p.add_argument("--ref", type=Path, nargs="+", help="reference dump folders instead of --run")
+    p.add_argument("--compare", type=Path, nargs="*", default=[],
+                   help="seq_run cases, measured on exactly the frames the reference has")
     a = p.parse_args()
     seq = Seq(a.seq)
-    summary, frames = analyse(seq, Run(a.run) if a.run else None, Run(a.spatial) if a.spatial else None, a.kind)
+    run = RefRun(a.ref, seq) if a.ref else Run(a.run) if a.run else None
+    summary, frames = analyse(seq, run, Run(a.spatial) if a.spatial else None, a.kind)
     if a.json:
         a.json.write_text(json.dumps(dict(summary=summary, frames=frames), indent=1))
+    if a.ref:
+        for placed in run.placed:
+            print(placed)
+        at = {r["frame"] for r in frames if r.get("ti_out")}
+        print(f"\n{seq.meta['name']}: {len(at)} frame pairs {sorted(at)}  (x1e-3; TI on valid pixels)")
+        print(f"{'case':34} {'TI_out':>7} {'>4/255':>7} {'gain':>6} {'detail':>6}")
+        cases = [("reference", frames)] + [(str(c).replace("\\", "/").split("runs/")[-1],
+                                            json.loads((c / seq.dir.name / "metrics.json").read_text())["frames"])
+                                           for c in a.compare]
+        for name, rows in cases:
+            rows = [r for r in rows if r["frame"] in at]
+            cells = [(mean_of(rows, "ti_out", "mean"), 1000, 7, 3), (mean_of(rows, "ti_out", "gt4"), 1000, 7, 2),
+                     (mean_of(rows, "gain"), 1, 6, 2), (mean_of(rows, "detail"), 1, 6, 3)]
+            print(f"{name:34} " + " ".join("-".rjust(w) if v is None else f"{v * s:{w}.{d}f}" for v, s, w, d in cells))
+        return
     print(json.dumps(summary, indent=1))
     if a.run is None:
         # The corpus checks itself. Warped by its own truth the input must line up with the frame

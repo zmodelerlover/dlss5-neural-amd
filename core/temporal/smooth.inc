@@ -131,7 +131,19 @@ void PrepareHistory(ID3D12GraphicsCommandList *cmd, UINT slot)
 void SmoothOutput(ID3D12GraphicsCommandList *cmd, UINT slot)
 {
     const float strength = g.settings.outputSmooth.load();
-    if (strength <= 0.0f || !g.settings.inlineMode.load() || g_filters.failed || g_filters.warped[slot] == nullptr)
+    // Said once per change: off by setting, off because async cannot reach netColour here, off
+    // because the filters did not build, or on -- the last one being what a player asks about.
+    static int logged = -1;
+    const int state = strength <= 0.0f ? 0 : !g.settings.inlineMode.load() ? 1 : g_filters.failed ? 2 : 3;
+    if (state != logged)
+    {
+        logged = state;
+        static const char *why[] { "off (OutputSmooth=0)", "OFF: requested, but Timing is async and it only runs same-frame",
+                                   "OFF: requested, but its filters failed to build", "on" };
+        Log("output smooth: %s, strength %.2f, limit %.1f/255", why[state], static_cast<double>(strength),
+            static_cast<double>(g.settings.outputSmoothLimit.load()));
+    }
+    if (state != 3 || g_filters.warped[slot] == nullptr)
         return;
     const UINT w = g.netWidth, h = g.netHeight, base = FilterSlots(slot) + 4;
     ViewAt(base, g_filters.warped[slot].Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);

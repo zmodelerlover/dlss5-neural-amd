@@ -47,8 +47,12 @@ enum Opt : uint32_t
     kOptToneChannels = 1u << 20,
     kOptOutputScale  = 1u << 21,
     kOptMeasure      = 1u << 22,
+    kOptSmooth       = 1u << 23,
+    kOptSeed         = 1u << 24,
 };
-constexpr uint32_t kOptAll = (1u << 23) - 1u;
+constexpr uint32_t kOptAll = (1u << 25) - 1u;
+// Rows whose settings do not cross the bridge's wire (core/temporal/lab_fields.inc).
+constexpr uint32_t kOptHostOnly = kOptSmooth | kOptSeed;
 
 constexpr int kMaxPasses = 3;
 
@@ -58,6 +62,7 @@ struct PanelSettings
 {
 #define X(type, name, low, high) type name = 0;
 #include "../x86bridge/settings_fields.inc"
+#include "../temporal/lab_fields.inc"
 #undef X
     uint32_t passOverride[kMaxPasses] {};
     float passStructure[kMaxPasses] {}, passTone[kMaxPasses] {}, passSkin[kMaxPasses] {};

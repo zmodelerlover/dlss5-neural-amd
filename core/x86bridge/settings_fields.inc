@@ -41,8 +41,8 @@ X(float, engineScale, 0, 1)
 // runtime, which lives in the frontend process, so the helper has nothing to do with the flag.
 X(uint32_t, depthInverted, 0, 1)
 X(uint32_t, depthNormalise, 0, 1)
-// One bit per optional control, saved as HiddenShown. The high bound is kOptAll, 23 bits; this
+// One bit per optional control, saved as HiddenShown. The high bound is kOptAll, 25 bits; this
 // macro takes a literal, so it is spelled out.
-X(uint32_t, optional, 0, 8388607)
+X(uint32_t, optional, 0, 33554431)
 X(int32_t, style, 0, 2)
 X(float, styleStrength, 0, 1)

@@ -28,7 +28,7 @@ PanelActions DrawPanel(PanelSettings &settings, const PanelStatus &status)
     // should not look as if it can.
     ImGui::BeginDisabled(status.transportOnly);
     DrawPerformance(settings, status, actions);
-    DrawImage(settings);
+    DrawImage(settings, status);
     DrawDebug(settings, status, actions);
     DrawExperimental(settings, status);
     DrawGuides(settings, status);

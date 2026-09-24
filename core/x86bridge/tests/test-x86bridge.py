@@ -162,7 +162,8 @@ assert 'cmd->CopyResource(g.bridge.crossLocal.Get(),g.bridge.in.on12.Get())' in 
 assert 'cmd->CopyResource(g.bridge.out.on12.Get(),g.bridge.crossLocal.Get())' in transport
 assert 'Idle();return Result::Transport' in transport
 neural=h[h.index('    Result Neural()'):h.index('    Result FrameWork(')]
-assert neural.index('RecordNetwork(')<neural.index('CompositionIsFresh(')<neural.index('cmd->Close()')<neural.index('ExecuteCommandLists(')<neural.index('NotifyFn')<neural.index('WaitForWorkQueue(g.completion)')<neural.index('return fresh?')
+assert neural.index('RecordNetwork(')<neural.index('CompositionIsFresh(')<neural.index('cmd->Close()')<neural.index('ExecuteCommandLists(')<neural.index('NotifyRuntimes(')<neural.index('WaitForWorkQueue(g.completion)')<neural.index('return fresh?')
+assert 'rt::kNotifyFn' not in neural  # every module that recorded is told, not only g.runtime
 assert 'runNetwork&&g.activePasses!=0' in neural and 'g.fence->GetCompletedValue()>=g.completion' in neural
 assert h.count('++g.status.frame')==1 and 'Idle();ReleaseSwapchainSized();built=false;g.historyValid.store(false);' in h
 for path in [new/'frontend32.cpp',new/'host64.cpp']:
