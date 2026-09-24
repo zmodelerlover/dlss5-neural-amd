@@ -22,8 +22,8 @@ Discord: <https://discord.gg/wYhvS3JSHM> - for DLSS 5 in general, not a support 
 
 ## Install
 
-Download **AMD-NR ReShade Installer** from the
-[Releases](https://github.com/zmodelerlover/dlss5-neural-amd/releases) page. It is one `.exe` and
+Download **AMD-NR ReShade Installer** from its
+[Releases](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer/releases) page. It is one `.exe` and
 needs nothing installed to run.
 
 The installer finds your games, works out which renderer each one uses, downloads the runtime and
@@ -52,8 +52,8 @@ The add-on starts switched off. Tick **Enabled** or press **Ctrl+End**.
 It starts off on purpose. The add-on rewrites every frame, and some settings can crash the display
 driver, so nothing happens until you have looked at the panel.
 
-You can change this. **Enabled from the first frame** turns it on when the game opens. The toggle
-hotkey can be rebound. **Disable the effect on alt-tab** turns it off when the game loses focus.
+You can change this. **On at startup** turns it on when the game opens. The toggle hotkey can be
+rebound. **Off on alt-tab** turns it off when the game loses focus.
 
 ## Settings
 
@@ -72,17 +72,16 @@ The controls are colour-coded:
 
 The main controls:
 
-- **Resolution Scale** — the size of the network input relative to the frame. 0.50 uses a quarter
+- **Scale** — the size of the network input relative to the frame. 0.50 uses a quarter
   of the pixels. Smaller is faster and loses fine detail.
-- **Pass Count** — one to three evaluations. More passes strengthen the effect and can add grain.
-- **Residual Limit** — caps how much the image is changed. Default 0.25.
+- **Passes** — one to three evaluations. More passes strengthen the effect and can add grain.
+- **Limit** — caps how much the image is changed. Default 0.25. In the **Debug** section.
 - **Timing** — this control means different things on the two routes, and the defaults are
   opposite. On a 64-bit game it chooses when the network's answer is composed: Same frame
   waits for it, and Async is older and is not the tested path. On a 32-bit game it chooses
   presentation: pipelined is the default, because it measured 16% to 41% faster in three
-  games and costs one frame of lag and nothing else. Both write `Async` to
-  `amd-nr.ini`, so a value copied from one route's ini means the other thing in the
-  other's.
+  games and costs one frame of lag and nothing else. The 64-bit route writes it as
+  `Inline` and the 32-bit one as `Async`, both in `amd-nr.ini`.
 
 The defaults are a reasonable starting point.
 
@@ -130,11 +129,11 @@ tests and their thresholds are in the effect's own settings.
 | The add-on is not in the Add-ons tab | `ReShade.ini` has `DisabledAddons=` listing it under `[ADDON]`. ReShade writes that line if you ever untick the add-on. Delete the line. |
 | The status says the API is wrong | Only D3D11, D3D12, Vulkan and OpenGL are supported, plus D3D8 and D3D9 in 32-bit games through the bridge. Check for a per-game renderer override. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 is not installed. HIP 6 does not count. |
-| `hash mismatch; refused` | The wrong `dlssnr_amd_pass1.dll`. Compare with `tools/SHA256SUMS.txt`. |
+| `dlssnr_amd_pass1.dll is the right size but a different build … Refused.` (or `… bytes; this add-on is built against …`) | The wrong `dlssnr_amd_pass1.dll`. Compare with `tools/SHA256SUMS.txt`. |
 | `missing:` followed by a file path | That file is not where the add-on looks. Put it at exactly that path. |
-| The game crashes with `887A0005` | A Windows driver reset. Lower the Resolution Scale. |
-| The colours change but textures look the same | Try Resolution Scale 0.75 or 1.00 and compare the same scene. |
-| Vulkan says the present queue is not graphics-capable | The game presents from an async queue. For DOOM Eternal set `r_presentFromAsync "0"`. |
+| The game crashes with `887A0005` | A Windows driver reset. Lower the Scale. |
+| The colours change but textures look the same | Try Scale 0.75 or 1.00 and compare the same scene. |
+| The log says `vulkan: present arrived on a non-graphics queue` | The game presents from an async queue. For DOOM Eternal set `r_presentFromAsync "0"`. |
 
 ### Reporting a problem
 
@@ -142,8 +141,7 @@ Screenshots rarely help, because flicker is frames alternating and a still image
 
 Two things are needed:
 
-1. **The status line** in the panel. It reads `Running: X processed, Y skipped (Z%)` with the
-   buffer sizes. Copy that line.
+1. **The status line** in the panel. It reads `N frames, Z% skipped`. Copy that line.
 2. **The logs**, both next to the game's `.exe`:
    - `amd-nr.log` — what the add-on detected and what it measured.
    - `dlssnr_on_amd.log` — what the runtime did.
@@ -177,7 +175,7 @@ a game.
   receives the final image.
 - FSR upscaling is not implemented and is not planned.
 - On 32-bit D3D9 without D3D9Ex, each frame crosses system memory twice. That costs a few
-  milliseconds per frame regardless of the Resolution Scale.
+  milliseconds per frame regardless of the Scale.
 - This is tested by one person on one card.
 
 ## Support this project
