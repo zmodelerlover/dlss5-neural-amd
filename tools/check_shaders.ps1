@@ -1,4 +1,4 @@
-# The compute shaders live as string literals in neural.cpp and are compiled by D3DCompile at
+# The compute shaders live as string literals in core\shaders\*.h and are compiled by D3DCompile at
 # runtime, so build.ps1 succeeding says nothing about them -- a syntax error only shows up as
 # "shader X failed to compile" in amd-nr.log, in a game, after a launch. Pull them out and
 # run fxc over them instead.
@@ -22,13 +22,16 @@ if ($sdk -and (Test-Path (Join-Path $sdk 'bin'))) {
 }
 if (-not $fxc) { throw 'fxc.exe not found. Install the Windows 10/11 SDK.' }
 
-$src = Get-Content (Join-Path $root 'core\addon\neural.cpp') -Raw
+# They moved out of neural.cpp into these headers, and a check still reading neural.cpp found none
+# and said every shader compiled.
+$src = (Get-ChildItem (Join-Path $root 'core\shaders') -Filter *.h | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
 $tmp = Join-Path $env:TEMP ('amd-nr-shaders-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 $failed = 0
-foreach ($m in [regex]::Matches($src, 'constexpr char (k\w+)\[\] = R"\((?<body>.*?)\)";',
-                                'Singleline')) {
+$shaders = [regex]::Matches($src, 'constexpr char (k\w+)\[\] = R"\((?<body>.*?)\)";', 'Singleline')
+if ($shaders.Count -eq 0) { throw 'No shaders found under core\shaders: this check would pass having read nothing.' }
+foreach ($m in $shaders) {
     $name = $m.Groups[1].Value
     $file = Join-Path $tmp "$name.hlsl"
     Set-Content -Path $file -Value $m.Groups['body'].Value -Encoding ascii
