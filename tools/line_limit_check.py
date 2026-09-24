@@ -44,6 +44,10 @@ def main():
     allow = json.loads(ALLOW.read_text(encoding="utf-8"))
     lengths = dict(tracked())
     failures = []
+    # The control line the other source checks carry: two of them once kept passing after a move,
+    # having read nothing.
+    if not any(name.startswith("core/") for name in lengths):
+        failures.append("read no file under core/; the scan no longer points at the source")
     for name, lines in sorted(lengths.items()):
         if name in allow:
             if lines > allow[name]:
