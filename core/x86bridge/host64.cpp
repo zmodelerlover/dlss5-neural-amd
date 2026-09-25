@@ -151,29 +151,9 @@ struct Host {
         UINT wanted=WantedPasses();if(!BringUpEngines(wanted)){g.status.unavailable=true;return Result::Original;}
         g.loadedPasses=wanted;
         const UINT w=spec.colour.width,h=spec.colour.height;const auto fmt=static_cast<DXGI_FORMAT>(spec.colour.format);
-        if(!EnsureResources(w,h,fmt,g.settings.scale.load())){g.status.unavailable=true;return Result::Original;}
+        if(!EnsureResources(w,h,fmt,EffectiveScale())){g.status.unavailable=true;return Result::Original;}
         if(!g.bridge.crossLocal && !CreateTexture(w,h,ColourReadFormat(fmt),g.bridge.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
-    bool runNetwork = true;
-    const bool jobPending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
-    if (!jobPending && g.jobRunning)
-    {
-        g.jobRunning = false;
-        NoteJobCost(GetTickCount64() - g.lastJobAt);
-    }
-    if (jobPending && GetTickCount64() - g.lastJobAt < 500)
-    {
-        runNetwork = false;
-        if (++g.status.skipped % 120 == 1)
-            Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). Those "
-                    "frames go out as the game drew them; a correction aimed at an older picture "
-                    "reads as a trail, not as detail.",
-                static_cast<unsigned long long>(g.status.skipped),
-                static_cast<unsigned long long>(g.status.frame));
-    }
-    else if (jobPending)
-    {
-        ResetJobs();
-    }
+    const bool runNetwork = JobGate();
 
     const UINT i = static_cast<UINT>(g.bridge.backValue % State::kRing);
 

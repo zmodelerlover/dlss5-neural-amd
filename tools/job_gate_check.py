@@ -11,6 +11,11 @@ blended it. So async is retired, and these hold it retired:
     (unavailable, break) when it is not 1, and does so before the job is counted as ours;
   - the 64-bit panel has no Timing: only the 32-bit bridge draws it, as its pipelining switch.
 
+And the run/skip decision is made in one place. Five copies had drifted (Vulkan and OpenGL recorded
+on top of a late job and never timed one), so each route (D3D12, D3D11, Vulkan, OpenGL, the 32-bit
+bridge's host) sets its runNetwork from JobGate (core/addon/runtimes.inc) exactly once, in code and
+not in a comment, and reads neither the job counter, the skip window nor the job cost itself.
+
     python tools/job_gate_check.py
 """
 import re
@@ -26,6 +31,11 @@ def body(text, signature):
     """The definition of `signature` (not a declaration) up to its closing brace at column 0."""
     m = re.search(rf"^{re.escape(signature)}[^;{{]*\)\s*\n\{{", text, re.M)
     return text[m.start():text.index("\n}\n", m.start())] if m else ""
+
+
+def code(text):
+    """`text` without its comments: a call named in a comment is not a call made."""
+    return re.sub(r"//[^\n]*|/\*.*?\*/", "", text, flags=re.S)
 
 
 bad = []
@@ -59,8 +69,27 @@ else:
 if not re.search(r"if \(status\.helperProcess\)\s*\n\s*Timing\(s\);", draw) or draw.count("Timing(") != 1:
     bad.append("performance.cpp: Timing is drawn outside the 32-bit bridge's helperProcess")
 
+gate = code(body((ROOT / "core/addon/runtimes.inc").read_text(encoding="utf-8"), "bool JobGate("))
+if not all(s in gate for s in ("WaitForPreviousJob();", "RuntimeBusy()", "NoteJobCost(",
+                               "ResetJobs();")):
+    bad.append("runtimes.inc: JobGate must wait, test the job, note its cost and let a late one go")
+transport = ROOT / "core/transport"
+routes = {"D3D12": transport / "d3d12", "D3D11": transport / "d3d11",
+          "Vulkan": transport / "vulkan", "OpenGL": transport / "opengl",
+          "x86 host": ROOT / "core/x86bridge/host64.cpp"}
+for name, path in routes.items():
+    files = [path] if path.is_file() else sorted(path.glob("*.inc"))
+    text = code("".join(p.read_text(encoding="utf-8") for p in files))
+    sets = len(re.findall(r"const bool runNetwork = (?:!transportOnly && )?JobGate\(\);", text))
+    if not files or sets != 1 or text.count("JobGate(") != 1:
+        bad.append(f"{name}: sets runNetwork from JobGate() {sets} times and calls it "
+                   f"{text.count('JobGate(')} times, not once each")
+    for own in ("RuntimeBusy(", "NoteJobCost(", "WaitForPreviousJob(", "lastJobAt"):
+        if own in text:
+            bad.append(f"{name}: reads {own} itself instead of leaving the decision to JobGate")
+
 if bad:
     print("FAIL\n  " + "\n  ".join(bad))
     sys.exit(1)
 print("PASS same frame only: Inline=0 ignored, no decision on the menu flag, a latched async stands "
-      "down, Timing only on the 32-bit bridge")
+      "down, Timing only on the 32-bit bridge, one JobGate on each of the five routes")

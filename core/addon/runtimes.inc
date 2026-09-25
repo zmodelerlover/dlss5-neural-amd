@@ -1,6 +1,6 @@
 // The runtime modules' job control: which module a pass records through, whether any still has a
-// job in flight, the frame-notify, and the waits on our own queue. Part of the core's unity build,
-// included by neural.cpp.
+// job in flight, the frame-notify, the waits on our own queue, and the run/skip gate every route
+// goes through. Part of the core's unity build, included by neural.cpp.
 
 // The module pass `slot` records through. Without a copy of its own a pass shares the first
 // module, which is how every pass ran before the copies existed.
@@ -117,7 +117,8 @@ void WaitForWorkQueue(UINT64 value)
 // Same frame means the game waits for the network, and the runtime only makes the GPU queue wait.
 // A route that does not hold the CPU once a frame (D3D12, and OpenGL once its fences are proven)
 // holds here instead, at the start of the next present, so the game's CPU work has already
-// overlapped the network. Keyed on the engine's latched mode: until a job has latched same-frame
+// overlapped the network; a route that does finds the fence landed and only waits out the counter
+// below. Keyed on the engine's latched mode: until a job has latched same-frame
 // there is nothing to wait for, and a module that latches async stands the add-on down in
 // RecordNetwork (its kJobCounter never moves). Bounded by the skip window, so a stuck job still
 // ends in its ResetJobs, never in a hang.
@@ -142,6 +143,39 @@ void WaitForPreviousJob()
     QueryPerformanceCounter(&t0);
     while (RuntimeBusy() && QueryPerformanceCounter(&t) && t.QuadPart - t0.QuadPart < hz.QuadPart / 500)
         SwitchToThread();
+}
+
+// Whether this frame runs the network: the one run/skip decision, taken once a present by every
+// route before it records. A job still pending skips the network, and the frame goes out as the
+// game drew it, until the job is 500 ms old; then it is given up on and this frame runs. One copy,
+// because five had drifted: Vulkan and OpenGL recorded on top of a late job without letting go of
+// it, and never timed the jobs NoteJobCost needs to see.
+bool JobGate()
+{
+    WaitForPreviousJob();
+    const bool pending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
+    if (!pending && g.jobRunning)
+    {
+        g.jobRunning = false;
+        NoteJobCost(GetTickCount64() - g.lastJobAt);
+    }
+    if (!pending)
+        return true;
+    if (GetTickCount64() - g.lastJobAt < 500)
+    {
+        if (++g.status.skipped % 120 == 1)
+            Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). "
+                "Those frames go out as the game drew them; a correction aimed at an older "
+                "picture reads as a trail, not as detail.",
+                static_cast<unsigned long long>(g.status.skipped),
+                static_cast<unsigned long long>(g.status.frame));
+        return false;
+    }
+    if (g.status.skipped % 600 == 0)
+        Log("previous job did not finish in 500 ms; continuing anyway (%llu skipped)",
+            static_cast<unsigned long long>(g.status.skipped));
+    ResetJobs();
+    return true;
 }
 
 // Both sides must finish before the next pass changes the module's tuning.

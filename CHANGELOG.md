@@ -63,6 +63,12 @@ notice:
 - **Removed: `GlHoldFrames`**, the OpenGL route's option to repeat the last result instead of
   waiting for the network (v0.6.0, off by default). The route now always waits, which is what the
   default did, and an ini that still sets it is ignored.
+- Every route decides whether to run the network in one shared place. On Vulkan and OpenGL a job
+  still unfinished after 500 ms is given up on as on the other routes (its ids are dropped, so a
+  stuck job no longer reads busy for ever), and a skipped frame is counted and logged the same way
+  everywhere. Vulkan and OpenGL now also time each job, and on them and the 32-bit bridge the
+  scale cap after three long evaluations really lowers the scale; the 32-bit panel used to show
+  that cap while the network still ran at the slider's scale.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

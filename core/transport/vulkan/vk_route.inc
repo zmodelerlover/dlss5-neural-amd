@@ -229,7 +229,7 @@ void Present(command_queue *queue, swapchain *sc)
     // RecordNetwork wrote descriptors through them -- an access violation, not a failure. This
     // is the other half of the first Vulkan crash; bringing the engine up alone was never going
     // to be enough.
-    if (!EnsureResources(r.width, r.height, r.format, g.settings.scale.load()))
+    if (!EnsureResources(r.width, r.height, r.format, EffectiveScale()))
     {
         g.status.unavailable = true;
         if (*g.status.reason == 0)
@@ -252,21 +252,10 @@ void Present(command_queue *queue, swapchain *sc)
     }
     g.loadedPasses = wanted;
 
-    // The same guard the D3D11 route carries. Our own queue is drained every frame further down,
-    // but the engine's HIP worker can outlast it (its watchdog lets the list go on), and starting a
-    // second evaluation on top of one still running is how this hangs rather than skips.
-    bool runNetwork = true;
-    const bool jobPending =
-        g.fence->GetCompletedValue() < g.completion ||
-        RuntimeBusy();
-    if (jobPending && GetTickCount64() - g.lastJobAt < 500)
-    {
-        runNetwork = false;
-        if (++g.status.skipped % 120 == 1)
-            Log("vulkan: network skipped, previous evaluation still pending (%llu skipped, %llu "
-                "done)", static_cast<unsigned long long>(g.status.skipped),
-                static_cast<unsigned long long>(g.status.frame));
-    }
+    // The gate every route shares. Our own queue is drained every frame further down, but the
+    // engine's HIP worker can outlast it (its watchdog lets the list go on), and starting a second
+    // evaluation on top of one still running is how this hangs rather than skips.
+    const bool runNetwork = JobGate();
 
     auto *backImage = reinterpret_cast<VkImage>(back.handle);
     VkImageCopy region {};

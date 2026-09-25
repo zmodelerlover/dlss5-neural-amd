@@ -139,16 +139,12 @@ assert 'kPeriodOutlierMs' in sp
 for word in ['FrameFlagClassicD3D9','EfficientClassicD3D9Scale','D3D9 timing avg']:
  assert word not in f,word
 
-# Verify the copied job-pending decision has identical executable text to upstream.
 u=read(root/'core/addon/neural.cpp')+read(root/'core/addon/probes.inc')+read(root/'core/temporal/motion_sources.inc')
-# Ends at RenderEffectsAheadOfNetwork rather than at the comment after it: that call is the
-# D3D12 route's own business and has no counterpart in the bridge, so including it made this
-# compare a policy against a policy plus one unrelated line.
 t=read(root/'core/transport/d3d11/D3D11Transport.inc')
-a=t[t.index('    bool runNetwork = true;',t.index('void BridgePresent')):t.index('    RenderEffectsAheadOfNetwork',t.index('void BridgePresent'))]
-b=h[h.index('    bool runNetwork = true;'):h.index('    const UINT i =',h.index('    bool runNetwork = true;'))]
-normal=lambda s:re.sub(r'\s+','',re.sub(r'//[^\n]*','',s))
-assert normal(a)==normal(b),'job pending policy differs'
+# The job-pending decision is the one JobGate every route calls (tools/job_gate_check.py holds all
+# five); the bridge and the D3D11 route each take it once, before recording, and keep no copy.
+for src in (h,t):assert src.count('JobGate()')==1 and 'RuntimeBusy(' not in src,'job pending policy is not the shared JobGate'
+assert h.index('    Result Neural()')<h.index('JobGate()')<h.index('RecordNetwork(',h.index('    Result Neural()'))
 # The guide selection is one header both routes include, so the two cannot pick differently.
 for src in (u,f):
  assert 'guide_choice.h"' in src
@@ -186,7 +182,7 @@ for path in [new/'frontend32.cpp',new/'host64.cpp']:
  text=read(path)
  assert 'ProfileForThisProcess' not in text and 'kTargets' not in text
  assert set(re.findall(r'[A-Za-z0-9_-]+\.exe',text)) <= {'amd-nr-host64.exe'}
-print('PASS static boundaries: original engine TU; no neural imports/API in frontend; generic LUID match; fixed-width IPC; shared handle ownership; same-frame confirmation; host output fence before ACK; transport isolated; original pending policy; no cached output')
+print('PASS static boundaries: original engine TU; no neural imports/API in frontend; generic LUID match; fixed-width IPC; shared handle ownership; same-frame confirmation; host output fence before ACK; transport isolated; shared job gate; no cached output')
 compiler=os.environ.get('CXX') or shutil.which('g++')
 if not compiler:raise SystemExit('Set CXX to a C++20 compiler; native MSVC checks are separate')
 with tempfile.TemporaryDirectory(prefix='x86bridge-tests-') as d:

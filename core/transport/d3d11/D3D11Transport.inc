@@ -143,23 +143,7 @@ void BridgePresent(device* dev, swapchain* sc) {
         return;
     }
 
-    bool runNetwork = true;
-    const bool jobPending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
-    if (!jobPending && g.jobRunning) {
-        g.jobRunning = false;
-        NoteJobCost(GetTickCount64() - g.lastJobAt);
-    }
-    if (jobPending && GetTickCount64() - g.lastJobAt < 500) {
-        runNetwork = false;
-        if (++g.status.skipped % 120 == 1)
-            Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). Those "
-                "frames go out as the game drew them; a correction aimed at an older picture "
-                "reads as a trail, not as detail.",
-                static_cast<unsigned long long>(g.status.skipped),
-                static_cast<unsigned long long>(g.status.frame));
-    } else if (jobPending) {
-        ResetJobs();
-    }
+    const bool runNetwork = JobGate();
 
     // 0. when the companion effect is on, ReShade's chain runs now, before the copy below reads
     // the back buffer. See RenderEffectsAheadOfNetwork for why the order matters.

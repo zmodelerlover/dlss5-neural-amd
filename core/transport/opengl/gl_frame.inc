@@ -164,7 +164,7 @@ void Present(command_queue *queue, swapchain *sc)
     const bool transportOnly = g.stage.load() < 3;
     if (!transportOnly)
     {
-        if (!EnsureResources(r.width, r.height, kCrossingFormat, g.settings.scale.load()))
+        if (!EnsureResources(r.width, r.height, kCrossingFormat, EffectiveScale()))
         {
             g.status.unavailable = true;
             if (*g.status.reason == 0)
@@ -191,30 +191,13 @@ void Present(command_queue *queue, swapchain *sc)
             "add-on, the crossing is correct.", g.stage.load());
     }
 
-    // The same guard the other routes carry: the engine's HIP worker can outlast our queue (its
-    // watchdog lets the list go on), and starting a second evaluation on top of one still running
-    // is how this hangs rather than skips.
-    // The parentheses are the point. Without them && binds tighter than || and the right-hand
-    // side -- which reads the engine's job counter through g.runtime -- is evaluated even when
-    // the engine was never loaded, which in transport-only mode is a null dereference on the
-    // first frame. That is precisely how this route's second run ended.
-    auto jobPending = [&] {
-        return !transportOnly &&
-               (g.fence->GetCompletedValue() < g.completion ||
-                RuntimeBusy());
-    };
-
-    bool runNetwork = !transportOnly;
-    if (jobPending() && GetTickCount64() - g.lastJobAt < 500)
-    {
-        // Starting a second evaluation on top of one still running is how this hangs rather than
-        // skips, which is why the other routes carry the same guard. The route waits for the
-        // outstanding job, as the D3D11 and Vulkan routes do: that paces the game to the network,
-        // so every frame counter -- the game's, the overlay's, the driver's -- counts frames the
-        // player can actually see, instead of duplicates of the last result.
-        WaitForPreviousJob();
-        runNetwork = !jobPending();
-    }
+    // The gate every route shares: the engine's HIP worker can outlast our queue (its watchdog lets
+    // the list go on), and starting a second evaluation on top of one still running is how this
+    // hangs rather than skips. It waits for the outstanding job first, which paces the game to the
+    // network, so every frame counter -- the game's, the overlay's, the driver's -- counts frames
+    // the player can actually see, instead of duplicates of the last result. Not in transport-only
+    // mode: there is no engine, so no job to wait for and no skip to count.
+    const bool runNetwork = !transportOnly && JobGate();
 
     // --- 1. the host's frame comes over -------------------------------------------------------
     if (!BlitIn(r))

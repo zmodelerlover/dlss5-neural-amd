@@ -5,7 +5,7 @@ namespace d3d12route {
 
 // Same frame means the game waits for the network. The runtime only makes the GPU queue wait -- a
 // spin in the game's own list -- and this route never held the CPU, so with DXGI's three frames of
-// latency every present recorded during that spin found the job pending below and went out raw
+// latency every present recorded during that spin found the job pending in JobGate and went out raw
 // (Rollout Inline: 13325 of 17285). WaitForPreviousJob (runtimes.inc) is the hold that fixed it.
 
 struct Transport final : FrameTransport {
@@ -65,29 +65,7 @@ struct Transport final : FrameTransport {
             Log("off: %s", g.status.reason);
             return;
         }
-        WaitForPreviousJob();
-        bool runNetwork = true;
-        const bool jobPending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
-        if (!jobPending && g.jobRunning) {
-            g.jobRunning = false;
-            NoteJobCost(GetTickCount64() - g.lastJobAt);
-        }
-        if (jobPending) {
-            if (GetTickCount64() - g.lastJobAt < 500) {
-                runNetwork = false;
-                if (++g.status.skipped % 120 == 1)
-                    Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). Those "
-                        "frames go out as the game drew them; a correction aimed at an older picture "
-                        "reads as a trail, not as detail.",
-                        static_cast<unsigned long long>(g.status.skipped),
-                        static_cast<unsigned long long>(g.status.frame));
-            } else {
-                if (g.status.skipped % 600 == 0)
-                    Log("previous job did not finish in 500 ms; continuing anyway (%llu skipped)",
-                        static_cast<unsigned long long>(g.status.skipped));
-                ResetJobs();
-            }
-        }
+        const bool runNetwork = JobGate();
 
         auto* cmd = reinterpret_cast<ID3D12GraphicsCommandList*>(cmd_list->get_native());
         const resource backRes = back;
