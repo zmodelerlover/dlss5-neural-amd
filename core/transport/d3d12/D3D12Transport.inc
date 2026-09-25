@@ -120,10 +120,12 @@ struct Transport final : FrameTransport {
             resource_usage a = resource_usage::present, b = resource_usage::shader_resource;
             cmd_list->barrier(1, &backRes, &a, &b);
         }
-        if (!RecordNetwork(cmd, backbuffer, bd.Format, nullptr, runNetwork, wanted, [&]() {
+        // A failure goes through the tail below too: only the tail puts the back buffer back in
+        // present and signals the fence a teardown waits on for this list.
+        const bool ok = RecordNetwork(cmd, backbuffer, bd.Format, nullptr, runNetwork, wanted, [&]() {
                 ID3D12CommandList* submitted[]{cmd};
-                NotifyRuntimes(g.queue.Get(), 1, submitted);
                 queue->flush_immediate_command_list();
+                NotifyRuntimes(g.queue.Get(), 1, submitted);
                 if (!FinishSubmittedPass())
                     return false;
                 cmd_list = queue->get_immediate_command_list();
@@ -131,36 +133,39 @@ struct Transport final : FrameTransport {
                     return false;
                 cmd = reinterpret_cast<ID3D12GraphicsCommandList*>(cmd_list->get_native());
                 return cmd != nullptr;
-            })) {
-            if (g.status.failed)
-                return;
-            resource_usage a = resource_usage::shader_resource, b = resource_usage::present;
-            cmd_list->barrier(1, &backRes, &a, &b);
-            queue->flush_immediate_command_list();
+            });
+        // The one exit that skips the tail, left in shader_resource: only if a graphics queue hands
+        // back no immediate list after a mid-pass flush, which it never does.
+        if (cmd_list == nullptr)
             return;
-        }
-        if (CompositionIsFresh(runNetwork)) {
+        if (ok && CompositionIsFresh(runNetwork)) {
             {
                 resource_usage a = resource_usage::shader_resource, b = resource_usage::copy_dest;
                 cmd_list->barrier(1, &backRes, &a, &b);
             }
+            // RecordNetwork leaves composed readable by shaders, not as a copy source.
+            Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE);
             cmd->CopyResource(backbuffer, g.composed.Get());
+            Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             {
                 resource_usage a = resource_usage::copy_dest, b = resource_usage::present;
                 cmd_list->barrier(1, &backRes, &a, &b);
             }
         } else {
-            // Skipped frame: the game's own image goes out untouched. Same transition the early-out
-            // above uses, because the back buffer was put into shader_resource on the way in and has
-            // to reach present either way.
+            // Skipped or failed frame: the game's own image goes out untouched. The back buffer was
+            // put into shader_resource on the way in and has to reach present either way.
             resource_usage a = resource_usage::shader_resource, b = resource_usage::present;
             cmd_list->barrier(1, &backRes, &a, &b);
         }
+        // Executed before the runtime is told, as on every other route: the runtime's own detour
+        // executes the list before notifying (tools/runtime-patches.json, 0x8873).
         const UINT nw = g.netWidth, nh = g.netHeight;
         ID3D12CommandList* submitted[]{cmd};
+        queue->flush_immediate_command_list();
         if (g.activePasses != 0)
             NotifyRuntimes(g.queue.Get(), 1, submitted);
-        queue->flush_immediate_command_list();
         DrainReadbacks(nw, nh);
         g.completion = ++g.serial;
         if (FAILED(g.queue->Signal(g.fence.Get(), g.completion))) {

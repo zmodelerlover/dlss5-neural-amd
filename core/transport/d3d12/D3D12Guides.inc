@@ -58,16 +58,21 @@ void SnapshotBeforeClear(command_list* cmd_list, device* dev, resource_view dsv)
 
     const auto d = native->GetDesc();
     if (g.depthSnapshot == nullptr || g.depthSnapshot->GetDesc().Width != d.Width ||
-        g.depthSnapshot->GetDesc().Height != d.Height) {
-        g.depthSnapshot.Reset();
+        g.depthSnapshot->GetDesc().Height != d.Height ||
+        g.depthSnapshot->GetDesc().Format != DepthAliasFormat(d.Format)) {
+        // Parked, not released: last present's list may still read it and nothing here waits for
+        // the queue. ponytail: one per size or format change, freed at the next raster change,
+        // after EnsureResources' fence wait.
+        if (g.depthSnapshot != nullptr)
+            g.parked.push_back(std::move(g.depthSnapshot));
         auto sd = d;
         sd.Format = DepthAliasFormat(d.Format);
-        // ALLOW_DEPTH_STENCIL, and not NONE, for the same reason the live-buffer alias path uses
-        // it. R32G8X24_TYPELESS without the flag is a plain one-plane 64-bit texture; the game's
-        // depth-stencil resource is planar. CopyResource between those two layouts is not a valid
-        // copy, and D3D12 does not refuse it -- it just produces garbage. Every probe read on the
-        // result came back min -3e38, max 2e36, mean NaN, which then sailed through the "min is
-        // not max, so it is real depth" check below and was handed to the network as depth.
+        // ALLOW_DEPTH_STENCIL, and not NONE. R32G8X24_TYPELESS without the flag is a plain
+        // one-plane 64-bit texture; the game's depth-stencil resource is planar. CopyResource
+        // between those two layouts is not a valid copy, and D3D12 does not refuse it -- it just
+        // produces garbage. Every probe read on the result came back min -3e38, max 2e36, mean
+        // NaN, which then sailed through the "min is not max, so it is real depth" check below and
+        // was handed to the network as depth.
         sd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         sd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         if (sd.Format == DXGI_FORMAT_UNKNOWN)

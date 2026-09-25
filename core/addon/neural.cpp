@@ -294,18 +294,6 @@ DXGI_FORMAT DepthReadFormat(DXGI_FORMAT f)
     }
 }
 
-bool IsTypedDepth(DXGI_FORMAT f)
-{
-    switch (f)
-    {
-    case DXGI_FORMAT_D16_UNORM:
-    case DXGI_FORMAT_D24_UNORM_S8_UINT:
-    case DXGI_FORMAT_D32_FLOAT:
-    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: return true;
-    default:                               return false;
-    }
-}
-
 DXGI_FORMAT DepthAliasFormat(DXGI_FORMAT f)
 {
     switch (f)
@@ -998,7 +986,6 @@ struct State
     std::atomic<float> depthDebugScale { 500.0f };
     std::atomic<float> depthScale { 1.0f };
     ComPtr<ID3D12Resource> netDepth;
-    ComPtr<ID3D12Resource> depthAlias;
     ComPtr<ID3D12Resource> depthSnapshot;
     UINT64 depthClears = 0;
     bool loggedSnapshot = false;
@@ -1049,7 +1036,6 @@ struct State
     std::atomic<void *> goneSwapchain { nullptr };
     bool gameMotionActive = false, gameDepthActive = false;
 
-    ID3D12Resource *depthCandidate = nullptr;
     UINT depthWidth = 0, depthHeight = 0;
     DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN;
     UINT depthBinds = 0, depthBestBinds = 0;
@@ -1698,9 +1684,8 @@ void DrainReadbacks(UINT nw, UINT nh)
                 Sleep(1);
             const UINT pitch = (nw * 4 + 255) & ~255u;
             void *a = nullptr, *b = nullptr;
-            D3D12_RANGE all { 0, 0 };
-            if (SUCCEEDED(g.guideReadDepth->Map(0, &all, &a)) &&
-                SUCCEEDED(g.guideReadMotion->Map(0, &all, &b)))
+            if (f->GetCompletedValue() >= 1 && SUCCEEDED(g.guideReadDepth->Map(0, nullptr, &a)) &&
+                SUCCEEDED(g.guideReadMotion->Map(0, nullptr, &b)))
             {
                 // Counted over samples that are actually depth. A depth buffer read correctly
                 // is in 0..1 everywhere; the numbers that arrive when the read is wrong are
@@ -1819,6 +1804,10 @@ void DrainReadbacks(UINT nw, UINT nh)
                 g.guideReadMotion->Unmap(0, nullptr);
             }
         }
+        // A copy the GPU has not finished in 2 s is still writing into these: park them rather than
+        // free them. ponytail: two per timed-out probe, freed at the next raster change.
+        if (f == nullptr || f->GetCompletedValue() < 1)
+            g.parked.insert(g.parked.end(), { g.guideReadDepth, g.guideReadMotion });
         g.guideReadDepth.Reset();
         g.guideReadMotion.Reset();
     }
@@ -1842,9 +1831,8 @@ void DrainReadbacks(UINT nw, UINT nh)
             const UINT lumaPitch = (fw * 2 + 255) & ~255u;
             const UINT flowPitch = (fw * 4 + 255) & ~255u;
             void *a = nullptr, *b = nullptr;
-            D3D12_RANGE all { 0, 0 };
-            if (SUCCEEDED(g.flowReadLuma->Map(0, &all, &a)) &&
-                SUCCEEDED(g.flowReadFlow->Map(0, &all, &b)))
+            if (f->GetCompletedValue() >= 1 && SUCCEEDED(g.flowReadLuma->Map(0, nullptr, &a)) &&
+                SUCCEEDED(g.flowReadFlow->Map(0, nullptr, &b)))
             {
                 double lo = 1e30, hi = -1e30, sum = 0.0;
                 for (UINT y = 0; y < fh; ++y)
@@ -1890,6 +1878,8 @@ void DrainReadbacks(UINT nw, UINT nh)
                 g.flowReadFlow->Unmap(0, nullptr);
             }
         }
+        if (f == nullptr || f->GetCompletedValue() < 1)
+            g.parked.insert(g.parked.end(), { g.flowReadLuma, g.flowReadFlow });
         g.flowReadLuma.Reset();
         g.flowReadFlow.Reset();
     }
@@ -2060,6 +2050,8 @@ void DrainReadbacks(UINT nw, UINT nh)
             if (a != nullptr) g.readbackBase->Unmap(0, nullptr);
             if (b != nullptr) g.readbackNr->Unmap(0, nullptr);
         }
+        if (f == nullptr || f->GetCompletedValue() < 1)
+            g.parked.insert(g.parked.end(), { g.readbackBase, g.readbackNr });
         g.readbackBase.Reset();
         g.readbackNr.Reset();
     }
@@ -2897,7 +2889,6 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     if (outChanged && !CreateTexture(w, h, composeFormat, g.composed, "composed"))
         return false;
 
-    g.depthAlias.Reset();
     g.outWidth = w;
     g.outHeight = h;
     g.netWidth = nw;
@@ -3158,7 +3149,6 @@ void ReleaseSwapchainSized()
     // the same shape as the bug that broke this add-on's swapchain resize once already: the
     // game cannot finish releasing what we are still pointing at. The next bind re-finds it.
     g.depthBest.Reset();
-    g.depthCandidate = nullptr;
     g.depthWidth = g.depthHeight = 0;
     g.depthFormat = DXGI_FORMAT_UNKNOWN;
     g.depthBinds = g.depthBestBinds = 0;
@@ -3674,89 +3664,41 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     }
 
     bool haveDepth = false;
-    // Three ways depth can arrive, in descending order of how much it is worth. From the game
-    // over the bridge: a real, full-range depth buffer an engine wrote and left alone -- this is
-    // the one that matches what RenoDX gets handed on NVIDIA. From the pre-clear snapshot: what
-    // PCSX2 allows, valid but only for the instant before the emulator wipes it. From the live
-    // D3D12 buffer: measured to come back uniformly zero, kept only so the failure is visible.
+    // Two ways depth can arrive, in descending order of how much it is worth. From the game over
+    // the bridge: a real, full-range depth buffer an engine wrote and left alone -- this is the
+    // one that matches what RenoDX gets handed on NVIDIA. From the pre-clear snapshot: what PCSX2
+    // allows, valid but only for the instant before the emulator wipes it. The live D3D12 buffer
+    // is not read at all: it measured uniformly zero.
     const bool fromGame = g.gameDepthActive && g.guideDepth.local != nullptr;
-    if (g.settings.useDepth.load() && (fromGame || g.depthSnapshot != nullptr || g.depthBest != nullptr))
+    if (g.settings.useDepth.load() && (fromGame || g.depthSnapshot != nullptr))
     {
-        g.depthCandidate = g.depthBest.Get();
-        const bool fromSnapshot = !fromGame && g.depthSnapshot != nullptr;
-        ID3D12Resource *depthSource = fromGame      ? g.guideDepth.local.Get()
-                                      : fromSnapshot ? g.depthSnapshot.Get()
-                                                     : g.depthCandidate;
+        ID3D12Resource *depthSource = fromGame ? g.guideDepth.local.Get() : g.depthSnapshot.Get();
         const auto dd = depthSource->GetDesc();
-        bool ok = true;
-        if (!fromGame && !fromSnapshot && IsTypedDepth(dd.Format))
+        srv.Format = DepthReadFormat(dd.Format);
+        for (UINT i = 4; i < 7; ++i)
+            g.device->CreateShaderResourceView(depthSource, &srv, slot(i));
+        uav.Format = DXGI_FORMAT_R32_FLOAT;
+        g.device->CreateUnorderedAccessView(g.netDepth.Get(), nullptr, &uav, slot(7));
+        Barrier(cmd, g.netDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmd->SetPipelineState(g.depthPipeline.Get());
+        auto dtable = heap->GetGPUDescriptorHandleForHeapStart();
+        dtable.ptr += 4 * inc;
+        cmd->SetComputeRootDescriptorTable(0, dtable);
+        UINT ddims[8] { nw, nh, static_cast<UINT>(dd.Width), dd.Height, 0, 0, 0, 0 };
+        const float dscale = g.settings.depthNormalise.load() ? g.depthScale.load() : 1.0f;
+        std::memcpy(&ddims[4], &dscale, sizeof(float));
+        cmd->SetComputeRoot32BitConstants(1, 8, ddims, 0);
+        cmd->Dispatch((nw + 7) / 8, (nh + 7) / 8, 1);
+        Barrier(cmd, g.netDepth.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        haveDepth = true;
+        if (!g.loggedDepth)
         {
-            const auto alias = DepthAliasFormat(dd.Format);
-            if (alias == DXGI_FORMAT_UNKNOWN)
-                ok = false;
-            else
-            {
-                if (!g.depthAlias || g.depthAlias->GetDesc().Width != dd.Width ||
-                    g.depthAlias->GetDesc().Height != dd.Height ||
-                    g.depthAlias->GetDesc().Format != alias)
-                {
-                    g.depthAlias.Reset();
-                    auto ad = dd;
-                    ad.Format = alias;
-                    ad.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-                    ad.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-                    D3D12_HEAP_PROPERTIES hp {};
-                    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
-                    ok = SUCCEEDED(g.device->CreateCommittedResource(
-                        &hp, D3D12_HEAP_FLAG_NONE, &ad, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                        nullptr, IID_PPV_ARGS(&g.depthAlias)));
-                }
-                if (ok)
-                {
-                    depthSource = g.depthAlias.Get();
-                    Barrier(cmd, g.depthCandidate, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                            D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    Barrier(cmd, depthSource, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                            D3D12_RESOURCE_STATE_COPY_DEST);
-                    cmd->CopyResource(depthSource, g.depthCandidate);
-                    Barrier(cmd, depthSource, D3D12_RESOURCE_STATE_COPY_DEST,
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                    Barrier(cmd, g.depthCandidate, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                }
-            }
-        }
-        if (ok)
-        {
-            srv.Format = DepthReadFormat(dd.Format);
-            for (UINT i = 4; i < 7; ++i)
-                g.device->CreateShaderResourceView(depthSource, &srv, slot(i));
-            uav.Format = DXGI_FORMAT_R32_FLOAT;
-            g.device->CreateUnorderedAccessView(g.netDepth.Get(), nullptr, &uav, slot(7));
-            Barrier(cmd, g.netDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            cmd->SetPipelineState(g.depthPipeline.Get());
-            auto dtable = heap->GetGPUDescriptorHandleForHeapStart();
-            dtable.ptr += 4 * inc;
-            cmd->SetComputeRootDescriptorTable(0, dtable);
-            UINT ddims[8] { nw, nh, static_cast<UINT>(dd.Width), dd.Height, 0, 0, 0, 0 };
-            const float dscale = g.settings.depthNormalise.load() ? g.depthScale.load() : 1.0f;
-            std::memcpy(&ddims[4], &dscale, sizeof(float));
-            cmd->SetComputeRoot32BitConstants(1, 8, ddims, 0);
-            cmd->Dispatch((nw + 7) / 8, (nh + 7) / 8, 1);
-            Barrier(cmd, g.netDepth.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            haveDepth = true;
-            if (!g.loggedDepth)
-            {
-                g.loggedDepth = true;
-                Log("depth: %llux%u format %d -> R32_FLOAT at %ux%u, source %s",
-                    static_cast<unsigned long long>(dd.Width), dd.Height,
-                    static_cast<int>(dd.Format), nw, nh,
-                    fromGame        ? "the game's own buffer, over the bridge"
-                    : fromSnapshot  ? "pre-clear snapshot"
-                                    : "live buffer (expect zeros)");
-            }
+            g.loggedDepth = true;
+            Log("depth: %llux%u format %d -> R32_FLOAT at %ux%u, source %s",
+                static_cast<unsigned long long>(dd.Width), dd.Height, static_cast<int>(dd.Format),
+                nw, nh, fromGame ? "the game's own buffer, over the bridge" : "pre-clear snapshot");
         }
     }
 

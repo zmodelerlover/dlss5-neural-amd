@@ -20,6 +20,14 @@ notice:
   subscribed.
 - **A resolution change in Async mode no longer switches the effect off for the rest of the
   session** when the runtime is still busy.
+- On D3D12, the finished image is copied to the back buffer from the state a copy needs, a network
+  failure still returns the back buffer to the game ready to present, and the runtime hears of a
+  frame only once it has been submitted, as on every other route.
+- On D3D12, a depth buffer that changes format gets a new pre-clear copy, and the old copy, like a
+  probe readback the GPU has not finished in 2 s, is kept until the next resolution change instead
+  of being freed while the GPU may still use it.
+- **Removed: reading the D3D12 depth buffer live** when there is no pre-clear copy. It measured all
+  zeros; the network now gets no depth there, which is what the panel already showed (None).
 - **A resize no longer clears the game's D3D11 state**, which left an emulator that caches its own
   state (PCSX2) drawing with nothing bound. On both the 64-bit and the 32-bit route.
 - **The 32-bit route picks the game's depth and motion buffers the way the 64-bit one does.** Both
