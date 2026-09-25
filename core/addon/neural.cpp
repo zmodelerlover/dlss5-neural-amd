@@ -889,9 +889,8 @@ struct State
     bool loggedDeviceLost = false;
     bool loggedNoBackBuffer = false;
     static constexpr UINT kMaxBridgeRetries = 10;
-    // Share the runtime and weights. Inline passes submit and finish both the GPU
+    // Share the runtime and weights. Serial passes submit and finish both the GPU
     // list and HIP job before changing tuning globals for the following pass.
-    // Temporal state remains shared; separate per-pass histories are future work.
     HMODULE runtime = nullptr;
     // One runtime module per pass, runtimes[0] == runtime. The runtime keeps its temporal state
     // -- history reprojection, auto exposure, the post-network history it blends -- in module
@@ -1247,7 +1246,7 @@ bool EnsureNeuralIni()
          "; its own is enough to tune the add-on with the overlay never opened -- which is what\r\n"
          "; a game running under Lossless Scaling or Magpie needs, because there the overlay\r\n"
          "; sits behind somebody else's picture -- and because the overlay deliberately shows\r\n"
-         "; only the fifteen controls worth reaching for. Everything else lives here and nowhere\r\n"
+         "; only the controls worth reaching for. Everything else lives here and nowhere\r\n"
          "; else: the engine's option struct, the guide switches, the per-pass profiles, the\r\n"
          "; composition bounds. Press Reload in the overlay to pick an edit up without\r\n"
          "; restarting the game.\r\n"
@@ -1363,7 +1362,7 @@ void LoadSettings()
     g.settings.encoding.store(static_cast<int>(num(L"Encoding", 0.0f)));
     g.settings.diffuseWhite.store(num(L"DiffuseWhite", g.settings.diffuseWhite.load()));
     g.settings.debugView.store(std::clamp(static_cast<int>(num(L"DebugView", 0.0f)), 0, 5));
-    g.settings.inlineMode.store(flag(L"Inline", g.settings.inlineMode.load()));
+    if (!flag(L"Inline", true)) Log("Inline=0 ignored: every route runs the engine same-frame");
     g.settings.bicubic.store(flag(L"Bicubic", g.settings.bicubic.load()));
     g.settings.networkOutput.store(flag(L"NetworkOutput", false));
     g.settings.useMotion.store(flag(L"Motion", g.settings.useMotion.load()));
@@ -2809,9 +2808,8 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
             Sleep(1);
         if (RuntimeBusy())
         {
-            // Async with several passes lands here with nothing slow: all passes record into one
-            // module, whose counter never reaches the last id. Park what the engine may hold and go
-            // on, as the present does at 500 ms. ponytail: a raster of VRAM per stuck change.
+            // A stuck job: park what the engine may hold and go on, as the present does at 500 ms.
+            // ponytail: a raster of VRAM per stuck change.
             Log("raster: runtime job %u did not become idle in 5 s; parking its textures.", g.lastJob);
             if (netChanged)
                 g.parked.insert(g.parked.end(), { g.netColour, g.netMotion, g.netDepth, g.history[0],
@@ -3435,11 +3433,9 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     {
     // We only get here with no job outstanding, so netColour holds the last completed output and
     // netBase the input that produced it -- a matched pair, and the last moment it exists before
-    // the copy below overwrites netColour. In inline mode this is redundant (the pass after
-    // RecordFn re-captures the same frame with no lag) and costs one cheap dispatch.
+    // the copy below overwrites netColour. An accepted pass re-captures after RecordFn anyway.
     if (g.status.frame > 0)
         captureResidual();
-    RetireHistory(cmd);
 
     cmd->SetComputeRootSignature(g.root.Get());
     cmd->SetDescriptorHeaps(1, &heap);
@@ -3867,6 +3863,14 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                     static_cast<unsigned long long>(g.status.skipped));
             break;
         }
+        // Same frame or nothing. Async never moves kJobCounter, so the job would read busy for ever.
+        if (At<uint8_t>(r, rt::kInlineActive) != 1)
+        {
+            g.status.unavailable = true;
+            g.status.reason = "the engine could not run same-frame; see amd-nr.log";
+            Log("pass %u: engine latched async (no zero-copy or flag PSO); standing down", i + 1);
+            break;
+        }
         g.lastJob = jobAfter;
         for (UINT m = 0; m < State::kMaxPasses; ++m)
             if (g.runtimes[m] == r)
@@ -3883,7 +3887,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         ++accepted;
         if (handed)
             SmoothOutput(cmd, slot);
-        KeepHistory(cmd, slot, i + 1 == wanted);
+        KeepHistory(cmd, slot);
 
         // Reported, not enforced. Whether the engine bumps the job id once per recording or once
         // per submission is not established, so acting on this would risk breaking out of the
@@ -3895,11 +3899,11 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                                                : "DID NOT MOVE -- this pass may be a no-op",
                 At<ID3D12CommandList *>(r, rt::kListMarker) == cmd ? "ours" : "not ours");
 
-        // Inline submission orders both the image dependency and the CPU tuning.
+        // Serial submission orders both the image dependency and the CPU tuning.
         // The legacy batch path below only orders resource accesses on the GPU.
         if (i + 1 < wanted)
         {
-            if (g.settings.serialPasses.load() && g.settings.inlineMode.load())
+            if (g.settings.serialPasses.load())
             {
                 // The worker reads tuning from module globals when it runs, not
                 // when RecordFn records a job. Finish this pass before the next
@@ -3949,9 +3953,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     if (wanted > 1 && !g.loggedPassDetail)
     {
         g.loggedPassDetail = true;
-        Log("multipass parameter handoff: %s",
-            g.settings.serialPasses.load() && g.settings.inlineMode.load()
-                ? "each inline pass completes before the next tuning is written"
+        Log("multipass parameter handoff: %s", g.settings.serialPasses.load()
+                ? "each pass completes before the next tuning is written"
                 : "legacy batch (worker may read the last pass's tuning for every pass)");
         Log("pass count: %u asked for, %u accepted. Compare the 'measure, residual' line against "
             "a run at 1 -- an extra pass that records but changes nothing reads as the same "
@@ -3966,11 +3969,9 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     if (nativeFailure)
         return false;
 
-    // Inline mode records the engine's work into this same command list, so by here netColour
-    // already holds this frame's output on the GPU timeline. Re-capture, and the correction is
-    // this frame's with no lag. In async the engine is on its own timeline and has written
-    // nothing yet, so the capture above -- last frame's matched pair -- is the honest one.
-    if (g.settings.inlineMode.load() && accepted != 0)
+    // The engine records into this same command list, so by here netColour already holds this
+    // frame's output on the GPU timeline: re-capture, and the correction is this frame's.
+    if (accepted != 0)
         captureResidual();
     }
 
@@ -4076,27 +4077,26 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
 
 // How many passes to run this frame.
 //
-// Inline means the game is blocked on the GPU until every pass has finished, so N passes add
-// into one stall of N times a single evaluation. That used to force the count back to 1 whenever
-// inline was on -- and inline is the default, so the slider moved, saved, and did nothing on
-// every default install. The reason for the force was the crash theory, and one full engine per
-// pass in VRAM is gone. Cost in inline is framerate, which the overlay colours and says.
+// Same frame means the game is blocked on the GPU until every pass has finished, so N passes add
+// into one stall of N times a single evaluation. That used to force the count back to 1, so the
+// slider moved, saved, and did nothing. The reason for the force was the crash theory, and one
+// full engine per pass in VRAM is gone. The cost is framerate, which the overlay colours and says.
 UINT WantedPasses()
 {
     return static_cast<UINT>(
         std::clamp(g.settings.passes.load(), 1, static_cast<int>(State::kMaxPasses)));
 }
 
-// The first engine, plus one copy per further pass. Copies only in serial inline mode: that is
-// the only mode in which each pass is submitted and finished on its own, which is what lets
-// each module be told about exactly the list it recorded. The legacy batch and async paths keep
-// the single shared module they always had. A copy that fails to come up clamps the pass count
-// to what did, and says so once, rather than silently running that pass through pass 1's state.
+// The first engine, plus one copy per further pass. Copies only in serial mode: that is the only
+// mode in which each pass is submitted and finished on its own, which is what lets each module be
+// told about exactly the list it recorded. The legacy batch path keeps the single shared module
+// it always had. A copy that fails to come up clamps the pass count to what did, and says so once,
+// rather than silently running that pass through pass 1's state.
 bool BringUpEngines(UINT &wanted)
 {
     if (!InitPipeline() || !InitEngine())
         return false;
-    if (!(g.settings.serialPasses.load() && g.settings.inlineMode.load()))
+    if (!g.settings.serialPasses.load())
         return true;
     for (UINT slot = 1; slot < wanted; ++slot)
     {
@@ -4500,7 +4500,7 @@ void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)
 }
 
 // The overlay, rebuilt 22/09/2026. It used to carry 47 controls across eight headers; it carries
-// fifteen across five now. Nothing was deleted: every atomic, every LoadSettings line and every
+// fourteen across five now. Nothing was deleted: every atomic, every LoadSettings line and every
 // SaveSettings line is untouched, so each hidden control still reads its key out of amd-nr.ini and
 // still writes it back. What went is the widget, and with it the chance of somebody dragging a
 // slider whose effect nobody here has established into a state that makes the add-on look broken.

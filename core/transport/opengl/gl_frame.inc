@@ -191,9 +191,9 @@ void Present(command_queue *queue, swapchain *sc)
             "add-on, the crossing is correct.", g.stage.load());
     }
 
-    // The same guard the other routes carry: the engine keeps its own timeline in async mode, and
-    // starting a second evaluation on top of one still running is how this hangs rather than
-    // skips.
+    // The same guard the other routes carry: the engine's HIP worker can outlast our queue (its
+    // watchdog lets the list go on), and starting a second evaluation on top of one still running
+    // is how this hangs rather than skips.
     // The parentheses are the point. Without them && binds tighter than || and the right-hand
     // side -- which reads the engine's job counter through g.runtime -- is evaluated even when
     // the engine was never loaded, which in transport-only mode is a null dereference on the

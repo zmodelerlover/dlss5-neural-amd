@@ -76,17 +76,16 @@ The main controls:
   of the pixels. Smaller is faster and loses fine detail.
 - **Passes** — one to three evaluations. More passes strengthen the effect and can add grain.
 - **Limit** — caps how much the image is changed. Default 0.25. In the **Debug** section.
-- **Timing** — this control means different things on the two routes, and the defaults are
-  opposite. On a 64-bit game it chooses when the network's answer is composed: Same frame
-  waits for it, and Async is older and is not the tested path. On a 32-bit game it chooses
-  presentation: pipelined is the default, because it measured 16% to 41% faster in three
-  games and costs one frame of lag and nothing else. The 64-bit route writes it as
-  `Inline` and the 32-bit one as `Async`, both in `amd-nr.ini`.
+- **Timing** — 32-bit games only. It chooses presentation: pipelined is the default, because
+  it measured 16% to 41% faster in three games and costs one frame of lag and nothing else.
+  It is saved as `Async` in `amd-nr.ini`. The network itself runs same-frame on every route:
+  a 64-bit game has no Timing, and an `Inline=0` left in `amd-nr.ini` is ignored and logged.
 
 The defaults are a reasonable starting point.
 
-The panel shows fifteen controls. Everything else it can do is one tick away under **More
-settings** at the bottom, and all of it is editable in `amd-nr.ini` either way.
+The panel shows fifteen controls, fourteen on a 64-bit game, which has no Timing. Everything
+else it can do is one tick away under **More settings** at the bottom, and all of it is
+editable in `amd-nr.ini` either way.
 
 ## Better motion vectors (optional)
 

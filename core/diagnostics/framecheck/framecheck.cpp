@@ -91,18 +91,10 @@ UINT64 Submit(bool notify = false)
     // A GPU fence alone can complete on the timeout fallback while HIP is
     // still writing. Match the host routes' additional job-completion check
     // before reusing the fixture/output or starting the next evaluation.
-    // Async has no same-frame answer to wait for: the routes give a pending job 500 ms and then
-    // reset the job clock and carry on (D3D12Transport), so this does exactly that.
     const auto start = GetTickCount64();
-    const auto limit = g.settings.inlineMode.load() ? 30000u : 500u;
     while (RuntimeBusy())
     {
-        if (GetTickCount64() - start >= limit)
-        {
-            Check(!g.settings.inlineMode.load(), "runtime job did not complete");
-            ResetJobs();
-            break;
-        }
+        Check(GetTickCount64() - start < 30000, "runtime job did not complete");
         Sleep(1);
     }
     return GetTickCount64() - start;
@@ -196,9 +188,9 @@ void Bring(UINT w, UINT h, bool temporal)
     LoadSettings();
     Check(g.settings.passes >= 1 && g.settings.passes <= 3 && !g.settings.useDepth && g.settings.encoding == 0,
           "requires 1..3 passes, SDR and depth off");
-    Check(temporal || (g.settings.inlineMode && !g.settings.useMotion && !g.settings.useHistory &&
-                       !g.settings.useGameGuides && g.settings.temporalMode == 1),
-          "the single-frame mode requires inline, temporal forced off and all guides/history off; "
+    Check(temporal || (!g.settings.useMotion && !g.settings.useHistory && !g.settings.useGameGuides &&
+                       g.settings.temporalMode == 1),
+          "the single-frame mode requires temporal forced off and all guides/history off; "
           "temporal runs belong to --seq");
     // The harness has no ReShade hooks; use the system D3D12 module directly.
     const HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");

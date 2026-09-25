@@ -12,10 +12,8 @@ namespace ui {
 
 namespace {
 
-// Same frame versus async. The one control whose meaning depends on the route, because the two
-// pipeline in different places: the add-on chooses when the engine's answer is composed, the
-// bridge chooses whether this process waits for the helper at all -- inside the helper the network
-// always runs same-frame. Same setting, same values, two honest descriptions.
+// Same frame versus pipelined, on the 32-bit bridge only: whether this process waits for the helper
+// at all. The network itself runs same-frame on every route, so the 64-bit panel has no Timing.
 void Timing(PanelSettings &s)
 {
     int timing = s.inlineMode != 0 ? 0 : 1;
@@ -27,38 +25,21 @@ void Timing(PanelSettings &s)
         ImGui::Combo(T("Timing", "Momento"), &timing,
                      T("Same frame\0Async\0", "Mesmo quadro\0Assíncrono\0")))
         s.inlineMode = timing == 0 ? 1u : 0u;
-}
+    Help("Same frame waits for this frame's own result: correct, and every millisecond the "
+         "network costs is a millisecond of frame time.\n\n"
+         "Async posts the frame and composes the answer in "
+         "the next present, so the helper works while the game builds its next frame. It is "
+         "faster and it costs one frame of lag. It does not smear: the whole picture is replaced, "
+         "so you see the previous frame finished rather than a mix of two. Changing this takes "
+         "effect at once and is saved to amd-nr.ini.",
 
-void TimingHelp(const PanelStatus &status)
-{
-    if (status.helperProcess)
-        Help("Same frame waits for this frame's own result: correct, and every millisecond the "
-             "network costs is a millisecond of frame time.\n\n"
-             "Async posts the frame and composes the answer in "
-             "the next present, so the helper works while the game builds its next frame. It is "
-             "faster and it costs one frame of lag. It does not smear: the whole picture is replaced, "
-             "so you see the previous frame finished rather than a mix of two. Changing this takes "
-             "effect at once and is saved to amd-nr.ini.",
-
-             "Mesmo quadro espera o resultado deste quadro: correto, e cada milissegundo que a "
-             "rede custa é milissegundo de tempo de quadro.\n\n"
-             "No modo assíncrono o quadro é enviado e a "
-             "resposta é composta no present seguinte, então o ajudante trabalha enquanto o jogo "
-             "monta o próximo quadro. É mais rápido e custa um quadro de atraso. Não borra: a imagem "
-             "inteira é substituída, então você vê o quadro anterior pronto, não uma mistura de dois. "
-             "A troca vale na hora e fica salva no amd-nr.ini.");
-    else
-        Help("Same frame waits for this frame's own result: correct, and every millisecond the "
-             "network costs is a millisecond of frame time.\n\n"
-             "Async pastes an older correction instead, which is cheaper and can show the "
-             "correction of a picture that has already moved -- that is what a trail behind "
-             "moving objects is.",
-
-             "Mesmo quadro espera o resultado deste quadro: correto, e cada milissegundo que a "
-             "rede custa é milissegundo de tempo de quadro.\n\n"
-             "Assíncrono cola uma correção anterior, o que é mais barato e pode mostrar a "
-             "correção de uma imagem que já andou -- é isso o rastro atrás de coisa em "
-             "movimento.");
+         "Mesmo quadro espera o resultado deste quadro: correto, e cada milissegundo que a "
+         "rede custa é milissegundo de tempo de quadro.\n\n"
+         "No modo assíncrono o quadro é enviado e a "
+         "resposta é composta no present seguinte, então o ajudante trabalha enquanto o jogo "
+         "monta o próximo quadro. É mais rápido e custa um quadro de atraso. Não borra: a imagem "
+         "inteira é substituída, então você vê o quadro anterior pronto, não uma mistura de dois. "
+         "A troca vale na hora e fica salva no amd-nr.ini.");
 }
 
 // Keep the value being dragged separate from the value the engine consumes. SliderFloat changes
@@ -218,8 +199,8 @@ void DrawPerformance(PanelSettings &s, const PanelStatus &status, PanelActions &
 {
     if (!SectionHeader(kHuePerf, T("Performance", "Desempenho"), true))
         return;
-    Timing(s);
-    TimingHelp(status);
+    if (status.helperProcess)
+        Timing(s);
     Scale(s, actions);
     Raster(s, status);
     Passes(s);

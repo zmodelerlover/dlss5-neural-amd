@@ -253,8 +253,8 @@ void Present(command_queue *queue, swapchain *sc)
     g.loadedPasses = wanted;
 
     // The same guard the D3D11 route carries. Our own queue is drained every frame further down,
-    // but the engine keeps its own timeline in async mode, and starting a second evaluation on
-    // top of one still running is how this hangs rather than skips.
+    // but the engine's HIP worker can outlast it (its watchdog lets the list go on), and starting a
+    // second evaluation on top of one still running is how this hangs rather than skips.
     bool runNetwork = true;
     const bool jobPending =
         g.fence->GetCompletedValue() < g.completion ||

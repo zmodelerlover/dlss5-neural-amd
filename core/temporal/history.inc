@@ -8,11 +8,8 @@
 // fail, it hangs the game.
 //
 // g.historyValid is one word so that every invalidation anywhere in the add-on -- alt-tab, the
-// panel, a route's resize -- drops everything at once with a single store(0):
-//   bit slot       history[slot] holds pass `slot`'s output of the previous frame
-//   bit 8 + slot   it will, once the async job now writing netColour retires
-
-constexpr UINT kHistoryPending = 8;
+// panel, a route's resize -- drops everything at once with a single store(0): bit `slot` is set
+// when history[slot] holds pass `slot`'s output of the previous frame.
 
 // Before pass `slot` records: its own previous output, or nothing. See the declaration of
 // history[] for why a pass never gets the chain's. Returns whether it was handed one.
@@ -49,33 +46,14 @@ void CopyToHistory(ID3D12GraphicsCommandList *cmd, UINT slot)
 
 // After pass `slot` recorded, keep what it produced as its history for the next frame.
 //
-// Inline, the engine's work is on this same list, so a copy recorded straight after the pass reads
-// what the pass wrote and lands before the next pass overwrites netColour. Doing it once after the
-// loop -- which is what this used to do -- could only ever capture the last pass, so every earlier
-// pass was handed a reference belonging to a different stage of the chain.
-//
-// Async, the engine writes netColour on its own timeline, after this list has run: a copy here
-// kept the frame's *input* and handed it on as last frame's output. The copy waits for the job
-// to retire instead (RetireHistory). Only the chain's last pass is still in netColour by then, so
-// async has history for that pass alone.
-void KeepHistory(ID3D12GraphicsCommandList *cmd, UINT slot, bool lastPass)
+// Same frame is the only mode, so the engine's work is on this same list: a copy recorded straight
+// after the pass reads what the pass wrote and lands before the next pass overwrites netColour.
+// Doing it once after the loop -- which is what this used to do -- could only ever capture the last
+// pass, so every earlier pass was handed a reference belonging to a different stage of the chain.
+void KeepHistory(ID3D12GraphicsCommandList *cmd, UINT slot)
 {
-    if (!g.settings.useHistory.load() || g.history[slot] == nullptr)
-        return;
-    if (g.settings.inlineMode.load())
+    if (g.settings.useHistory.load() && g.history[slot] != nullptr)
         CopyToHistory(cmd, slot);
-    else if (lastPass)
-        g.historyValid.fetch_or(1u << (kHistoryPending + slot));
-}
-
-// At the start of an evaluated frame, before netColour is overwritten. Evaluating means no job is
-// pending, so an async one has retired and netColour holds its output.
-void RetireHistory(ID3D12GraphicsCommandList *cmd)
-{
-    const uint32_t pending = g.historyValid.fetch_and((1u << kHistoryPending) - 1) >> kHistoryPending;
-    for (UINT slot = 0; slot < State::kMaxPasses; ++slot)
-        if ((pending & (1u << slot)) != 0 && g.history[slot] != nullptr)
-            CopyToHistory(cmd, slot);
 }
 
 // Whether the motion handed with the next evaluation is measured against the last evaluated frame --

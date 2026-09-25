@@ -117,9 +117,10 @@ void WaitForWorkQueue(UINT64 value)
 // Same frame means the game waits for the network, and the runtime only makes the GPU queue wait.
 // A route that does not hold the CPU once a frame (D3D12, and OpenGL once its fences are proven)
 // holds here instead, at the start of the next present, so the game's CPU work has already
-// overlapped the network. Keyed on the engine's latched mode, not the menu's: in engine-async
-// kJobCounter never moves, and this would stall every present. Bounded by the skip window, so a
-// stuck job still ends in its ResetJobs, never in a hang.
+// overlapped the network. Keyed on the engine's latched mode: until a job has latched same-frame
+// there is nothing to wait for, and a module that latches async stands the add-on down in
+// RecordNetwork (its kJobCounter never moves). Bounded by the skip window, so a stuck job still
+// ends in its ResetJobs, never in a hang.
 void WaitForPreviousJob()
 {
     if (g.runtime == nullptr || At<uint8_t>(g.runtime, rt::kInlineActive) != 1)

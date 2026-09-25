@@ -206,11 +206,6 @@ void Smooth(PanelSettings &s)
          "Medido em jogo gravado, sem motion vectors do jogo: em 0,80 e 10/255 a tela pisca 2 a 2,5 "
          "vezes menos, sem perder detalhe. 0,90 é mais 10-15% estável e atrasa um pouco mais mudanças "
          "lentas de luz.");
-    if (s.outputSmooth > 0.0f && s.inlineMode == 0)
-        Note(kDanger, T("Only works with Timing on Same frame: in async the answer is not there yet "
-                        "when it would run, so right now it does nothing.",
-                        "Só funciona com Momento em Mesmo quadro: em assíncrono a resposta ainda não "
-                        "chegou quando ela rodaria, então agora ela não faz nada."));
 }
 
 } // namespace

@@ -18,8 +18,6 @@ notice:
   is released at exit after the runtime and the driver have gone.
 - `Events` without bit 8 no longer drops the drain a resize waits on: destroy-swapchain is always
   subscribed.
-- **A resolution change in Async mode no longer switches the effect off for the rest of the
-  session** when the runtime is still busy.
 - On D3D12, the finished image is copied to the back buffer from the state a copy needs, a network
   failure still returns the back buffer to the game ready to present, and the runtime hears of a
   frame only once it has been submitted, as on every other route.
@@ -53,6 +51,15 @@ notice:
   language, the hotkey and which controls are shown, and sets Scale back to the 1.0 a fresh
   `amd-nr.ini` starts with.
 - With the additive composition, the Guard help no longer leaves its `(?)` on its own.
+- **Removed: Async timing on 64-bit games.** The network runs same-frame on every route. In async
+  the runtime never reports a job as finished, so the effect only ran about twice a second. An
+  `Inline=0` left in `amd-nr.ini` is ignored and the log says so, and Timing leaves the 64-bit
+  panel. Where the runtime cannot run same-frame (its zero-copy path or flag pipeline did not come
+  up) the effect now switches off with that reason, instead of running twice a second with the
+  frame's own input handed on as its history. The 32-bit bridge's Timing, which pipelines
+  presentation and is a different thing, is unchanged.
+- On a 32-bit game with pipelined presentation, an answer still in flight when the game is
+  minimised or the effect switched back on is dropped, not shown after the restore.
 - **Removed: `GlHoldFrames`**, the OpenGL route's option to repeat the last result instead of
   waiting for the network (v0.6.0, off by default). The route now always waits, which is what the
   default did, and an ini that still sets it is ignored.

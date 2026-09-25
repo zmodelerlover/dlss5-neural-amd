@@ -92,6 +92,8 @@ assert 'probe.Keep(inputMs,collectMs+requestMs,probe.Split())' in present
 # Pipelining is the default, and Async=0 has to keep restoring same-frame presentation: the
 # guarantee it gives up is deliberate, so the escape hatch is part of the contract.
 assert 'L"Async",1,ini.c_str()' in f
+# A pipelined answer still in flight across a reset (minimise, re-enable) is dropped, never composed.
+assert 'havePending&&!g.reset&&' in present
 # The mode can be switched while the game runs. It is idempotent, it says so in the log, and it
 # persists one key rather than rewriting the file, which would drop Timing and the helper's own
 # settings. It must not issue IPC or GPU work: the switch costs at most one frame either way

@@ -957,17 +957,17 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     // texture, so it must not be given new work until the last result has left it.
     x86bridge::Ack a{};x86bridge::Frame answeredFrame{};bool answered=false;
     if(g.async){
-        // Two ways an answer can outlive what it describes, and Confirmed catches neither, because
+        // Three ways an answer can outlive what it describes, and Confirmed catches none, because
         // the answer agrees with the frame that asked -- it is the world underneath that moved.
-        // A resize leaves it describing a back buffer that no longer exists. A rebuild in
-        // BuildRemote above, which happens between the post and here, increments the generation and
-        // replaces g.output, so the result was written into the texture that has just been retired.
-        // Drop it either way: the cost is one original frame, against composing a stale or
+        // A resize leaves it describing a back buffer that no longer exists. A rebuild in BuildRemote
+        // above, between the post and here, increments the generation and replaces g.output, so the
+        // result sits in a retired texture. A reset (restore, re-enable) makes it a frame from before
+        // the break. Drop it: the cost is one original frame, against composing a stale or
         // mismatched surface.
-        if(havePending&&g.pendingFrame.generation==g.generation&&g.pendingWidth==width&&g.pendingHeight==height){
+        if(havePending&&!g.reset&&g.pendingFrame.generation==g.generation&&g.pendingWidth==width&&g.pendingHeight==height){
             a=pendingAck;answeredFrame=g.pendingFrame;answered=true;
-        }else if(havePending)Log("x86bridge pipelined frame %llu dropped: generation %llu->%llu raster %ux%u->%ux%u",
-            static_cast<unsigned long long>(g.pendingFrame.id),
+        }else if(havePending)Log("x86bridge pipelined frame %llu dropped: reset=%d generation %llu->%llu raster %ux%u->%ux%u",
+            static_cast<unsigned long long>(g.pendingFrame.id),g.reset?1:0,
             static_cast<unsigned long long>(g.pendingFrame.generation),static_cast<unsigned long long>(g.generation),
             g.pendingWidth,g.pendingHeight,width,height);
     }else{

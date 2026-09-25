@@ -45,7 +45,15 @@ constexpr size_t kInlineMode = 0x977a0;      // 1 inline, 0 async. v0.3.0 reads 
 constexpr size_t kInlineActive = 0x977a1;    // the engine's own verdict, latched only when it (re)creates
                                              // its staging (0x13b61/0x13bbf/0x141fc/0x165a1): 1 when
                                              // kInlineMode asked and zero-copy + the flag PSO came up
-constexpr size_t kJobCounter = 0x977d4;      // interlocked; how far the engine has got
+constexpr size_t kJobCounter = 0x977d4;      // interlocked; how far the engine has got -- same-frame
+                                             // only. Its one non-zero store (0x1a2cb) sits behind the
+                                             // worker's kInlineActive sample (jz at 0x1a1dd), so in
+                                             // async it never moves; that is why async is retired.
+                                             // Should it come back, idle is the record entry's own
+                                             // admission (0x153dd-0x153f1): the dwords at 0x97a4c
+                                             // (pending id) and 0x97a68 (recorded, not notified)
+                                             // both < 0. Not 0x97a58 (last finished): the async
+                                             // "readback map failed" drop (0x18ab0) skips it.
 
 constexpr size_t kWatchdogJobA = 0x97950;    // a pair of job ids its watchdog writes on a timeout --
 constexpr size_t kWatchdogJobB = 0x97954;    // NOT a pointer, and writing through it crashes

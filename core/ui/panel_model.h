@@ -129,9 +129,10 @@ struct PanelStatus
     // Capabilities. Each is something one route has and the other does not.
     bool hasFeedEffect = false;   // the companion effect can reach the network
     std::string feedStatus;       // what the companion effect is handing over, when it is
-    // The engine runs in a helper process: Timing switches the bridge's pipelining rather than the
-    // engine's inline mode, the ini and the logs are the helper's, and anything that needs the
-    // network is out of reach while the helper is only copying frames (transportOnly).
+    // The engine runs in a helper process: only here is Timing drawn, as the bridge's pipelining
+    // switch (the engine is same-frame everywhere), the ini and the logs are the helper's, and
+    // anything that needs the network is out of reach while the helper is only copying frames
+    // (transportOnly).
     bool helperProcess = false;
     bool transportOnly = false;
     // Lines the route adds under Debug, already worded: the bridge has two processes, two logs and

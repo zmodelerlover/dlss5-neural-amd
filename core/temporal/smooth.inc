@@ -126,24 +126,23 @@ void PrepareHistory(ID3D12GraphicsCommandList *cmd, UINT slot)
 }
 
 // After pass `slot` wrote netColour, before that becomes its history: blend toward the warped
-// previous output where the two differ by less than the limit. Inline only -- async has not
-// written netColour by here.
+// previous output where the two differ by less than the limit. The pass is on this same list, so
+// netColour already holds its answer.
 void SmoothOutput(ID3D12GraphicsCommandList *cmd, UINT slot)
 {
     const float strength = g.settings.outputSmooth.load();
-    // Said once per change: off by setting, off because async cannot reach netColour here, off
-    // because the filters did not build, or on -- the last one being what a player asks about.
+    // Said once per change: off by setting, off because the filters did not build, or on -- the
+    // last one being what a player asks about.
     static int logged = -1;
-    const int state = strength <= 0.0f ? 0 : !g.settings.inlineMode.load() ? 1 : g_filters.failed ? 2 : 3;
+    const int state = strength <= 0.0f ? 0 : g_filters.failed ? 1 : 2;
     if (state != logged)
     {
         logged = state;
-        static const char *why[] { "off (OutputSmooth=0)", "OFF: requested, but Timing is async and it only runs same-frame",
-                                   "OFF: requested, but its filters failed to build", "on" };
+        static const char *why[] { "off (OutputSmooth=0)", "OFF: requested, but its filters failed to build", "on" };
         Log("output smooth: %s, strength %.2f, limit %.1f/255", why[state], static_cast<double>(strength),
             static_cast<double>(g.settings.outputSmoothLimit.load()));
     }
-    if (state != 3 || g_filters.warped[slot] == nullptr)
+    if (state != 2 || g_filters.warped[slot] == nullptr)
         return;
     const UINT w = g.netWidth, h = g.netHeight, base = FilterSlots(slot) + 4;
     ViewAt(base, g_filters.warped[slot].Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
