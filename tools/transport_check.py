@@ -19,7 +19,10 @@ never submits through ReShade, so its InfoQueue sees none of it:
     and WaitForPreviousJob, whose event is its own: a timed wait on a shared auto-reset event
     leaves a registration behind that ends the next wait on it early;
   - on OpenGL the CPU sees GL's first signal land before the queue waits on it, the queue waits
-    once, before any list runs, and a rebuild drains our queue and forgets the old context's names.
+    once, before any list runs, and a rebuild drains our queue and forgets the old context's names;
+  - on D3D11 nothing is tallied, and no streak kept, while no present will settle it (NoBridge and
+    Stage included), an MSAA back buffer goes out raw with the tallies cleared, and crossLocal is
+    made in the format it is read as (host64 too).
 
     python tools/transport_check.py
 """
@@ -104,6 +107,21 @@ if not all(s in ensure for s in ("r.resolveFbo = ", "r.semaphoresProven = ", "r.
     bad.append("OpenGL Ensure: a new context keeps the old one's resolve names, fences or result")
 if body(gl, "ImportFences").count("std::max(r.to") != 2:
     bad.append("OpenGL ImportFences: a new context's fence values may step below the old one's")
+
+d3d11 = ROOT / "core/transport/d3d11"
+bridge = body((d3d11 / "D3D11Transport.inc").read_text(encoding="utf-8"), "BridgePresent")
+observe = body((d3d11 / "D3D11Guides.inc").read_text(encoding="utf-8"), "ObserveD3D11")
+gate = observe[:max(0, observe.find("d3d11guides::ObserveD3D11("))]
+if not all(s in gate for s in ("g.settings.enabled", "g.noBridge", "g_depthTally.clear()", "coldFrames = 0")):
+    bad.append("D3D11 ObserveD3D11: targets are tallied, or a cold start kept, while no present will settle them")
+early = bridge[:bridge.find("EnsureResources(")]
+msaa = early[early.find("samples > 1"):] if "samples > 1" in early else ""
+if not all(s in msaa for s in ("g_depthTally.clear()", "return;")):
+    bad.append("D3D11 BridgePresent: an MSAA back buffer must go out raw, tallies cleared, before anything is built")
+if not all(s in bridge for s in ("crossFmt = ColourReadFormat(fmt)", "Format != crossFmt", "CreateTexture(w, h, crossFmt,")):
+    bad.append("D3D11 BridgePresent: crossLocal must be made, and remade, in the format it is read as")
+if "CreateTexture(w,h,ColourReadFormat(fmt),g.bridge.crossLocal" not in (ROOT / "core/x86bridge/host64.cpp").read_text(encoding="utf-8"):
+    bad.append("host64 Neural: crossLocal must be made in the format it is read as")
 
 if bad:
     print("FAIL")

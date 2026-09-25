@@ -42,6 +42,12 @@ notice:
   buffer under 256 pixels is no longer a candidate, ReShade's own effect targets are never taken for
   the game's, `GameGuides=0` stops it looking at all, and the first guide is taken over three
   presents instead of being decided by the third alone.
+- On D3D11, an `_SRGB` back buffer no longer fails the 64-bit bridge ten times over and stands it
+  down with "the bridge kept failing", nor fails a texture creation in the 32-bit helper, logged, on
+  every frame. An MSAA back buffer on the 64-bit route goes out as the game drew it, as on D3D12 and
+  the 32-bit helper, and is said once in the log, instead of counting as processed with nothing
+  changed. While the effect is off, the 64-bit route no longer keeps collecting references to the
+  game's render targets.
 - The 32-bit helper lifts its scale cap when the slider is let go unchanged.
 - **Factory Defaults** is on the 64-bit panel too, as it was on the 32-bit one. It keeps the
   language, the hotkey and which controls are shown, and sets Scale back to the 1.0 a fresh

@@ -92,6 +92,22 @@ void BridgePresent(device* dev, swapchain* sc) {
     const resource_desc bd = dev->get_resource_desc(back);
     const auto fmt = static_cast<DXGI_FORMAT>(bd.texture.format);
     const UINT w = bd.texture.width, h = bd.texture.height;
+    // A multisampled back buffer cannot be copied into the single-sample staging: the copies are
+    // dropped, and frames would count as processed with nothing changed. It goes out as drawn and
+    // counts as nothing, as on D3D12 and the 32-bit bridge. Not a stuck bridge, so the stand-down
+    // in Present is held off; and the tallies go, since SettleGuide is not reached from here.
+    if (bd.texture.samples > 1) {
+        g_depthTally.clear();
+        g_motionTally.clear();
+        g.bridge.presentsSinceFrame = 0;
+        static bool said = false;
+        if (!said) {
+            said = true;
+            Log("MSAA back buffer (%u samples): frames go out as the game drew them.",
+                static_cast<unsigned>(bd.texture.samples));
+        }
+        return;
+    }
 
     if (!EnsureResources(w, h, fmt, EffectiveScale())) {
         g.status.unavailable = true;
@@ -108,10 +124,13 @@ void BridgePresent(device* dev, swapchain* sc) {
     }
     // The crossed texture is read as an SRV by the copy shader. Rather than lean on state
     // promotion for a shared resource, take a local copy first: a plain copy is the one access
-    // that needs no barriers on either side.
+    // that needs no barriers on either side. Made in the format it is read as, like composed:
+    // CreateTexture allows UAV, which an _SRGB format refuses, and a view must match its resource.
+    const DXGI_FORMAT crossFmt = ColourReadFormat(fmt);
     if (g.bridge.crossLocal == nullptr || g.bridge.crossLocal->GetDesc().Width != w ||
-        g.bridge.crossLocal->GetDesc().Height != h) {
-        if (!CreateTexture(w, h, fmt, g.bridge.crossLocal, "crossLocal",
+        g.bridge.crossLocal->GetDesc().Height != h ||
+        g.bridge.crossLocal->GetDesc().Format != crossFmt) {
+        if (!CreateTexture(w, h, crossFmt, g.bridge.crossLocal, "crossLocal",
                            D3D12_RESOURCE_STATE_COPY_DEST)) {
             g.bridge.failed = true;
             return;

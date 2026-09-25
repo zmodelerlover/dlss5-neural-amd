@@ -152,7 +152,7 @@ struct Host {
         g.loadedPasses=wanted;
         const UINT w=spec.colour.width,h=spec.colour.height;const auto fmt=static_cast<DXGI_FORMAT>(spec.colour.format);
         if(!EnsureResources(w,h,fmt,g.settings.scale.load())){g.status.unavailable=true;return Result::Original;}
-        if(!g.bridge.crossLocal && !CreateTexture(w,h,fmt,g.bridge.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
+        if(!g.bridge.crossLocal && !CreateTexture(w,h,ColourReadFormat(fmt),g.bridge.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
     bool runNetwork = true;
     const bool jobPending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
     if (!jobPending && g.jobRunning)
