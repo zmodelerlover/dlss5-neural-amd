@@ -30,7 +30,7 @@ ui::PanelStatus BridgeStatus(){
                            :ui::T("32-bit bridge, same frame","ponte 32 bits, mesmo quadro");
     s.outWidth=w.outWidth;s.outHeight=w.outHeight;s.netWidth=w.netWidth;s.netHeight=w.netHeight;
     s.scaleCap=w.scaleCap;s.passesAvailable=w.loadedPasses;
-    s.depthSource=w.depthActive?ui::GuideSource::Game:ui::GuideSource::None;
+    s.depthSource=w.depthActive==2?ui::GuideSource::Unusable:w.depthActive?ui::GuideSource::Game:ui::GuideSource::None;
     s.motionSource=w.motionActive?ui::GuideSource::Game:ui::GuideSource::Estimated;
     s.gameMotionActive=w.motionActive!=0;
     s.stillPct=w.probeValid?w.stillPct:-1;s.depthMin=w.depthMin;s.depthMax=w.depthMax;

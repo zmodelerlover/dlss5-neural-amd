@@ -151,17 +151,30 @@ notice:
   costs the game's motion for the rest of the session: the next buffer the game moves to is used,
   and probed in turn. The same buffer taken back after a resize is used again for about 2 s, until
   the probe gives up on it again.
+- **Depth the guide probe reads as JUNK, or as FLAT twice while something moves, is no longer
+  handed to the network**, on every route. It used to be logged and fed anyway, so a game that
+  clears depth before present (a 32-bit Tomb Raider) gave the network a constant plane. A reading
+  that varies hands it back, and so does every new look after a guide is taken, even the same
+  buffer taken back after a resize (until two readings withhold it again). A flat menu with nothing moving
+  never withholds it; one that moves (a spinner, a video) can, so while depth is withheld as FLAT
+  the probe does not stop after five readings but keeps looking, less often each time (at most
+  every 4800 presents), and the game's scene in the same buffer gets depth back once it is read.
+  The log says each change (`guide depth: ... handed depth`), the probe's arm line says
+  `depth fed 1 (handed 0)`, and the Status column reads `depth unusable` on both panels while it
+  is withheld.
 - **The temporal history is dropped by one rule on every route**, and the log says why
   (`temporal history dropped: <reason> (<n> so far)`, a line each time the reason changes). It goes
   when a raster of a new size is built, when Scale, DepthInverted, History, Temporal, Motion, Depth,
   GameGuides, MotionScale, FlowGate or FlowRatio change on either panel (the 32-bit one used to
   react to History alone), on every ini reload, when the effect is switched back on (the 64-bit
   route used to hand the first frame a history from before a hotkey or panel switch-off), when a
-  game's depth or motion buffer takes the place of one the network was fed, on a new OpenGL
-  context, and, for the passes that sat a frame out, when fewer passes ran than were asked for. A
-  swapchain rebuild alone no longer drops it on the 32-bit route, where a game that rebuilds every
-  few frames (PCSX2, Xenosaga 2) lost its accumulation each time; neither route drops it there now,
-  nor when the game's depth and motion are found again a few presents after it.
+  game's depth or motion buffer takes the place of one the network was fed, when the guide probe
+  withholds the game's depth or hands it back, on a new OpenGL context, and, for the passes that
+  sat a frame out, when fewer passes ran than were asked for. A swapchain rebuild alone no longer
+  drops it on the 32-bit route, where a game that rebuilds every few frames (PCSX2, Xenosaga 2)
+  lost its accumulation each time; neither route drops it there now, nor when the game's depth and
+  motion are found again a few presents after it, unless the guide probe had withheld that depth:
+  finding it again hands it back, which drops the history, and again when the probe withholds it.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

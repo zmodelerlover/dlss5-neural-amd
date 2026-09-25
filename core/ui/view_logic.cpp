@@ -85,6 +85,7 @@ const char *GuideSourceName(GuideSource source)
     case GuideSource::Effect:    return T("effect", "effect");
     case GuideSource::Snapshot:  return T("snapshot", "snapshot");
     case GuideSource::Estimated: return T("estimated", "estimado");
+    case GuideSource::Unusable:  return T("unusable", "inutilizável");
     case GuideSource::None:      break;
     }
     return T("none", "nenhuma");

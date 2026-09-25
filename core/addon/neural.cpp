@@ -968,7 +968,7 @@ struct State
     // engine with a normal 0..1 range it saturates to white and a correct buffer looks like
     // nothing at all. Numbers do not have that problem.
     ComPtr<ID3D12Resource> guideReadDepth, guideReadMotion;
-    bool pendingGuides = false;
+    bool pendingGuides = false, probedDepth = false;  // and whether that frame fed depth
     std::atomic<bool> probeGuides { true };
     // 120, not 600: the probe is what measures the depth range, and the depth range is what the
     // guide is scaled by. The automatic `measure, residual` fires at 240, so a probe at 600 meant
@@ -982,7 +982,7 @@ struct State
     std::atomic<float> probeDepthMin { 0.0f }, probeDepthMax { 0.0f };
     std::atomic<float> probeMotionMean { 0.0f }, probeMotionMax { 0.0f };
     std::atomic<int> probeStillPct { -1 };
-    std::atomic<bool> guidesLookReal { false };
+    std::atomic<bool> guidesLookReal { false }, depthUsable { true };  // SetDepthUsable
     // Depth debug view scale. The PS2 peaks near 0.002 so it needed x500; a modern engine fills
     // 0..1 and x500 is pure white, which reads as "the view is broken". The probe sets this from
     // the range it actually measured, so one view works on both.
@@ -1070,7 +1070,7 @@ struct State
     std::atomic<float> scaleCap { 0.0f };
     std::atomic<UINT64> worstJobMs { 0 };
     UINT longJobs = 0;
-    UINT junkProbes = 0;
+    UINT junkProbes = 0, flatProbes = 0;
     ComPtr<ID3D12Fence> fence;
     UINT64 serial = 0, completion = 0;
 
@@ -3113,9 +3113,9 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             };
             grab(g.netDepth.Get(), g.guideReadDepth.Get(), DXGI_FORMAT_R32_FLOAT);
             grab(g.netMotion.Get(), g.guideReadMotion.Get(), DXGI_FORMAT_R16G16_FLOAT);
-            g.pendingGuides = true;
-            Log("guide probe armed at frame %llu: depth fed %d, motion fed %d",
-                static_cast<unsigned long long>(g.status.frame), haveDepth ? 1 : 0, haveMotion ? 1 : 0);
+            g.pendingGuides = true; g.probedDepth = haveDepth;
+            Log("guide probe armed at frame %llu: depth fed %d (handed %d), motion fed %d", g.status.frame,
+                haveDepth ? 1 : 0, haveDepth && g.depthUsable.load() ? 1 : 0, haveMotion ? 1 : 0);
         }
     }
     FeedMotion(cmd, haveMotion);  // after the probe's copy, so the probe reads the field as it came
@@ -3188,7 +3188,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         At<float>(r, rt::kScale) = outScale;
         At<int>(r, rt::kTonemap) = RuntimeTonemap();
         At<uint8_t>(r, rt::kInlineMode) = g.settings.inlineMode.load() ? 1 : 0;
-        At<uint8_t>(r, rt::kUseDepth) = haveDepth ? 1 : 0;
+        At<uint8_t>(r, rt::kUseDepth) = haveDepth && g.depthUsable.load() ? 1 : 0;  // SetDepthUsable
         // 97b10 DepthInverted. Both runtimes boot this at 1 -- the NVIDIA DLL writes options+260
         // = 1 when the parameter is absent, and the AMD port's static initialiser sets
         // dword_180076E10 = 1. RenoDX sends 0 explicitly, measured on ETS2 where its depth was a
@@ -3663,10 +3663,10 @@ PanelStatus ReadPanelStatus()
     st.netHeight = g.netHeight;
     st.scaleCap = g.scaleCap.load();
     st.passesAvailable = PassesAvailable();
-    st.depthSource = g.guideDepth.external && g.gameDepthActive ? GuideSource::Effect
-                     : g.gameDepthActive                        ? GuideSource::Game
-                     : g.depthSnapshot                          ? GuideSource::Snapshot
-                                                                : GuideSource::None;
+    st.depthSource = !g.gameDepthActive && !g.depthSnapshot      ? GuideSource::None
+                     : !g.depthUsable.load()                     ? GuideSource::Unusable
+                     : g.gameDepthActive && g.guideDepth.external ? GuideSource::Effect
+                     : g.gameDepthActive ? GuideSource::Game       : GuideSource::Snapshot;
     st.motionSource = g.guideMotion.external && g.gameMotionActive ? GuideSource::Effect
                       : g.gameMotionActive                         ? GuideSource::Game
                                                                    : GuideSource::Estimated;

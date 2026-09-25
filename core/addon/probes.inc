@@ -15,6 +15,20 @@ float HalfToFloat(uint16_t h)
     return (h & 0x8000) ? -v : v;
 }
 
+// Whether the network is handed depth (kUseDepth, RecordNetwork: every route), from what the probe
+// read of it. netDepth is written either way, so a later reading can hand it back. A change is a
+// change of the network's inputs, as the Depth switch is, so the history goes with it. A reading
+// that varies resets the FLAT count even when nothing changes.
+void SetDepthUsable(bool usable, const char *why)
+{
+    if (usable)
+        g.flatProbes = 0;
+    if (g.depthUsable.exchange(usable) == usable)
+        return;
+    Log("guide depth: %s, so the network is %s handed depth.", why, usable ? "again" : "no longer");
+    ResetTemporal(usable ? "the network is handed depth again" : "the guide probe withheld depth");
+}
+
 // A guide went to another buffer -- the game's pick (SettleGuide, the D3D12 depth settle, the 32-bit
 // bridge's FRAME) or the companion effect's feed: the last reading was of a buffer no longer read,
 // so look again once it has settled. The junk count starts over too, or five readings latched on
@@ -37,6 +51,11 @@ void RearmGuideProbe(bool replaced)
     g.probeGuides.store(true);
     g.nextGuideProbe = g.status.frame + 120;
     g.junkProbes = 0;
+    // A buffer not read yet is fed. ponytail: so is withheld depth on a re-arm that took no new
+    // depth buffer (motion alone, the effect's feed, the same buffer after a rebuild): the network
+    // gets it back, and the history goes twice (history.inc), until two readings withhold it again;
+    // passing whether the take was of new depth down to here is the fix.
+    SetDepthUsable(true, "the guide probe looks again");
 }
 
 void DemoteMotion(double meanPx);  // core/temporal/motion_feed.inc
@@ -115,7 +134,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                     nh, lo, hi, inRange == 0 ? 0.0 : sum / static_cast<double>(inRange), inPct,
                     depthJunk ? "  <-- JUNK. Most of this is not in 0..1, so it is not being read "
                                 "as depth: wrong resource, or a copy between two layouts that do "
-                                "not match. The network is better off without it."
+                                "not match. The network is not handed it."
                     : !depthReal ? "  <-- FLAT. A constant, so either this is a menu with no scene "
                                    "or the guide picked the wrong resource."
                                  : "  <-- varies, so this is a real depth buffer.");
@@ -151,6 +170,17 @@ void DrainReadbacks(UINT nw, UINT nh)
                     zero == n ? "  <-- ALL ZERO. Either nothing is moving, or the guide picked a "
                                 "buffer the engine does not write velocity into."
                               : "");
+                // Only a reading of depth that frame fed says anything: with none, netDepth holds
+                // whatever it last did. JUNK is never depth. FLAT is a menu as often as a wrong
+                // buffer, so it counts only in a scene -- something moved -- and only the second
+                // time. A menu that moves (a spinner, a video) reads just the same, so depth
+                // withheld as FLAT is looked at again past the five-reading cap, below.
+                if (g.probedDepth && depthJunk)
+                    SetDepthUsable(false, "JUNK");
+                else if (g.probedDepth && !depthReal && zero < n && ++g.flatProbes >= 2)
+                    SetDepthUsable(false, "FLAT in two readings of a moving scene");
+                else if (g.probedDepth && depthReal)
+                    SetDepthUsable(true, "it varies");
                 // Once a real scene has been seen there is nothing left to answer; until then
                 // keep looking, because the first few hundred frames are menus and loading -- and
                 // because junk must never end the search. It used to: the first probe fired on
@@ -165,7 +195,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                     Log("guide probe: both guides carry real data. Not probing again until a "
                         "guide moves to another buffer.");
                 }
-                else if (++g.junkProbes >= 5)
+                else if (++g.junkProbes >= 5 && g.flatProbes < 2)
                 {
                     // Junk used to end the search, which was the bug. Never ending it is the
                     // other one: each probe allocates two readback buffers and spins on a fence
@@ -176,6 +206,19 @@ void DrainReadbacks(UINT nw, UINT nh)
                     Log("guide probe: five readings and the guides still do not carry usable "
                         "data. Not probing again until a guide moves to another buffer -- the "
                         "lines above say what was wrong with each one.");
+                }
+                else if (g.junkProbes >= 5)
+                {
+                    // Depth withheld as FLAT (flatProbes is zeroed whenever it is handed back).
+                    // Stopping here would withhold it for the session when the FLAT was a menu
+                    // that moved and the scene comes later in the same buffer, so the first
+                    // reading that varies hands it back. JUNK keeps the cap: a menu never reads
+                    // as JUNK. Each look stalls the present on a fence and walks both copies on
+                    // the CPU, so the gap doubles to at most 4800 presents.
+                    g.nextGuideProbe = g.status.frame + (600ull << std::min(g.junkProbes - 4, 3u));
+                    if (g.junkProbes == 5)
+                        Log("guide probe: five readings and depth is still withheld as FLAT. "
+                            "Looking again, less often each time, until a reading varies.");
                 }
                 g.guideReadDepth->Unmap(0, nullptr);
                 g.guideReadMotion->Unmap(0, nullptr);
