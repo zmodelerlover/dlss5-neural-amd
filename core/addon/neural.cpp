@@ -3613,7 +3613,7 @@ PanelStatus ReadPanelStatus()
     st.noBridge = g.noBridge.load();
     st.noBackBuffer = g.noBackBuffer.load();
     st.hotkeyName = HotkeyName();
-    st.hasFeedEffect = true;
+    RouteCaps(st);  // Feed.fx, Read from the game and depth, as far as this route reaches them
     st.feedStatus = g.feedStatus;
     return st;
 }

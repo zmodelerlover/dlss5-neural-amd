@@ -179,8 +179,9 @@ a game.
 
 - D3D11 is the only route where the game's own motion vectors reach the network, and the only one
   where the companion effect above can stand in for them. On D3D12 the add-on finds the game's
-  depth, captured before the game clears it, and estimates motion. On Vulkan and OpenGL it only
-  receives the final image.
+  depth, captured before the game clears it, and estimates motion. On Vulkan and OpenGL, and on
+  32-bit D3D9 games, it only receives the final image. The panel leaves out the guide controls a
+  route cannot use, and the log's `route:` line says what it reaches.
 - FSR upscaling is not implemented and is not planned.
 - On 32-bit D3D9 without D3D9Ex, each frame crosses system memory twice. That costs a few
   milliseconds per frame regardless of the Scale.

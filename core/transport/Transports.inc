@@ -35,6 +35,39 @@ bool Foreign(bool foreign, const char* what) {
     return foreign;
 }
 
+// The route the primary swapchain presents through. Kept when that swapchain goes, so a rebuild does
+// not put the rows RouteCaps hides back on the panel for a frame.
+FrameTransport* g_primaryRoute = nullptr;
+
+// What a route reaches besides colour, in one line: logged when a route first drives the pipeline,
+// and under the panel's Debug.
+std::string RouteReach(const FrameTransport& route) {
+    const uint32_t caps = route.Caps();
+    std::string line = std::string(route.Name()) + " route: ";
+    line += caps & FrameTransport::kGameGuides
+                ? "depth and motion from the game's own buffers when it renders them (Read from "
+                  "the game), motion estimated otherwise"
+            : caps & FrameTransport::kDepth
+                ? "depth copied just before the game clears it; motion estimated: no game MV path "
+                  "on this API"
+                : "no depth path on this API; motion estimated: no game MV path on this API";
+    line += caps & FrameTransport::kFeed ? "; Feed.fx can hand over its own"
+                                         : "; Feed.fx does not reach the network here";
+    return line;
+}
+
+// The panel's capability bits, from the route and never a constant: a control for what the route
+// cannot reach is not drawn (view_logic.cpp, AvailableOpts). None before the first present.
+void RouteCaps(PanelStatus& st) {
+    if (g_primaryRoute == nullptr)
+        return;
+    const uint32_t caps = g_primaryRoute->Caps();
+    st.hasFeedEffect = (caps & FrameTransport::kFeed) != 0;
+    st.hasGameGuides = (caps & FrameTransport::kGameGuides) != 0;
+    st.hasDepth = (caps & FrameTransport::kDepth) != 0;
+    st.routeDiagnostics.push_back(RouteReach(*g_primaryRoute));
+}
+
 // The route for this present, or nullptr when it is not ours to touch. One swapchain drives the
 // pipeline: the first one a route gets, until the game destroys it for good (lifecycle.inc: a DXGI
 // resize keeps it, and a Vulkan rebuild or an OpenGL restore takes it back). The alt-tab and
@@ -53,8 +86,12 @@ FrameTransport* PrimaryRoute(device* dev, command_queue* queue, swapchain* sc) {
         return nullptr;
     if (g.primarySwapchain.load() == nullptr)
         g.primarySwapchain.store(sc);
-    if (sc == g.primarySwapchain.load())
+    if (sc == g.primarySwapchain.load()) {
+        if (std::exchange(g_primaryRoute, transport) != transport)
+            Log("%s. The panel draws no control for what it cannot reach.",
+                RouteReach(*transport).c_str());
         return transport;
+    }
     if (!g.status.loggedOtherSwapchain) {
         g.status.loggedOtherSwapchain = true;
         Log("a present on a second swapchain goes out as the game drew it: the add-on stays on "

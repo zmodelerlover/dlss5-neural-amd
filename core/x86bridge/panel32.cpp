@@ -43,6 +43,8 @@ ui::PanelStatus BridgeStatus(){
     s.hotkeyArmed=controls.capture.armed;
     s.exportedPath=controls.exportedPath;s.exportFailed=controls.exportFailed;
     s.helperProcess=true;s.transportOnly=w.transportOnly!=0;
+    // Only a D3D11 game's depth and motion are read; the companion effect never crosses the bridge.
+    s.hasGameGuides=s.hasDepth=!NativeD3D9();
     // What the old Status section carried that this route has and the 64-bit one does not: two
     // processes, two logs, and a guide detector whose pick is worth seeing.
     char line[96];
@@ -51,7 +53,8 @@ ui::PanelStatus BridgeStatus(){
     s.routeDiagnostics.push_back(line);
     std::snprintf(line,sizeof(line),"passes runnable/active=%u/%u",w.loadedPasses,w.activePasses);
     s.routeDiagnostics.push_back(line);
-    for(std::string& candidate:GuideCandidates())s.routeDiagnostics.push_back(std::move(candidate));
+    if(NativeD3D9())s.routeDiagnostics.push_back("D3D9 route: colour only; no depth path on this API; motion estimated: no game MV path on this API");
+    else for(std::string& candidate:GuideCandidates())s.routeDiagnostics.push_back(std::move(candidate));
     s.routeDiagnostics.push_back("Logs: amd-nr-x86.log / amd-nr-x86-host.log");
     return s;
 }

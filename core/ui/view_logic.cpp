@@ -44,9 +44,12 @@ uint32_t AvailableOpts(const PanelStatus &status)
 {
     // Built from the table rather than spelled out, so a row this route does not have is not
     // claimed by it -- which is also what the All button writes.
+    const uint32_t lacks = (status.hasFeedEffect ? 0u : kOptFeed) |
+                           (status.hasGameGuides ? 0u : kOptGameGuides) |
+                           (status.hasDepth ? 0u : kOptDepth | kOptDepthInv | kOptDepthStretch);
     uint32_t bits = 0;
     for (int i = 0; i < kOptCount; ++i)
-        if (kOpts[i].bit != kOptFeed || status.hasFeedEffect)
+        if ((kOpts[i].bit & lacks) == 0)
             bits |= kOpts[i].bit;
     return bits;
 }

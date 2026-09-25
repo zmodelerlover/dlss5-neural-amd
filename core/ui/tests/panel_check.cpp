@@ -115,7 +115,7 @@ int g_failures = 0;
 
 ui::PanelStatus Status64() {
     ui::PanelStatus st;
-    st.hasFeedEffect = true;
+    st.hasFeedEffect = st.hasGameGuides = st.hasDepth = true; // the D3D11 route
     st.hotkeyName = "Ctrl+END";
     return st;
 }
@@ -411,6 +411,47 @@ void Route32() {
     CHECK(g_disabledSeen, "transport-only did not grey out the engine controls");
 }
 
+// A route draws no Guides row for what it cannot reach, whatever the ini ticked, and All does not
+// claim one: D3D12 has depth (its pre-clear copy) but not the game's buffers or Feed.fx; Vulkan,
+// OpenGL and a 32-bit D3D9 game have none of the three. Motion stays, estimated on every route.
+void RouteCaps() {
+    const uint32_t depthRows = ui::kOptDepth | ui::kOptDepthInv | ui::kOptDepthStretch;
+    struct {
+        const char* route;
+        bool feed, guides, depth;
+        uint32_t lacks;
+    } routes[]{
+        {"D3D11", true, true, true, 0},
+        {"D3D12", false, false, true, ui::kOptFeed | ui::kOptGameGuides},
+        {"Vulkan", false, false, false, ui::kOptFeed | ui::kOptGameGuides | depthRows},
+        {"32-bit D3D9", false, false, false, ui::kOptFeed | ui::kOptGameGuides | depthRows},
+    };
+    for (const auto& r : routes) {
+        ui::PanelStatus st = Status64();
+        st.hasFeedEffect = r.feed;
+        st.hasGameGuides = r.guides;
+        st.hasDepth = r.depth;
+        CHECK(ui::AvailableOpts(st) == (ui::kOptAll & ~r.lacks), "%s: rows available 0x%x",
+              r.route, ui::AvailableOpts(st));
+        ui::PanelSettings s = Base();
+        s.optional = ui::kOptAll;
+        const std::set<std::string> seen = Draw(s, st);
+        for (int i = 0; i < ui::kOptCount; ++i)
+            if (ui::kOpts[i].group == ui::kGrpGuides)
+                CHECK(seen.count(std::string("w:") + ui::kOpts[i].en) ==
+                          ((ui::kOpts[i].bit & r.lacks) == 0 ? 1u : 0u),
+                      "%s: '%s' drawn %d", r.route, ui::kOpts[i].en,
+                      static_cast<int>(seen.count(std::string("w:") + ui::kOpts[i].en)));
+        g_openMore = true;
+        g_click = {"All"};
+        s.optional = 0;
+        Draw(s, st);
+        CHECK(s.optional == (ui::kOptAll & ~r.lacks), "%s: All gave 0x%x", r.route, s.optional);
+        g_openMore = false;
+        g_click.clear();
+    }
+}
+
 } // namespace
 
 int main() {
@@ -426,6 +467,7 @@ int main() {
     PassesRestart();
     Factory();
     Route32();
+    RouteCaps();
     if (g_failures) {
         std::printf("panel_check: %d failure(s)\n", g_failures);
         return 1;

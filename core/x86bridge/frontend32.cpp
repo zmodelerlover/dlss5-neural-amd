@@ -333,9 +333,9 @@ bool InitD3D9Bridge(device *reshadeDevice)
 
     g.luid = adapterDesc.AdapterLuid;
     g.nativeD3D9 = true;
-    g.guideDepth.name = "depth";
-    g.guideMotion.name = "motion";
-    Log("x86bridge native D3D9 interop on LUID=%08lX:%08lX feature=%04X",
+    g.guideDepth.name = "depth"; g.guideMotion.name = "motion";
+    Log("x86bridge native D3D9 interop on LUID=%08lX:%08lX feature=%04X. D3D9 route: colour only; "
+        "no depth path on this API; motion estimated: no game MV path on this API",
         g.luid.HighPart, g.luid.LowPart, static_cast<unsigned>(level));
     return true;
 }
@@ -892,7 +892,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
             if(!g.game11){Fault("D3D11 device absent");return;}g.game11->GetImmediateContext(&g.game11ctx);
             ComPtr<IDXGIDevice> dxgi;ComPtr<IDXGIAdapter> adapter;DXGI_ADAPTER_DESC d{};
             if(!g.game11ctx||FAILED(g.game11.As(&dxgi))||FAILED(dxgi->GetAdapter(&adapter))||FAILED(adapter->GetDesc(&d))){Fault("adapter unavailable");return;}
-            g.luid=d.AdapterLuid;g.guideDepth.name="depth";g.guideMotion.name="motion";
+            g.luid=d.AdapterLuid;g.guideDepth.name="depth";g.guideMotion.name="motion";Log("x86bridge D3D11 route: depth and motion from the game's own buffers when it renders them (Read from the game), motion estimated otherwise; Feed.fx does not cross the bridge");
         }
     }
     if(g.nativeD3D9!=(api==device_api::d3d9)){Fault("graphics API changed for active bridge");return;}
@@ -906,8 +906,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     const double collectMs=probe.Split();
     if(!SyncControls()){Fault("control protocol v2 synchronization failed");return;}
     if(!g.enabled){g.reset=true;return;}
-    ComPtr<ID3D11Texture2D> bb;
-    ComPtr<IDirect3DSurface9> bb9;
+    ComPtr<ID3D11Texture2D> bb;ComPtr<IDirect3DSurface9> bb9;
     UINT width=0,height=0;DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
     if(g.nativeD3D9){
         D3DSURFACE_DESC d9{};
@@ -1010,6 +1009,7 @@ std::mutex& FrameLock(){return g.lock;}
 bool HostFailed(){return g.failed;}
 void RetryHost(){g.failed=false;}
 bool Pipelined(){return g.async;}
+bool NativeD3D9(){return g.nativeD3D9;}
 void SwitchPipelining(bool on){SetAsync(on);}
 void ApplyOperational(){OperationalSettings();}
 std::vector<std::string> GuideCandidates(){

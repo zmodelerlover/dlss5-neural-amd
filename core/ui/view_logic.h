@@ -20,8 +20,8 @@ extern const int kOptCount;
 
 const char *OptGroupName(int grp);
 
-// The rows this route can draw. Feed.fx is the one that depends on the route: see
-// PanelSettings::useFeedEffect.
+// The rows this route can draw: Feed.fx, Read from the game and the depth rows depend on the route
+// (PanelStatus's capabilities).
 uint32_t AvailableOpts(const PanelStatus &status);
 
 inline bool Shown(const PanelSettings &s, uint32_t bit)

@@ -317,6 +317,7 @@ void BridgePresent(device* dev, swapchain* sc) {
 
 struct Transport final : FrameTransport {
     const char* Name() const override { return "D3D11"; }
+    uint32_t Caps() const override { return kDepth | kGameGuides | kFeed; }
     void OnTargetsBound(device* dev, uint32_t count, const resource_view* rtvs,
                         resource depth) override {
         std::lock_guard observe(g.lock);

@@ -223,13 +223,13 @@ void DrawGuides(PanelSettings &s, const PanelStatus &status)
         return;
     if (status.hasFeedEffect && Shown(s, kOptFeed))
         Feed(s, status);
-    if (Shown(s, kOptGameGuides))
+    if (status.hasGameGuides && Shown(s, kOptGameGuides))
         GameGuides(s, status);
-    if (Shown(s, kOptDepth))
+    if (status.hasDepth && Shown(s, kOptDepth))
         Depth(s);
-    if (s.useDepth != 0 && Shown(s, kOptDepthInv))
+    if (status.hasDepth && s.useDepth != 0 && Shown(s, kOptDepthInv))
         DepthInverted(s);
-    if (s.useDepth != 0 && Shown(s, kOptDepthStretch))
+    if (status.hasDepth && s.useDepth != 0 && Shown(s, kOptDepthStretch))
         DepthStretch(s);
     if (Shown(s, kOptHistory))
         History(s);

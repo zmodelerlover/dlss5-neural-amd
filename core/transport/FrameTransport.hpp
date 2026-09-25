@@ -14,6 +14,16 @@
 struct FrameTransport {
     virtual ~FrameTransport() = default;
     virtual const char* Name() const = 0;
+    // What this route can hand the network besides colour. The same ini asks every route for depth
+    // and the game's motion; a route without the path says so once in the log (PrimaryRoute), and
+    // the panel draws no control for what it cannot reach (RouteCaps). Motion is estimated
+    // wherever kGameGuides is off.
+    enum Cap : uint32_t {
+        kDepth = 1u << 0,      // some depth guide: the game's buffer, or a copy taken before a clear
+        kGameGuides = 1u << 1, // the game's own depth and motion buffers (Read from the game)
+        kFeed = 1u << 2,       // AMD_Neural_Feed.fx reaches the network
+    };
+    virtual uint32_t Caps() const { return 0; }
     virtual void Present(reshade::api::device* dev, reshade::api::command_queue* queue,
                          reshade::api::swapchain* sc) = 0;
     // Everything sized to the swapchain. Called on every transport compiled in, not only the

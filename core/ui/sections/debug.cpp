@@ -95,8 +95,11 @@ void DrawDebug(PanelSettings &s, const PanelStatus &status, PanelActions &action
     if (status.routeDiagnostics.empty())
         return;
     ImGui::Separator();
+    // The route lines are sentences; TextDisabled alone would run off a narrow panel.
+    ImGui::PushTextWrapPos(0.0f);
     for (const std::string &line : status.routeDiagnostics)
         ImGui::TextDisabled("%s", line.c_str());
+    ImGui::PopTextWrapPos();
 }
 
 } // namespace ui

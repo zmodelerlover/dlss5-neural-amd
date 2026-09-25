@@ -43,6 +43,8 @@ void SwitchPipelining(bool on);
 void ApplyOperational();
 // One line per guide the detector is holding, for the panel's Debug section.
 std::vector<std::string> GuideCandidates();
+// A D3D9 game: colour only, with no path to its depth or motion buffers.
+bool NativeD3D9();
 
 // The overlay callback, registered by the frontend's DllMain.
 void OnOverlay32(reshade::api::effect_runtime* runtime);

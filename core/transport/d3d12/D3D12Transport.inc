@@ -10,6 +10,9 @@ namespace d3d12route {
 
 struct Transport final : FrameTransport {
     const char* Name() const override { return "D3D12"; }
+    // Depth only as SnapshotBeforeClear's copy, which the Depth switch alone gates: no velocity
+    // tally, and no Feed.fx, here yet.
+    uint32_t Caps() const override { return kDepth; }
     void OnTargetsBound(device*, uint32_t, const resource_view*, resource depth) override {
         TallyBoundDepth(depth);
     }

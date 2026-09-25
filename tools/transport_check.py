@@ -39,7 +39,9 @@ never submits through ReShade, so its InfoQueue sees none of it:
     goes out raw before the depth settle, the alt-tab and minimised tests and the history, its init
     or teardown leaves the primary's gate, size and resources alone, and its effect runtime is not
     taken; a resize keeps the latch, and the init of a primary a destroy let go (a Vulkan rebuild, an
-    OpenGL restore) takes it back, dropping what was built for a window taken meanwhile.
+    OpenGL restore) takes it back, dropping what was built for a window taken meanwhile;
+  - the panel's capability bits (Feed.fx, Read from the game, depth) are the primary route's own
+    Caps(), never a constant, and PrimaryRoute logs what each route reaches when it takes over.
 
     python tools/transport_check.py
 """
@@ -219,6 +221,10 @@ lines = neural.splitlines()
 at = [i for i, line in enumerate(lines) if "addon_event::destroy_device>(OnDestroyDevice)" in line]
 if len(at) != 1 or lines[at[0] - 1].strip().startswith("if (g.events"):
     bad.append("neural.cpp: destroy_device is registered once and unconditionally")
+if "RouteCaps(st);" not in body(neural, "ReadPanelStatus") or re.search(r"\bst\.has\w+ = (true|false)", neural):
+    bad.append("ReadPanelStatus: a capability bit is a constant, not the primary route's Caps()")
+if "RouteReach(*transport)" not in body(FACTORY.read_text(encoding="utf-8"), "PrimaryRoute"):
+    bad.append("PrimaryRoute: a route taking over does not say what it reaches")
 
 if bad:
     print("FAIL")

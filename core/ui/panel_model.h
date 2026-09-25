@@ -128,8 +128,13 @@ struct PanelStatus
     std::wstring exportedPath;
     bool exportFailed = false;
 
-    // Capabilities. Each is something one route has and the other does not.
+    // Capabilities. Each is something some routes have and others do not, and a control for what
+    // the route lacks is not drawn (AvailableOpts).
     bool hasFeedEffect = false;   // the companion effect can reach the network
+    // The game's own depth and motion buffers are read (Read from the game), and there is any depth
+    // to hand over: D3D12 has only its pre-clear copy, and Vulkan, OpenGL and a 32-bit D3D9 game
+    // have neither, so Depth there would be a switch with nothing behind it.
+    bool hasGameGuides = false, hasDepth = false;
     std::string feedStatus;       // what the companion effect is handing over, when it is
     // The engine runs in a helper process: only here is Timing drawn, as the bridge's pipelining
     // switch (the engine is same-frame everywhere), the ini and the logs are the helper's, and

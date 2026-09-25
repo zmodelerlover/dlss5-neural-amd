@@ -219,6 +219,14 @@ a player would notice:
   from v0.6.6 keeps its `Temporal`; it has no `FixedSeed` or `OutputSmooth` key, so those two read
   as on. To go back, set Temporal to Auto, untick Fixed seed and slide Output smoothing to off, or
   put `Temporal=0`, `FixedSeed=0` and `OutputSmooth=0` in `amd-nr.ini`.
+- **The panel only offers the guide controls the route can use**, and the log says once what the
+  route reaches, e.g. `Vulkan route: no depth path on this API; motion estimated: no game MV path
+  on this API; Feed.fx does not reach the network here`. **Use Feed.fx** is on 64-bit D3D11 games
+  only (it used to be offered on D3D12, Vulkan and OpenGL too, where it did nothing). **Read from
+  the game** is on D3D11 games, 64-bit and 32-bit. **Depth**, **Depth inverted** and **Stretch
+  depth** are there on D3D11 and D3D12 games, not on Vulkan, OpenGL or 32-bit D3D9 ones. The same
+  line is under **Debug** on the 64-bit panel; a 32-bit D3D9 game's shows `colour only` in place
+  of the guide candidates. The ini keys are kept either way.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 
