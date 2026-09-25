@@ -18,6 +18,7 @@
 #include "../shared/log_export.h"
 #include "../shared/guide_choice.h"
 #include "../shared/d3d11_guides.h"
+#include "../shared/raster_pin.h"
 #include "../ui/panel.h"
 #include "../shaders/motion.h"
 #include "../shaders/compose.h"
@@ -1075,6 +1076,7 @@ struct State
     bool loggedProfile = false;
     bool loggedPin = false;
     float pinnedScale = -1.0f;
+    RasterPin rasterPin;
     UINT measureTries = 0;
     // Raised on the bind event, which arrives on whatever thread is recording, and read from
     // present and the overlay. The increment sits outside g.lock on purpose -- observation must
@@ -2353,12 +2355,10 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     UINT nw = std::max<UINT>(64u, static_cast<UINT>(w * scale + 0.5f));
     UINT nh = std::max<UINT>(64u, static_cast<UINT>(h * scale + 0.5f));
 
-    // Some games do not present at a fixed size: Xenosaga 2 walks between 1920x1080, 1918x1014,
-    // 1918x994 and 1918x1008 every few frames, and PCSX2 flaps between 1920x974 and 1920x971.
-    // Letting the raster follow that re-stages the engine every few frames for nothing, and
-    // destroys the textures it holds zero-copy handles to while it may still be reading them.
-    // Both shaders resample between the back buffer and the raster in either direction, so
-    // pinning the raster across a flap costs nothing but a resample.
+    // Some games do not present at a fixed size, and following every flap would re-stage the
+    // engine and destroy the textures it holds zero-copy handles to while it may still read them.
+    // Both shaders resample between back buffer and raster either way, so a held raster costs a
+    // resample; RasterPin decides when a new size has lasted long enough to follow.
     //
     // But the pin must not swallow a *deliberate* change. It used to compare sizes only, so it
     // could not tell "the window twitched" from "the user moved Resolution Scale" -- and since a
@@ -2369,15 +2369,15 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     const bool scaleChanged = scale != g.pinnedScale;
     g.pinnedScale = scale;
     if (g.engineReady && g.netWidth != 0 && !scaleChanged &&
-        (nw != g.netWidth || nh != g.netHeight))
+        g.rasterPin.Keep(nw, nh, g.netWidth, g.netHeight))
     {
         if (!g.loggedPin)
         {
             g.loggedPin = true;
             Log("back buffer changed to %ux%u, which wants a %ux%u raster; keeping the raster at "
-                "%ux%u so the engine is not re-staged over a window twitch. Further changes are "
-                "handled the same way and not logged. Moving Resolution Scale still re-rasters.",
-                w, h, nw, nh, g.netWidth, g.netHeight);
+                "%ux%u so the engine is not re-staged over a window twitch. Further flaps are not "
+                "logged; a size over 2%% off that lasts %u presents re-rasters, as Scale does.",
+                w, h, nw, nh, g.netWidth, g.netHeight, RasterPin::kHold);
         }
         nw = g.netWidth;
         nh = g.netHeight;

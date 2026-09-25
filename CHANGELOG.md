@@ -137,6 +137,11 @@ notice:
   the history the next frame is smoothed against. The log's residual measurement counts them
   (`measure, non-finite`); with Output smoothing on it reads after the smooth, so only a run with
   OutputSmooth=0 says whether the network returns any.
+- **A window resized for good now gets a raster of its own size.** On every route the raster kept
+  the size it started at until Scale moved, so NFS windowed from 1080 to 1017 lines ran the
+  network on a frame stretched to the old shape. A new size is now followed once it has lasted 120
+  presents and is more than 2% off; a game that keeps changing size (Xenosaga 2, PCSX2) still keeps
+  one raster. Following it starts history again, as a Scale change does.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 
