@@ -196,7 +196,8 @@ Decisions worth writing down:
   that the guard is older than the fences: with the game running fast enough, the CPU-stall path
   skipped about two frames in three as well, because the engine's own job counter lags even when
   our fence has completed. Waiting on the outstanding job and re-testing, rather than skipping,
-  is what fixed both.
+  is what fixed both. A frame that wait gives up on goes out as the game drew it, as on every
+  other route; it is not a repeat of the last result.
 - **A multisampled default framebuffer is resolved on the way in.** The sample count is read from
   GL (`GL_SAMPLES` with FBO 0 bound) rather than taken from ReShade's description of the back
   buffer -- the two agree on this driver, and the log prints both so they can be compared

@@ -177,7 +177,7 @@ assert 'Idle();return Result::Transport' in transport
 neural=h[h.index('    Result Neural()'):h.index('    Result FrameWork(')]
 assert neural.index('RecordNetwork(')<neural.index('CompositionIsFresh(')<neural.index('cmd->Close()')<neural.index('ExecuteCommandLists(')<neural.index('NotifyRuntimes(')<neural.index('WaitForWorkQueue(g.completion)')<neural.index('return fresh?')
 assert 'rt::kNotifyFn' not in neural  # every module that recorded is told, not only g.runtime
-assert 'runNetwork&&g.activePasses!=0' in neural and 'g.fence->GetCompletedValue()>=g.completion' in neural
+assert 'fresh=ok&&CompositionIsFresh(runNetwork)&&!g.noBackBuffer.load();' in neural and 'runNetwork&&g.activePasses' not in neural and 'g.fence->GetCompletedValue()>=g.completion' in neural
 # A same-frame answer still out at the timeout is a slow helper, not a dead one: left pending once,
 # the frame goes out as drawn, and the next present collects it before anything else uses the pipe.
 same=present[present.index('SetLastError(0);const bool got=x86bridge::Request('):present.index('answeredFrame=f;answered=true;')]

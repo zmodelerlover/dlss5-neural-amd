@@ -63,6 +63,11 @@ notice:
 - **Removed: `GlHoldFrames`**, the OpenGL route's option to repeat the last result instead of
   waiting for the network (v0.6.0, off by default). The route now always waits, which is what the
   default did, and an ini that still sets it is ignored.
+- A frame the network did not answer is shown by one rule on every route: the game's own frame,
+  graded when a style is selected, or the debug view or Network Output when one is on. On OpenGL it
+  no longer repeats the last result, and on the 32-bit bridge it no longer loses the style, the
+  debug view and Network Output. The 32-bit panel's skipped percentage is counted as on the 64-bit
+  routes, so a graded skipped frame still counts as skipped.
 - Every route decides whether to run the network in one shared place, and asks the runtime itself
   whether a job is still in flight. No route records on top of an unfinished job any more: those
   frames go out as the game drew them until the runtime has finished it, and a job still waited on

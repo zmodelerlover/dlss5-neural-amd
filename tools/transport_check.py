@@ -21,6 +21,8 @@ never submits through ReShade, so its InfoQueue sees none of it:
     leaves a registration behind that ends the next wait on it early;
   - on OpenGL the CPU sees GL's first signal land before the queue waits on it, the queue waits
     once, before any list runs, and a rebuild drains our queue and forgets the old context's names;
+  - a frame shows its composition only when CompositionIsFresh(runNetwork) says so, with no term of
+    the route's own (host64 included), and otherwise the game's own frame, never an older result;
   - on D3D11 nothing is tallied, and no streak kept, while no present will settle it (NoBridge and
     Stage included), an MSAA back buffer goes out raw with the tallies cleared, and crossLocal is
     made in the format it is read as (host64 too);
@@ -129,8 +131,22 @@ if len(re.findall(r"WaitForWorkQueue\(", present)) != len(re.findall(r"if \(!r\.
     bad.append("OpenGL Present: the queue is waited for on the CPU only without the fences")
 if not 0 <= ensure.find("WaitForWorkQueue(g.completion)") < ensure.find("BuildCrossing(r, r.in"):
     bad.append("OpenGL Ensure: the crossing is rebuilt without draining our queue first")
-if not all(s in ensure for s in ("r.resolveFbo = ", "r.semaphoresProven = ", "r.haveResult = false")):
-    bad.append("OpenGL Ensure: a new context keeps the old one's resolve names, fences or result")
+if not all(s in ensure for s in ("r.resolveFbo = ", "r.semaphoresProven = ")):
+    bad.append("OpenGL Ensure: a new context keeps the old one's resolve names or fences")
+# One rule for a frame the network did not answer, on every route: the composition only when
+# CompositionIsFresh says it is this frame's, otherwise the game's own frame. No route adds a term of
+# its own (host64 once also asked for runNetwork, which dropped the grade), and OpenGL does not
+# repeat its last result. Read per statement, comments and strings out, so a term on a continuation
+# line or on the `fresh`/`show` a write-back site tests is caught too.
+for f in [ROOT / "core" / p for p in ("transport/d3d12/D3D12Transport.inc", "transport/d3d11/D3D11Transport.inc",
+                                      "transport/vulkan/vk_route.inc", "transport/opengl/gl_frame.inc", "x86bridge/host64.cpp")]:
+    src = re.sub(r'"[^"\n]*"|//[^\n]*', "", f.read_text(encoding="utf-8"))
+    gates = [s.replace("CompositionIsFresh(runNetwork)", "") for s in re.split(r"[;{}]", src)
+             if re.search(r"CompositionIsFresh\(|\b(fresh|show)\b", s)]
+    if "CompositionIsFresh(runNetwork)" not in src or any(w in s for s in gates for w in ("runNetwork", "activePasses", "CompositionIsFresh(")):
+        bad.append(f"{f.relative_to(ROOT)}: a skipped frame is shown by a rule other than CompositionIsFresh(runNetwork) alone")
+if "const bool show = fresh && !g.noBackBuffer.load();" not in present or "haveResult" in gl:
+    bad.append("OpenGL Present: a frame that is not fresh repeats the last result instead of the host's own")
 if body(gl, "ImportFences").count("std::max(r.to") != 2:
     bad.append("OpenGL ImportFences: a new context's fence values may step below the old one's")
 

@@ -14,7 +14,7 @@ struct Host {
     bool transport=false,built=false;uint64_t generation=0,lastFrame=0;
     Build spec{};
     WireSettings factoryDefaults{};
-    uint64_t settingsRevision=1,lastCommand=0,processedFrames=0,skippedFrames=0;
+    uint64_t settingsRevision=1,lastCommand=0;
     void ForceInline(){
         if(!g.settings.inlineMode.load())Log("x86bridge forced same-frame: Inline=0 is unsupported on this route");
         g.settings.inlineMode.store(true);
@@ -48,7 +48,7 @@ struct Host {
     }
     WireStatus ExportStatus(){
         WireStatus s;s.connected=1;s.transportOnly=transport;
-        s.processed=processedFrames;s.skipped=skippedFrames;
+        s.processed=g.status.frame;s.skipped=g.status.skipped;  // JobGate's count, as the 64-bit panel reads it
         s.engineReady=!transport&&g.runtime!=nullptr&&!g.status.unavailable&&!g.status.failed;
         s.unavailable=g.status.unavailable;s.failed=g.status.failed;
         s.outWidth=spec.colour.width;s.outHeight=spec.colour.height;s.netWidth=g.netWidth;s.netHeight=g.netHeight;
@@ -214,7 +214,7 @@ struct Host {
         throw std::runtime_error("engine recording failed");
     Barrier(cmd, g.bridge.crossLocal.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_COPY_DEST);
-    if (ok && CompositionIsFresh(runNetwork) && runNetwork && g.activePasses != 0 && !g.noBackBuffer.load())
+    if (ok && CompositionIsFresh(runNetwork) && !g.noBackBuffer.load())
     {
         Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -244,7 +244,7 @@ struct Host {
         // Original, and its readbacks and textures stay where the GPU may still be using them.
         ++g.bridge.backValue;if(!WaitForWorkQueue(g.completion)&&!DeviceLost())return Result::Original;
         Require(!DeviceLost()&&g.fence->GetCompletedValue()!=UINT64_MAX&&g.fence->GetCompletedValue()>=g.completion,"output completion failed");
-        const bool fresh=ok&&CompositionIsFresh(runNetwork)&&runNetwork&&g.activePasses!=0&&!g.noBackBuffer.load();
+        const bool fresh=ok&&CompositionIsFresh(runNetwork)&&!g.noBackBuffer.load();
         DrainReadbacks(g.netWidth,g.netHeight);
         return fresh?Result::Neural:Result::Original;
     }
@@ -256,7 +256,6 @@ struct Host {
         g.guideDepth.ready=f.depthValid&&g.settings.useGameGuides.load()&&g.settings.useDepth.load();
         g.guideMotion.ready=f.motionValid&&g.settings.useGameGuides.load()&&g.settings.useMotion.load()&&!g.guideMotion.failed;
         const auto result=transport?CopyOnly():Neural();
-        if(result==Result::Neural||result==Result::Transport)++processedFrames;else ++skippedFrames;
         ++g.status.frame;
         if(g.status.frame<=3||g.status.frame%120==0)Log("x86bridge frame=%llu engine_frame=%llu result=%u",f.id,g.status.frame,static_cast<unsigned>(result));
         return result;

@@ -62,13 +62,10 @@ struct Route
     bool loggedSemaphores = false;
     UINT64 toD3DValue = 0, toGlValue = 0;
 
-    // Holding the last result. Without the CPU stall the game runs ahead of the network, and on a
-    // frame where the previous evaluation has not finished there is no new result to show. The
-    // other routes never meet this: they stall, so every frame is a fresh one. Leaving the game's
-    // own image on those frames is what the first semaphore build did, and alternating between a
-    // corrected frame and an uncorrected one at a hundred and ninety a second is a strobe, not an
-    // effect. The result texture still holds the last composed frame, so it is shown again.
-    bool haveResult = false;
+    // Frames that had a composition of their own. The strobe the first semaphore build shipped (the
+    // game running ahead, every frame the network could not answer going out raw) is kept off by
+    // JobGate's wait for the previous job, not by repeating the last result; the log line that
+    // prints this against the frame count is how a GL run shows the two stay close.
     UINT64 freshFrames = 0;
 
     // Deliberately leaked, one per crossing ever built. See rule 1 in gl_route.inc: closing these

@@ -321,20 +321,13 @@ void Present(command_queue *queue, swapchain *sc)
 
     // --- 3. and the finished image goes back over the host's ----------------------------------
     //
-    // `fresh` means the network produced a new composition this frame. When it did not, the
-    // result texture still holds the last one and showing it again is what keeps the effect from
-    // strobing. The same reasoning is already written down for Network Output in
-    // CompositionIsFresh: a held frame and a correction aimed at where the edges used to be are
-    // different artefacts, and flickering between two different pictures is worse than either.
+    // `fresh` means this frame has a composition of its own, by the rule every route shares. When
+    // it has not -- the job JobGate waited for still running, or a failure -- the host's own image
+    // stays, as on every other route. The result texture still holds an older picture; showing it
+    // again made this the one route that repeated a frame instead.
     if (fresh)
-    {
-        r.haveResult = true;
         ++r.freshFrames;
-    }
-    // Before the first result there is nothing to show but the game's own frame, and after a
-    // network failure `fresh` is false with nothing new behind it -- in both cases the honest
-    // thing is to leave the host's image alone.
-    const bool show = (fresh || r.haveResult) && !g.noBackBuffer.load();
+    const bool show = fresh && !g.noBackBuffer.load();
     if (show && !BlitOut(r))
     {
         r.Stop("the blit back into the default framebuffer reported a GL error.");
