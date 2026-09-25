@@ -177,7 +177,7 @@ if "DeviceLost()" not in present[:present.find("transport->Present(")]:
     bad.append("OnPresent: a removed device is not checked before the route runs")
 # One swapchain drives the pipeline; another window's present leaves before anything shared, and its
 # arrival or teardown leaves the primary's gate, size and resources alone. The 32-bit frontend too.
-shared = ("SettleD3D12Depth()", "ToggleRequested()", "disableOnAltTab", "IsIconic(", "historyValid")
+shared = ("SettleD3D12Depth()", "ToggleRequested()", "disableOnAltTab", "IsIconic(", "ResetTemporal(")
 if not 0 <= present.find("PrimaryRoute(dev, queue, sc)") < min(present.find(s) for s in shared):
     bad.append("OnPresent: another swapchain's present reaches shared state before PrimaryRoute")
 primary = body(FACTORY.read_text(encoding="utf-8"), "PrimaryRoute")

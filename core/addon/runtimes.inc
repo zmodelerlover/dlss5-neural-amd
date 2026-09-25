@@ -51,7 +51,7 @@ void RetireUnsubmitted(ID3D12CommandQueue *queue, ID3D12CommandList *list)
 {
     NotifyRuntimes(queue, 1, &list);
     g.activePasses = 0;
-    g.historyValid.store(0);
+    ResetTemporal("a command list failed to close");
     g.jobRunning = false;  // that wait is the runtime's timeout, not what the network costs
 }
 
@@ -300,8 +300,6 @@ bool JobGate()
     return false;
 }
 
-void DropStaleHistory(bool ran);
-
 // Whether the last list that read the descriptor heap may still be running, in which case
 // RecordNetwork records nothing and the route skips the frame as it does when JobGate says no. The
 // heap is written on the CPU every present and a list reads its views when it executes, not when it
@@ -449,7 +447,7 @@ bool BringUpEngines(UINT &wanted)
             Log("passes %u -> %u, taken with every module drained; history starts again.", live, next);
             live = next;
             timeouts = 0;
-            g.historyValid.store(0);
+            ResetTemporal("Passes changed");
         }
         else
             Log("passes %u -> %u: a job was still in flight after 2 s; %s.", live, next,

@@ -166,9 +166,12 @@ void BridgePresent(device* dev, swapchain* sc) {
     // Settled first, and unconditionally, so a game that renders its own buffers can take a slot
     // back off the companion effect. The observation no longer sees ReShade's own targets, so an
     // entry in these tallies is the game's by construction.
+    const bool hadDepth = g.guideDepth.chosen != nullptr && g.settings.useDepth.load();  // in use
+    const bool hadMotion = g.guideMotion.chosen != nullptr && g.settings.useMotion.load();
     const bool tookDepth = SettleGuide(g.guideDepth, g_depthTally, Log);
-    if (SettleGuide(g.guideMotion, g_motionTally, Log) || tookDepth)
-        RearmGuideProbe();
+    const bool tookMotion = SettleGuide(g.guideMotion, g_motionTally, Log);
+    if (tookDepth || tookMotion)
+        RearmGuideProbe((tookDepth && hadDepth) || (tookMotion && hadMotion));
     AdoptFeedEffect();
     g.guideDepth.ready = g.guideMotion.ready = false;
     if (g.settings.useGameGuides.load()) {

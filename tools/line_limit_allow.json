@@ -1,9 +1,9 @@
 {
   "core/diagnostics/glprobe/glprobe.cpp": 1886,
-  "core/addon/neural.cpp": 3928,
+  "core/addon/neural.cpp": 3927,
   "core/diagnostics/session/session.cpp": 1129,
   "core/diagnostics/vkbridge/vkbridge.cpp": 687,
   "core/diagnostics/vkprobe/vkprobe.cpp": 579,
   "core/shared/vk_raw.inc": 751,
-  "core/x86bridge/frontend32.cpp": 1054
+  "core/x86bridge/frontend32.cpp": 1048
 }

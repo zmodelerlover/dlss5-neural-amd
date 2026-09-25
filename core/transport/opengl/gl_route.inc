@@ -254,6 +254,8 @@ bool Ensure(Route &r, UINT w, UINT h)
         r.resolveFbo = r.resolveTexture = r.semToGl = r.semToD3D = 0;  // never delete these here
         // The fences are imported into this context again and proven again before a queue waits.
         r.semaphores = r.semaphoresProven = r.loggedSemaphores = false;
+        if (r.context != nullptr)  // the device changed under us: a device change drops history
+            ResetTemporal("the OpenGL context was replaced");
         r.context = current;
         r.ready = false;
         r.width = 0;

@@ -151,6 +151,17 @@ notice:
   costs the game's motion for the rest of the session: the next buffer the game moves to is used,
   and probed in turn. The same buffer taken back after a resize is used again for about 2 s, until
   the probe gives up on it again.
+- **The temporal history is dropped by one rule on every route**, and the log says why
+  (`temporal history dropped: <reason> (<n> so far)`, a line each time the reason changes). It goes
+  when a raster of a new size is built, when Scale, DepthInverted, History, Temporal, Motion, Depth,
+  GameGuides, MotionScale, FlowGate or FlowRatio change on either panel (the 32-bit one used to
+  react to History alone), on every ini reload, when the effect is switched back on (the 64-bit
+  route used to hand the first frame a history from before a hotkey or panel switch-off), when a
+  game's depth or motion buffer takes the place of one the network was fed, on a new OpenGL
+  context, and, for the passes that sat a frame out, when fewer passes ran than were asked for. A
+  swapchain rebuild alone no longer drops it on the 32-bit route, where a game that rebuilds every
+  few frames (PCSX2, Xenosaga 2) lost its accumulation each time; neither route drops it there now,
+  nor when the game's depth and motion are found again a few presents after it.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

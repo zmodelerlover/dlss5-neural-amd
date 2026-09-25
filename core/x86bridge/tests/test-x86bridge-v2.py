@@ -58,15 +58,18 @@ struct Engine {
  } settings;
  std::atomic<bool> historyValid{true};
 }g;
+void ResetTemporal(const char*){g.historyValid.store(false);}
 struct Host{uint64_t settingsRevision=1;
 '''+methods+r'''};
 int main(){Host host;WireSettings s; s.settings_revision=2;s.skin=-1;s.useHistory=1;s.scale=.5f;s.structure=1;s.tone=1;
- g.settings.useHistory.store(1);assert(host.ApplySettings(s));assert(g.historyValid.load());assert(g.settings.skin.load()==-1);assert(g.settings.inlineMode.load()==1);
+ g.settings.useHistory.store(1);g.settings.scale.store(.5f);g.settings.flowGate.store(.002f);g.settings.flowRatio.store(.5f);assert(host.ApplySettings(s));assert(g.historyValid.load());assert(g.settings.skin.load()==-1);assert(g.settings.inlineMode.load()==1);
  auto before=host.ExportSettings();assert(!host.ApplySettings(s));auto after=host.ExportSettings();assert(std::memcmp(&before,&after,sizeof(before))==0);
  s.settings_revision=3;s.scale=std::numeric_limits<float>::infinity();assert(!host.ApplySettings(s));after=host.ExportSettings();assert(std::memcmp(&before,&after,sizeof(before))==0);
  s.scale=.5f;s.useHistory=0;assert(host.ApplySettings(s));assert(!g.historyValid.load());
  g.historyValid.store(true);s.settings_revision=4;s.structure=2;assert(host.ApplySettings(s));assert(g.historyValid.load());
- s.settings_revision=5;s.startOn=1;s.toggleKey=65;s.toggleMods=5;s.language=1;s.disableOnAltTab=1;assert(host.ApplySettings(s));
+ // The 64-bit panel's list (SettingsInvalidateHistory): depth read the other way round drops it too.
+ s.settings_revision=5;s.depthInverted=1;assert(host.ApplySettings(s));assert(!g.historyValid.load());g.historyValid.store(true);
+ s.settings_revision=6;s.startOn=1;s.toggleKey=65;s.toggleMods=5;s.language=1;s.disableOnAltTab=1;assert(host.ApplySettings(s));
  after=host.ExportSettings();assert(after.startOn==1&&after.toggleKey==65&&after.toggleMods==5&&after.language==1&&after.disableOnAltTab==1);
 }
 '''
@@ -74,7 +77,7 @@ with tempfile.TemporaryDirectory(prefix='x86bridge-state-') as d:
  p=Path(d);(p/'state.cpp').write_text(state,encoding='utf-8')
  subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-I'+str(n),str(p/'state.cpp'),'-o',str(p/'state')],check=True)
  subprocess.run([str(p/'state')],check=True)
-print('PASS actual host Apply/Export: finite clamp, stale reject/no mutation, history change only, operational fields mirrored, forced inline')
+print('PASS actual host Apply/Export: finite clamp, stale reject/no mutation, history dropped by the shared list only, operational fields mirrored, forced inline')
 # No I/O in the panel, and none in the bridge's side of it either. The only control transaction
 # owner is OnPresent: the overlay callback turns clicks into requests and returns.
 ui=''.join(read(f) for f in sorted(u.rglob('*')) if f.suffix in ('.h','.cpp'))

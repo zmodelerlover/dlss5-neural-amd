@@ -219,7 +219,7 @@ bool DropRemote(){
     if(!g.built)return !g.failed;
     x86bridge::Ack a;
     if(!x86bridge::Request(g.pipe.value,g.process.value,x86bridge::Kind::Drop,nullptr,0,a)||a.result!=x86bridge::Result::Ready||a.generation!=g.generation){Fault("DROP failed");return false;}
-    g.built=false;g.reset=true;return true;
+    g.built=false;return true;
 }
 // The guide copy is d3d11_guides.h, the same code the 64-bit add-on runs. A guide's shared texture
 // here is one exported to the helper rather than opened on a device of our own.
@@ -610,7 +610,7 @@ bool BuildRemote(){
     if(!Export(g.colour,b.colour)||!Export(g.output,b.output)||!Export(g.guideDepth.bridge,b.depth)||!Export(g.guideMotion.bridge,b.motion))return false;
     x86bridge::Ack a;
     if(!x86bridge::Request(g.pipe.value,g.process.value,x86bridge::Kind::Build,&b,sizeof(b),a)||a.result!=x86bridge::Result::Ready||a.generation!=b.generation)return false;
-    g.built=true;g.reset=true;return true;
+    g.built=true;return true;
 }
 bool StateRequest(x86bridge::Kind kind,const void* body=nullptr,uint32_t bytes=0,bool replace=false){
     x86bridge::Ack ack;x86bridge::StateSnapshot snapshot;
@@ -719,7 +719,7 @@ void ReleaseLocal(){
     g_depthTally.clear();g_motionTally.clear();ClearGuide(g.guideDepth);ClearGuide(g.guideMotion);
     ReleaseD3D9Stage();
     g.colour.Destroy();g.output.Destroy();g.stageIn11.Reset();g.stageOut11.Reset();g.stageW=g.stageH=0;
-    g.stageFmt=DXGI_FORMAT_UNKNOWN;g.reset=true;
+    g.stageFmt=DXGI_FORMAT_UNKNOWN;
 }
 // The 64-bit route's two gates, so both routes pick the same guides: nothing with GameGuides off, and
 // nothing while ReShade draws its own effect chain, whose screen-sized two-channel intermediates look
@@ -735,11 +735,6 @@ void OnBind(command_list* cmd,uint32_t count,const resource_view* targets,resour
 }
 bool OnDraw(command_list*,uint32_t,uint32_t,uint32_t,uint32_t){return false;}
 bool OnDrawIndexed(command_list*,uint32_t,uint32_t,uint32_t,int32_t,uint32_t){return false;}
-void OnInit(swapchain* sc,bool){
-    if(!sc)return;const auto api=sc->get_device()->get_api();
-    if(api!=device_api::d3d11&&api!=device_api::d3d9)return;
-    std::lock_guard lock(g.lock);if(g.active==sc)g.reset=true;
-}
 // Released after g.lock is let go: the D3D9 route's private D3D11 device re-enters OnDestroyDevice on
 // its last release, which takes g.lock again; std::mutex throws, and D3D9 games went down on exit.
 struct Retired{ComPtr<ID3D11ComputeShader> cs;ComPtr<ID3D11Device> d11;ComPtr<ID3D11DeviceContext> ctx;ComPtr<IDirect3DDevice9> d9;};void Retire(Retired& r){r.cs.Swap(g.guideDepthCs);r.d11.Swap(g.game11);r.ctx.Swap(g.game11ctx);r.d9.Swap(g.game9);}
@@ -935,7 +930,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
         if(FAILED(uploadHr)){if(DeferD3D9Failure("input copy",uploadHr))return;FaultHresult("D3D9 input copy did not complete",uploadHr);return;}
     }else g.game11ctx->CopyResource(g.stageIn11.Get(),bb.Get());
     g.game11ctx->CopyResource(g.colour.on11.Get(),g.stageIn11.Get());
-    settled=true;if(SettleGuide(g.guideDepth,g_depthTally,Log))g.guideTaken|=1;if(SettleGuide(g.guideMotion,g_motionTally,Log))g.guideTaken|=2;
+    settled=true;const bool had[2]={g.guideDepth.chosen!=nullptr&&controls.shadow.useDepth!=0,g.guideMotion.chosen!=nullptr&&controls.shadow.useMotion!=0};if(SettleGuide(g.guideDepth,g_depthTally,Log))g.guideTaken|=had[0]?5:1;if(SettleGuide(g.guideMotion,g_motionTally,Log))g.guideTaken|=had[1]?6:2;
     g.guideDepth.ready=g.guideMotion.ready=false;
     PrepareGuide(g.guideDepth,true);PrepareGuide(g.guideMotion,false);
     if(g.failed)return;
@@ -1038,7 +1033,6 @@ BOOL APIENTRY DllMain(HMODULE module,DWORD reason,LPVOID){
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(OnFinishEffects);
         reshade::register_event<reshade::addon_event::draw>(OnDraw);
         reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
-        reshade::register_event<reshade::addon_event::init_swapchain>(OnInit);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroy);
         reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
         reshade::register_event<reshade::addon_event::present>(OnPresent);

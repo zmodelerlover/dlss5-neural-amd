@@ -21,8 +21,19 @@ float HalfToFloat(uint16_t h)
 // the old buffer would end the new search after one. ponytail: takes that keep coming (the D3D12
 // depth pick has no streak) keep the probe going, at most one per 120 presents, past the five-junk
 // cap; a count of re-arms since the last real reading would bound it.
-void RearmGuideProbe()
+//
+// `replaced`: the take put one buffer where another was in use, and history built on the old one
+// goes too. Filling an empty slot does not -- the first take, or the same buffer found again three
+// presents after a swapchain rebuild let it go, which kept the history on purpose (history.inc) --
+// nor does a take of a guide the network is not fed (its Depth or Motion switch off). ponytail: the
+// D3D12 depth challenger wins on one present with a 25% bind margin, no streak, so a game that
+// ping-pongs two depth buffers whose binds swing that much present to present re-takes, and now
+// drops history, every few dozen presents (a model at +-20% gave one in 23); SettleGuide's
+// three-present challenger streak in SettleD3D12Depth is the fix once a log shows it.
+void RearmGuideProbe(bool replaced)
 {
+    if (replaced)
+        ResetTemporal("a guide moved to another buffer");
     g.probeGuides.store(true);
     g.nextGuideProbe = g.status.frame + 120;
     g.junkProbes = 0;

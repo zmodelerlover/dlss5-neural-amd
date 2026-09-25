@@ -167,7 +167,7 @@ assert 'g.inEffects' in bind and 'controls.shadow.useGameGuides' in bind and 're
 # Without the finish half, inEffects latches after the first effect pass and OnBind stops observing.
 assert 'reshade_finish_effects>(OnFinishEffects)' in f and '{g.inEffects=false;}' in f
 # SettleGuide keeps the tallies standing over a cold start, so a present that ran it must not clear them.
-assert 'if(!settled){g_depthTally.clear()' in present and 'settled=true;if(SettleGuide(' in present
+assert 'if(!settled){g_depthTally.clear()' in present and 'settled=true;const bool had[2]=' in present
 
 transport=h[h.index('    Result CopyOnly()'):h.index('    Result Neural()')]
 for call in ['InitHip(','InitEngine(','BringUpEngines(','RecordNetwork(','LoadLibrary','RuntimeHashMatches(']:assert call not in transport
@@ -196,7 +196,10 @@ assert 'Sleep(0);' not in f and dg.count('Sleep(0);')==1
 # answered Original rather than taking the helper down.
 assert h.count('LoadSettings();ForceInline();BoundWaits();')==2 and 'IpcTimeoutMs)-1000' in h
 assert 'if(!WaitForWorkQueue(g.completion)&&!DeviceLost())return Result::Original;' in neural
-assert h.count('++g.status.frame')==1 and 'Idle();ReleaseSwapchainSized();built=false;g.historyValid.store(false);' in h
+# A swapchain rebuild keeps the history, as on the 64-bit route: only a raster that changed drops it.
+assert h.count('++g.status.frame')==1 and 'Idle();ReleaseSwapchainSized();built=false;' in h and 'historyValid' not in h
+assert all('g.reset=true' not in f[f.index(fn):f.index('\n}\n',f.index(fn))] for fn in ('bool BuildRemote(){','bool DropRemote(){','void ReleaseLocal(){'))
+assert 'init_swapchain' not in f  # its only job was raising g.reset, a history drop, on every rebuild
 for path in [new/'frontend32.cpp',new/'host64.cpp']:
  text=read(path)
  assert 'ProfileForThisProcess' not in text and 'kTargets' not in text

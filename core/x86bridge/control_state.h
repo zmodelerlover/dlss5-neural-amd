@@ -1,5 +1,6 @@
 #pragma once
 #include "bridge_ipc.h"
+#include "../shared/history_keys.h"
 #include <algorithm>
 #include <cmath>
 namespace x86bridge {

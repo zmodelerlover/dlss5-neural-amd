@@ -19,6 +19,7 @@
 #include "../shared/guide_choice.h"
 #include "../shared/d3d11_guides.h"
 #include "../shared/raster_pin.h"
+#include "../shared/history_keys.h"
 #include "../ui/panel.h"
 #include "../shaders/motion.h"
 #include "../shaders/compose.h"
@@ -1089,6 +1090,8 @@ struct State
 // keeps its refs on the game's device and context; release those at destroy_device if it matters.
 State &g = *new State;
 
+#include "../temporal/history.inc"
+
 // Defined further down, beside the raster code they belong to; used from both present paths,
 // which come first.
 float EffectiveScale();
@@ -1466,6 +1469,8 @@ void LoadSettings()
                 static_cast<double>(g.settings.passStructure[i].load()),
                 static_cast<double>(g.settings.passTone[i].load()),
                 static_cast<double>(g.settings.passSkin[i].load()));
+    // Any key may have moved, OpticalFlow too, which neither the panel nor the wire carries.
+    ResetTemporal("the settings were read from amd-nr.ini");
 }
 
 // The other half of LoadSettings, which was missing: everything the overlay changed was lost on
@@ -1821,7 +1826,7 @@ void AdoptFeedEffect()
     // than once. Not on the first call: the probe is already armed then, and re-arming would
     // only push the reading further out.
     if (!first)
-        RearmGuideProbe();
+        RearmGuideProbe(false);  // a slot filled or emptied: a buffer replaced is SettleGuide's
     std::snprintf(g.feedStatus, sizeof(g.feedStatus),
                   "AMD_Neural_Feed.fx: %s; motion %s, depth %s",
                   g.effects == nullptr      ? "no effect runtime yet"
@@ -2486,7 +2491,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
             if (!CreateTexture(nw, nh, DXGI_FORMAT_R16G16B16A16_FLOAT, g.history[i], name))
                 return false;
         }
-        g.historyValid.store(0);
+        ResetTemporal("the network raster was rebuilt");
         g.flowWidth = fw;
         g.flowRuns = 0;
         g.flowHeight = fh;
@@ -2748,6 +2753,7 @@ void ReleaseSwapchainSized()
     g.depthFormat = DXGI_FORMAT_UNKNOWN;
     g.depthBinds = g.depthBestBinds = 0;
     g.gameDepthActive = g.gameMotionActive = false;
+    g.jobRunning = false;  // the queue is idle, and no job spans a rebuild; history stays
     g.outWidth = g.outHeight = 0;
 }
 
@@ -2875,7 +2881,6 @@ bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
     return changed;
 }
 
-#include "../temporal/history.inc"
 #include "../temporal/optical_flow.inc"
 #include "../temporal/motion_feed.inc"
 #include "../temporal/smooth.inc"
@@ -3128,7 +3133,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         const int autoMask = g.settings.autoMask.load();
         if (ControlsChanged(slot, tune, outScale, autoMask))
         {
-            g.historyValid.store(0);
+            ResetTemporal("a pass's controls changed");
             Log("pass %u: reset temporal history after control change (tone %.2f, structure %.2f, "
                 "skin %.2f, automask %d, output scale %.5f)",
                 i + 1, static_cast<double>(tune.tone), static_cast<double>(tune.structure),
@@ -3287,6 +3292,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         }
     }
     g.activePasses = accepted;
+    g.historyValid.fetch_and((1u << accepted) - 1);  // a pass that sat this frame out has none
     // The same table the instrumented NVIDIA fork prints, in the same columns, so the two logs can
     // be put side by side and read off. Once per arrangement: it reprints when the count or any
     // resolved value changes and stays quiet otherwise.
@@ -3494,12 +3500,12 @@ void SettleD3D12Depth()
         return;
     }
 
+    RearmGuideProbe(g.depthBest != nullptr && g.settings.useDepth.load());  // incumbent still set
     g.depthBest = best->res;
     g.depthWidth = best->width;
     g.depthHeight = best->height;
     g.depthFormat = best->format;
     g.depthBinds = g.depthBestBinds = best->binds;
-    RearmGuideProbe();
     // The snapshot is deliberately NOT released here. A dispatch recorded into the game's command
     // list still reads it, and D3D12 does not keep a resource alive because an in-flight list
     // references it -- the rule EnsureResources spells out, and it waits for the queue before it
@@ -3564,7 +3570,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     }
     if (!g.settings.enabled.load() || g.status.unavailable || g.status.failed || DeviceLost())
     {
-        g.jobRunning = false;  // off (hotkey, panel, alt-tab) is a pause too: see the restore below
+        g.status.windowHidden = true;  // off (hotkey, panel, alt-tab) is a pause too: see below
         return;
     }
     if (!g.loggedProfile)
@@ -3594,9 +3600,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         if (g.settings.disableOnAltTab.load() && GetForegroundWindow() != hwnd)
         {
             g.settings.enabled.store(false);
-            // Whenever it is switched back on, that first frame must not be handed a history
-            // from before the alt-tab, however many minutes ago that was.
-            g.historyValid.store(0);
+            g.status.windowHidden = true;  // so switched back on, it starts clean: see below
             Log("alt-tab: effect switched off, because Disable On Alt-Tab is on. It stays off; "
                 "press %s in the game to bring it back.", HotkeyName().c_str());
             return;
@@ -3620,15 +3624,12 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     if (g.status.windowHidden)
     {
         g.status.windowHidden = false;
-        // Coming back from minimised, the last network output is however many seconds old, while
-        // the motion vectors handed with it describe a single frame of movement. Feeding that to
-        // a temporal denoiser is asking it to smear a stale frame across the new one, which is
-        // the ghosting people see for a second or two after alt-tabbing back. Start clean.
-        g.historyValid.store(0);
+        // Back from minimised or off, the last network output is however many seconds old while
+        // the motion handed with it is one frame's: a temporal denoiser smears the stale frame
+        // across the new one, the ghosting people see for a second or two after alt-tabbing back.
+        ResetTemporal("the effect resumed (window restored, or switched back on)");
         // And the job latch, or the next present times the whole pause as one long network job.
         g.jobRunning = false;
-        Log("window restored; dropping the temporal history so nothing from before the alt-tab "
-            "is carried into the new frame.");
     }
 
     transport->Present(dev, queue, sc);
@@ -3741,11 +3742,9 @@ void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)
         g.feedSignature = -1;  // take whatever the effect hands over next as new, not as a repeat
         Log("menu: companion effect %s", after.useFeedEffect != 0 ? "on" : "off");
     }
-    // A raster of a new size, a depth read the other way round, or history switched: last frame's
-    // output no longer means what the next frame's motion vectors assume, so do not carry it.
-    if (after.scale != before.scale || after.depthInverted != before.depthInverted ||
-        after.useHistory != before.useHistory)
-        g.historyValid.store(0);
+    // Last frame's output no longer means what the next frame's motion vectors assume.
+    if (SettingsInvalidateHistory(before, after))
+        ResetTemporal("a panel setting changed");
 }
 
 void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)

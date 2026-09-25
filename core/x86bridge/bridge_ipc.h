@@ -14,8 +14,10 @@ struct Header { uint32_t magic=Magic,version=Version;Kind kind=Kind::Hello;uint3
 struct Hello { uint32_t pid=0,luidLow=0;int32_t luidHigh=0;uint32_t reserved=0; };
 struct Texture { uint32_t valid=0,width=0,height=0,format=0;uint64_t handle=0; };
 struct Build { uint64_t generation=0;Texture colour,output,depth,motion; };
-// guideTaken (bit 0 depth, bit 1 motion: the frontend took another buffer for it) was a reserved zero
-// in v3, so it came without a version bump: an older peer reads it as no take.
+// guideTaken (bit 0 depth, bit 1 motion: the frontend took another buffer for it; bit 2: one took the
+// place of a buffer in use, which drops history) was a reserved zero in v3 and came without a version
+// bump, so the header catches no mismatch: a helper from before bit 2 refuses 5-7 as a malformed FRAME,
+// the first time a guide in use is replaced, and the bridge faults. Frontend and helper ship as a pair.
 struct Frame { uint64_t generation=0,id=0;uint32_t depthValid=0,motionValid=0,resetHistory=0,guideTaken=0; };
 struct Ack { Header header;Result result=Result::Error;uint32_t error=0;uint64_t generation=0,frame=0;uint32_t luidLow=0;int32_t luidHigh=0; };
 

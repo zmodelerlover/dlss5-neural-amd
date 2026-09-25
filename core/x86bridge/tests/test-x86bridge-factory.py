@@ -39,6 +39,7 @@ struct Engine {
  Watch historyValid;
  Engine(){'''+''.join(initial)+'''}
 }g;
+void ResetTemporal(const char*){g.historyValid.store(false);}
 struct Host{uint64_t settingsRevision=1;WireSettings factoryDefaults{};
 '''+methods+'''};
 std::string file(){std::ifstream f("amd-nr.ini",std::ios::binary);return std::string(std::istreambuf_iterator<char>(f),{});}

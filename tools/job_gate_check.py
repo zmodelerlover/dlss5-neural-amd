@@ -16,8 +16,10 @@ And the run/skip decision is made in one place. Five copies had drifted (Vulkan 
 on top of a late job and never timed one), so each route (D3D12, D3D11, Vulkan, OpenGL, the 32-bit
 bridge's host) sets its runNetwork from JobGate (core/addon/runtimes.inc) exactly once, in code and
 not in a comment, and reads neither the job counter, the skip window nor the job cost itself. A
-pause (the 64-bit effect off, the 32-bit host's reset after one) clears the jobRunning latch, or
-JobGate would time the whole pause as a network job, one toward the three that cap the scale.
+pause (the 64-bit effect off, resumed through the minimised window's restore; the 32-bit host's
+reset after one) clears the jobRunning latch, or JobGate would time the whole pause as a network
+job, one toward the three that cap the scale; so does a swapchain teardown, ReleaseSwapchainSized,
+which the helper's DROP runs too, now that a rebuild raises no reset.
 
 Busy is the runtime's own count, never the add-on's memory of it. A job given up on at 500 ms was
 still in the runtime's in-order queue, so recording on top only stacked work behind it. Hence:
@@ -132,10 +134,15 @@ for name, path in routes.items():
         bad.append(f"{name}: decides the pass count itself instead of taking BringUpEngines' answer")
 # A pause runs no JobGate, so the latch would time the whole pause as one job; three cap the scale.
 host = code((ROOT / "core/x86bridge/host64.cpp").read_text(encoding="utf-8"))
-if (not re.search(r"\|\| g\.status\.failed(?: \|\| DeviceLost\(\))?\)\s*\{\s*g\.jobRunning = false;\s*return;",
+restore = re.search(r"if \(g\.status\.windowHidden\)\s*\{\s*g\.status\.windowHidden = false;([^}]*)\}",
+                    code(neural))
+if (not re.search(r"\|\| g\.status\.failed(?: \|\| DeviceLost\(\))?\)\s*\{\s*g\.status\.windowHidden = true;\s*return;",
                   code(neural))
-        or "if(f.resetHistory){g.historyValid.store(false);g.jobRunning=false;}" not in host):
+        or not restore or "g.jobRunning = false;" not in restore.group(1)
+        or not re.search(r"if\(f\.resetHistory\)\{ResetTemporal\(\"[^\"]+\"\);g\.jobRunning=false;\}", host)):
     bad.append("the effect switched off (64-bit) or a reset (32-bit host) keeps jobRunning set")
+if "g.jobRunning = false;" not in body(code(neural), "void ReleaseSwapchainSized("):
+    bad.append("ReleaseSwapchainSized keeps jobRunning set: the first job after a rebuild times the gap")
 
 latch = code(bring)
 # The count moves only in the branch that found every module drained, and that branch also resets
@@ -144,7 +151,7 @@ drained = re.search(r"if \(!RuntimeBusy\(\)\)\s*\{([^}]*)\}", latch)
 if not (all(s in latch for s in ("PassesAvailable()", "timeouts < 3", "asked = wanted;", "wanted = live;"))
         and re.search(r"GetTickCount64\(\) \+ 2000;", latch) and drained
         and all(s in drained.group(1)
-                for s in ("live = next;", "timeouts = 0;", "g.historyValid.store(0);"))):
+                for s in ("live = next;", "timeouts = 0;", "ResetTemporal("))):
     bad.append("runtimes.inc: BringUpEngines does not drain for 2 s, reset history and cap the count "
                "at the loaded copies on a Passes change")
 core_code = "".join(code(p.read_text(encoding="utf-8", errors="replace"))

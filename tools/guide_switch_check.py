@@ -27,6 +27,12 @@ demoted stayed demoted for the session, whatever the game took next. SettleGuide
 took, every route hands that to RearmGuideProbe, and the 32-bit frontend carries it to the helper in
 FRAME. Properties 11-12 hold the return value; the source checks at the end hold the call sites.
 
+A take that puts one buffer where another was in use also drops the temporal history, which was
+built on the old one. Filling an empty slot does not: the same buffer found again three presents
+after a swapchain rebuild let it go would otherwise drop the history the rebuild kept on purpose.
+So every call site says which it was, from whether the slot held a buffer before the take that the
+network was fed: with Depth or Motion off, a take of that guide changes no input and keeps it.
+
     python tools/guide_switch_check.py
 """
 import re
@@ -179,39 +185,49 @@ need(settle_fn.count("return true;") == 1 and re.search(
 need("return;" not in settle_fn, "guide_choice.h: a SettleGuide path returns nothing")
 
 probes = src("core/addon/probes.inc")
-rearm = re.search(r"void RearmGuideProbe\(\)\s*\{(.*?)\n\}", probes, re.S)
+rearm = re.search(r"void RearmGuideProbe\(bool replaced\)\s*\{(.*?)\n\}", probes, re.S)
 need(rearm is not None and "g.probeGuides.store(true);" in rearm.group(1)
      and "g.nextGuideProbe = g.status.frame + 120;" in rearm.group(1)
      and "g.junkProbes = 0;" in rearm.group(1),
      "probes.inc: RearmGuideProbe arms the probe 120 presents out and starts the junk count over")
+need(rearm is not None and re.search(r"if \(replaced\)\s*ResetTemporal\(", rearm.group(1)),
+     "probes.inc: a take that replaced a guide in use keeps the history built on the old buffer")
 
 neural = src("core/addon/neural.cpp")
 need("probeGuides.store(true)" not in neural, "neural.cpp: re-arms the probe by hand, not RearmGuideProbe")
 d12 = neural[neural.index("void SettleD3D12Depth()"):]
 d12 = d12[:d12.index("\n}\n")]
-need("RearmGuideProbe();" in d12 and
-     d12.index("g.depthBest = best->res;") < d12.index("RearmGuideProbe();"),
-     "neural.cpp: the D3D12 depth take does not re-probe")
+d12_take = "RearmGuideProbe(g.depthBest != nullptr && g.settings.useDepth.load());"
+need(d12_take in d12 and d12.index(d12_take) < d12.index("g.depthBest = best->res;"),
+     "neural.cpp: the D3D12 depth take does not re-probe, or asks once the incumbent is gone")
 feed = neural[neural.index("void AdoptFeedEffect()"):]
-need("if (!first)\n        RearmGuideProbe();" in feed[:feed.index("\n}\n")],
+need("if (!first)\n        RearmGuideProbe(false);" in feed[:feed.index("\n}\n")],
      "neural.cpp: the effect's feed changing hands does not re-probe")
 
 d3d11 = src("core/transport/d3d11/D3D11Transport.inc")
-need(re.search(r"const bool tookDepth = SettleGuide\(g\.guideDepth, g_depthTally, Log\);\n"
-               r"\s*if \(SettleGuide\(g\.guideMotion, g_motionTally, Log\) \|\| tookDepth\)\n"
-               r"\s*RearmGuideProbe\(\);", d3d11),
-     "D3D11Transport.inc: a take does not reach RearmGuideProbe")
+# "had" is had one in use: a take of a guide the network is not fed (Depth or Motion off) keeps it.
+need(re.search(r"const bool hadDepth = g\.guideDepth\.chosen != nullptr && g\.settings\.useDepth\.load\(\);.*\n"
+               r"\s*const bool hadMotion = g\.guideMotion\.chosen != nullptr && g\.settings\.useMotion\.load\(\);\n"
+               r"\s*const bool tookDepth = SettleGuide\(g\.guideDepth, g_depthTally, Log\);\n"
+               r"\s*const bool tookMotion = SettleGuide\(g\.guideMotion, g_motionTally, Log\);\n"
+               r"\s*if \(tookDepth \|\| tookMotion\)\n"
+               r"\s*RearmGuideProbe\(\(tookDepth && hadDepth\) \|\| \(tookMotion && hadMotion\)\);",
+               d3d11),
+     "D3D11Transport.inc: a take does not reach RearmGuideProbe, or not with whether it replaced one")
 
 front = src("core/x86bridge/frontend32.cpp")
-need("if(SettleGuide(g.guideDepth,g_depthTally,Log))g.guideTaken|=1;"
-     "if(SettleGuide(g.guideMotion,g_motionTally,Log))g.guideTaken|=2;" in front,
+need("const bool had[2]={g.guideDepth.chosen!=nullptr&&controls.shadow.useDepth!=0,"
+     "g.guideMotion.chosen!=nullptr&&controls.shadow.useMotion!=0};"
+     "if(SettleGuide(g.guideDepth,g_depthTally,Log))g.guideTaken|=had[0]?5:1;"
+     "if(SettleGuide(g.guideMotion,g_motionTally,Log))g.guideTaken|=had[1]?6:2;" in front,
      "frontend32.cpp: a take is not recorded for FRAME")
 need("f.guideTaken=g.guideTaken;g.guideTaken=0;" in front, "frontend32.cpp: FRAME does not carry the take")
 
 host = src("core/x86bridge/host64.cpp")
 work = host[host.index("Result FrameWork("):host.index("void Reply(")]
-need("f.guideTaken<=3" in work, "host64.cpp: FRAME's guideTaken is not validated")
-take = "if(f.guideTaken){if(f.guideTaken&2)g.guideMotion.failed=false;RearmGuideProbe();}"
+need("f.guideTaken<=7" in work, "host64.cpp: FRAME's guideTaken is not validated")
+take = ("if(f.guideTaken){if(f.guideTaken&2)g.guideMotion.failed=false;"
+        "RearmGuideProbe((f.guideTaken&4)!=0);}")
 need(take in work and work.index(take) < work.index("g.guideMotion.ready="),
      "host64.cpp: a take from the frontend does not re-probe, or reaches motion a frame late")
 

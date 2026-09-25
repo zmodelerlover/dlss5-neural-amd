@@ -1,5 +1,6 @@
 // Temporal history: what each pass is handed as its previous output, and when that stops being
-// true. Part of the core's unity build, included by neural.cpp ahead of RecordNetwork.
+// true. Part of the core's unity build, included by neural.cpp right after State, so every route,
+// the settings and the panel can drop it.
 //
 // The network is a denoiser: without a previous result to carry forward it starts from nothing
 // every frame, and a motion vector -- which says where a pixel *was* -- has nothing to point at.
@@ -7,9 +8,32 @@
 // use. It is a raw pointer written into one specific build of the runtime: a wrong one does not
 // fail, it hangs the game.
 //
-// g.historyValid is one word so that every invalidation anywhere in the add-on -- alt-tab, the
-// panel, a route's resize -- drops everything at once with a single store(0): bit `slot` is set
-// when history[slot] holds pass `slot`'s output of the previous frame.
+// g.historyValid is one word so that every invalidation anywhere in the add-on drops everything at
+// once: bit `slot` is set when history[slot] holds pass `slot`'s output of the previous frame.
+//
+// When it goes, on every route: a raster of a new size (Scale, or a back buffer size that lasted,
+// RasterPin -- never a swapchain rebuild by itself, which some games do every few frames), a
+// setting in SettingsInvalidateHistory, an ini read, a pass's own controls (ControlsChanged), the
+// effect resuming from off or minimised, a Passes change, a guide in use moving to another
+// buffer, a new OpenGL context, a list that failed to close, and a frame the chain did not run
+// (DropStaleHistory); a pass that sat a frame out loses its own bit after the pass loop.
+// tools/temporal_reset_check.py holds every store to this.
+
+// The one way the whole history is dropped, so the log can say why. A line when the reason differs
+// from the last drop's, with how often that reason has fired: a skip every other frame is one line,
+// not thirty a second. Reasons are literals, keyed by address; the overlay can call this from
+// another thread than the present, hence the lock.
+void ResetTemporal(const char *why)
+{
+    static std::mutex m;
+    static auto &times = *new std::unordered_map<const char *, unsigned>;  // never destroyed, as g
+    static const char *last = nullptr;
+    std::lock_guard hold(m);
+    g.historyValid.store(0);
+    const unsigned n = ++times[why];
+    if (why != last)
+        Log("temporal history dropped: %s (%u so far)", last = why, n);
+}
 
 // Before pass `slot` records: its own previous output, or nothing. See the declaration of
 // history[] for why a pass never gets the chain's. Returns whether it was handed one.
@@ -70,10 +94,12 @@ bool g_motionSinceEvaluation = false;
 // temporal gain on still content (static-dither TI 2.96e-3 -> 5.46e-3) and bought nothing.
 //
 // This used to test only activePasses, which is written on evaluated frames alone: on a skipped
-// one it still held the last evaluation's count and the history was never dropped.
+// one it still held the last evaluation's count and the history was never dropped. With History
+// off no bit is ever set (KeepHistory), and switching it off drops them (SettingsInvalidateHistory).
 void DropStaleHistory(bool ran)
 {
-    const bool keep = ran ? g.activePasses != 0 : g_motionSinceEvaluation;
-    if (!(g.settings.useHistory.load() && keep))
-        g.historyValid.store(0);
+    if (ran && g.activePasses == 0)
+        ResetTemporal("no pass ran");
+    else if (!ran && !g_motionSinceEvaluation)
+        ResetTemporal("a skipped frame, with motion measured present to present");
 }

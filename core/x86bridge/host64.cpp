@@ -38,12 +38,12 @@ struct Host {
     bool ApplySettings(WireSettings s){
         if(!NewRevision(s.settings_revision,settingsRevision))return false;
         if(!NormalizeSettings(s))return false;
-        const bool historyChanged=g.settings.useHistory.load()!=(s.useHistory!=0);
+        const bool historyChanged=SettingsInvalidateHistory(ExportSettings(),s);  // the 64-bit panel's list
 #define X(type,name,low,high) g.settings.name.store(s.name);
 #include "settings_fields.inc"
 #undef X
         for(unsigned i=0;i<3;++i){g.settings.passOverride[i].store(s.passOverride[i]!=0);g.settings.passStructure[i].store(s.passStructure[i]);g.settings.passTone[i].store(s.passTone[i]);g.settings.passSkin[i].store(s.passSkin[i]);}
-        if(historyChanged)g.historyValid.store(false);
+        if(historyChanged)ResetTemporal("a setting from the 32-bit panel changed");
         settingsRevision=s.settings_revision;return true;
     }
     WireStatus ExportStatus(){
@@ -85,13 +85,8 @@ struct Host {
     }
     void RestoreFactoryDefaults(){
         // No INI access. Restore constructed upstream defaults plus the five x86 overrides.
-        auto s=FactorySettings(factoryDefaults,ExportSettings());
-        const bool historyChanged=(s.useHistory!=0)!=g.settings.useHistory.load();
-        const bool guidesChanged=historyChanged||(s.useMotion!=0)!=g.settings.useMotion.load()||
-            (s.useDepth!=0)!=g.settings.useDepth.load()||(s.useGameGuides!=0)!=g.settings.useGameGuides.load()||s.temporalMode!=g.settings.temporalMode.load()||
-            s.motionScale!=g.settings.motionScale.load()||s.flowGate!=g.settings.flowGate.load()||s.flowRatio!=g.settings.flowRatio.load();
-        Require(ApplySettings(s),"factory defaults rejected");
-        if(guidesChanged&&!historyChanged)g.historyValid.store(false);
+        // ApplySettings drops the history once if anything in SettingsInvalidateHistory moved.
+        Require(ApplySettings(FactorySettings(factoryDefaults,ExportSettings())),"factory defaults rejected");
     }
     void Init(const Hello& h){
         Require(h.pid==GetProcessId(parent.value),"parent PID mismatch");
@@ -115,7 +110,7 @@ struct Host {
         Require(!DeviceLost()&&g.fence->GetCompletedValue()!=UINT64_MAX&&g.fence->GetCompletedValue()>=g.completion,"queue did not finish");
     }
     void Drop(){
-        Idle();ReleaseSwapchainSized();built=false;g.historyValid.store(false);
+        Idle();ReleaseSwapchainSized();built=false;  // history stays, as on the 64-bit route (history.inc)
         Require(!g.bridge.failed,"resource retirement failed");
     }
     void Import(const Texture& t,ComPtr<ID3D12Resource>& out){
@@ -132,7 +127,7 @@ struct Host {
         Import(b.colour,g.bridge.in.on12);Import(b.output,g.bridge.out.on12);
         Import(b.depth,g.guideDepth.bridge.on12);Import(b.motion,g.guideMotion.bridge.on12);
         g.guideDepth.name="depth";g.guideMotion.name="motion";
-        generation=b.generation;spec=b;built=true;g.historyValid.store(false);
+        generation=b.generation;spec=b;built=true;
         Log("x86bridge BUILD generation=%llu %ux%u depth=%u motion=%u",generation,b.colour.width,b.colour.height,b.depth.valid,b.motion.valid);
     }
     Result CopyOnly(){
@@ -249,12 +244,12 @@ struct Host {
         return fresh?Result::Neural:Result::Original;
     }
     Result FrameWork(const Frame& f){
-        Require(built&&f.generation==generation&&f.id>lastFrame&&f.depthValid<=1&&f.motionValid<=1&&f.resetHistory<=1&&f.guideTaken<=3,"invalid frame/generation");
+        Require(built&&f.generation==generation&&f.id>lastFrame&&f.depthValid<=1&&f.motionValid<=1&&f.resetHistory<=1&&f.guideTaken<=7,"invalid frame/generation");
         Require((!f.depthValid||spec.depth.valid)&&(!f.motionValid||spec.motion.valid),"unbuilt guide requested");
         lastFrame=f.id;
-        if(f.resetHistory){g.historyValid.store(false);g.jobRunning=false;}  // a reset follows a pause, and a pause is no network job
+        if(f.resetHistory){ResetTemporal("the 32-bit side paused, switched back on or answered late");g.jobRunning=false;}  // a pause is no network job
         // The frontend's SettleGuide took another buffer: as on the 64-bit route, the probe looks again and a new motion buffer is no longer demoted.
-        if(f.guideTaken){if(f.guideTaken&2)g.guideMotion.failed=false;RearmGuideProbe();}
+        if(f.guideTaken){if(f.guideTaken&2)g.guideMotion.failed=false;RearmGuideProbe((f.guideTaken&4)!=0);}
         g.guideDepth.ready=f.depthValid&&g.settings.useGameGuides.load()&&g.settings.useDepth.load();
         g.guideMotion.ready=f.motionValid&&g.settings.useGameGuides.load()&&g.settings.useMotion.load()&&!g.guideMotion.failed;
         const auto result=transport?CopyOnly():Neural();
@@ -285,7 +280,7 @@ struct Host {
                 if(applied&&g.settings.scale.load()!=wanted){g.scaleCap.store(0.0f);g.longJobs=0;}
                 Snapshot(h.kind,applied?Result::Ready:Result::Error);break;}
             case Kind::SaveSettings:SaveSettings();Snapshot(h.kind);break;
-            case Kind::ReloadSettings:{const bool history=g.settings.useHistory.load();LoadSettings();ForceInline();BoundWaits();if(history!=g.settings.useHistory.load())g.historyValid.store(false);++settingsRevision;Snapshot(h.kind);break;}
+            case Kind::ReloadSettings:{LoadSettings();ForceInline();BoundWaits();++settingsRevision;Snapshot(h.kind);break;}  // LoadSettings drops the history
             case Kind::Command:{WireCommand c;Require(Receive(pipe.value,parent.value,&c,sizeof(c)),"COMMAND body");
                 const bool accepted=NewCommand(c,lastCommand)&&(c.code==CommandCode::FactoryDefaults||!transport);
                 if(accepted){lastCommand=c.id;if(c.code==CommandCode::FactoryDefaults)RestoreFactoryDefaults();
