@@ -218,9 +218,7 @@ struct Host {
     {
 
         Log("bridge: closing the command list failed (0x%08lX); rebuilding.", hr);
-        g.lastJob = 0;
-        g.activePasses = 0;
-        g.historyValid.store(false);
+        RetireUnsubmitted(g.bridge.workQueue.Get(), cmd);
         if (!RecreateWorkSlot(i))
             g.bridge.failed = true;
         return x86bridge::Result::Original;

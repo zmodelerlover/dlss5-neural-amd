@@ -900,7 +900,6 @@ struct State
     // feature per pass for the same reason. A copy of the DLL under another file name is a
     // separate module with separate globals, which is all a second feature is here.
     HMODULE runtimes[kMaxPasses] {};
-    UINT lastJobs[kMaxPasses] {};
     // Bit i set when runtimes[i] recorded onto the list about to be submitted; NotifyRuntimes
     // tells exactly those modules and clears it.
     UINT recordedMask = 0;
@@ -2410,13 +2409,13 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
             Sleep(1);
         if (RuntimeBusy())
         {
-            // A stuck job: park what the engine may hold and go on, as the present does at 500 ms.
+            // A stuck job: park what the engine may hold and go on. It stays outstanding, so
+            // JobGate records nothing until the runtime retires it.
             // ponytail: a raster of VRAM per stuck change.
             Log("raster: runtime job %u did not become idle in 5 s; parking its textures.", g.lastJob);
             if (netChanged)
                 g.parked.insert(g.parked.end(), { g.netColour, g.netMotion, g.netDepth, g.history[0],
                                                   g.history[1], g.history[2] });
-            ResetJobs();
         }
         else
             g.parked.clear();
@@ -3281,9 +3280,6 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             break;
         }
         g.lastJob = jobAfter;
-        for (UINT m = 0; m < State::kMaxPasses; ++m)
-            if (g.runtimes[m] == r)
-                g.lastJobs[m] = jobAfter;
         g.recordedMask |= 1u << (r == g.runtime ? 0 : slot);
         // v0.3.0: 0x97950 and 0x97954 are two watchdog job counters, NOT a
         // host pointer to an abort word. Its watchdog (0x1b27a/0x1b281) writes

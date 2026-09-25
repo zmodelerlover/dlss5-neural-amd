@@ -250,9 +250,7 @@ void BridgePresent(device* dev, swapchain* sc) {
         // add-on then returned from every present in silence and left the last image it wrote on
         // screen. Both halves of that were wrong.
         Log("bridge: closing the command list failed (0x%08lX); rebuilding.", hr);
-        ResetJobs();
-        g.activePasses = 0;
-        g.historyValid.store(0);
+        RetireUnsubmitted(g.bridge.workQueue.Get(), cmd);
         if (!RecreateWorkSlot(i))
             g.bridge.failed = true;
         return;

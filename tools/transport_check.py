@@ -8,7 +8,8 @@ port was built to remove.
 The rest is read from the text, because framecheck never copies `composed` to a back buffer and
 never submits through ReShade, so its InfoQueue sees none of it:
   - on every route a list is executed before the runtime is told about it, the order the runtime's
-    own detour keeps (tools/runtime-patches.json, 0x8873);
+    own detour keeps (tools/runtime-patches.json, 0x8873), except a list whose Close failed, which
+    RetireUnsubmitted notifies unexecuted so its job still retires;
   - on every route a copy out of `composed` follows its barrier into COPY_SOURCE;
   - on D3D12 a failed RecordNetwork still runs the tail (back buffer to present, completion Signal),
     except the `cmd_list == nullptr` exit, which a graphics queue never takes;
@@ -67,8 +68,10 @@ for f in files:
         before = "\n".join(lines[max(0, n - 5):n - 1])
         if "device_api::" in line and f != FACTORY:
             bad.append("device_api read outside the transport factory: " + where(n))
+        # RetireUnsubmitted is the one notify with no execute: its list failed to Close and never runs.
         if "NotifyRuntimes(" in line and "void NotifyRuntimes(" not in line and not any(
-                s in "\n".join(lines[max(0, n - 3):n - 1]) for s in ("ExecuteCommandLists(", "flush_immediate_command_list()")):
+                s in "\n".join(lines[max(0, n - 3):n - 1])
+                for s in ("ExecuteCommandLists(", "flush_immediate_command_list()", "void RetireUnsubmitted(")):
             bad.append("runtime notified before its list was executed: " + where(n))
         if "CopyResource(" in line and "g.composed.Get())" in line and not (
                 "g.composed.Get(), D3D12_RESOURCE_STATE_" in before and "D3D12_RESOURCE_STATE_COPY_SOURCE)" in before):

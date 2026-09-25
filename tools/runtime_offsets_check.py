@@ -17,6 +17,8 @@ What it proves, in the order of how much each would have caught:
   * The record entry's first three tests -- the gate every evaluation goes through -- resolve to
     three addresses the header names. Those are Enabled, the native-failure byte and the ready
     byte, decoded out of the instruction stream rather than assumed.
+  * Its refusal at four jobs in flight subtracts kJobCounter from kJobId, the same two fields the
+    add-on's own busy test (runtimes.inc, Outstanding) reads.
   * Every data offset lands in `.data` and every entry point in `.text`. `.rdata` is where a stale
     data offset goes to fault, so this is not a formality.
   * The file is the build `kRuntimeSha256` names, and it has been through `patch_runtime.py`.
@@ -84,9 +86,10 @@ def stray_literals():
     return out
 
 
-def rip_target(data, delta, rva, length):
-    """Where a rip-relative instruction at `rva` points. `length` is the whole instruction."""
-    disp = struct.unpack_from("<i", data, rva - delta + length - 5)[0]
+def rip_target(data, delta, rva, length, imm=1):
+    """Where a rip-relative instruction at `rva` points. `length` is the whole instruction, `imm`
+    the bytes of immediate after its displacement."""
+    disp = struct.unpack_from("<i", data, rva - delta + length - 4 - imm)[0]
     return rva + length + disp
 
 
@@ -170,6 +173,20 @@ def main(argv):
         check(data_off.get(want) == rva,
               f"record entry gates on {rva:#x}, which the header calls {want} "
               f"({data_off.get(want, 0):#x})")
+
+    # -- The jobs in flight, decoded where the record entry refuses one --------------------------
+    # runtimes.inc's Outstanding is kJobId - kJobCounter. The runtime's own refusal is the same
+    # subtraction: eax = kJobId + 1 (the last `mov r11d, [rip+..]` before it), `sub eax,
+    # [kJobCounter]`, `cmp eax, 4` (0x15383). If a new build moves either field, busy means nothing.
+    window = raw[record - delta:record - delta + 0x4000]
+    sub = re.search(rb"\x2b\x05.{4}\x83\xf8\x04", window, re.S)
+    load = [m.start() for m in re.finditer(rb"\x44\x8b\x1d", window[:sub.start()])][-1:] if sub else []
+    check(bool(sub and load), f"record entry {record:#x}: decoded its in-flight test and job id load")
+    if sub and load:
+        for want, rva in (("kJobCounter", rip_target(raw, delta, record + sub.start(), 6, 0)),
+                          ("kJobId", rip_target(raw, delta, record + load[0], 7, 0))):
+            check(data_off.get(want) == rva, f"in-flight test reads {rva:#x}, which the header calls "
+                                             f"{want} ({data_off.get(want, 0):#x})")
 
     # -- And the DLL went through patch_runtime.py -----------------------------------------------
     spec = ROOT / "tools/runtime-patches.json"

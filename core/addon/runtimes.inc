@@ -9,29 +9,25 @@ HMODULE RuntimeFor(UINT slot)
     return slot < State::kMaxPasses && g.runtimes[slot] != nullptr ? g.runtimes[slot] : g.runtime;
 }
 
-// Whether any module still has a job in flight: its job counter has not reached the id of the
-// last job this add-on recorded through it.
-bool RuntimeBusy()
+// The jobs module m has taken and not finished, by its own count: kJobId moves on each record, and
+// the worker moves kJobCounter as it retires them, strictly in order. The record entry refuses a
+// job on the same subtraction, at four in flight (0x15383), and teardown zeroes both. Same frame
+// only: async never moves kJobCounter, which is why async is retired.
+int Outstanding(HMODULE m)
 {
-    for (UINT i = 0; i < State::kMaxPasses; ++i)
-    {
-        HMODULE m = g.runtimes[i];
-        if (m == nullptr)
-            continue;
-        if (static_cast<UINT>(InterlockedCompareExchange(
-                reinterpret_cast<volatile LONG *>(&At<UINT>(m, rt::kJobCounter)), 0, 0)) <
-            g.lastJobs[i])
-            return true;
-    }
-    return false;
+    return static_cast<int>(static_cast<UINT>(At<volatile LONG>(m, rt::kJobId)) -
+                            static_cast<UINT>(InterlockedCompareExchange(
+                                reinterpret_cast<volatile LONG *>(&At<UINT>(m, rt::kJobCounter)), 0, 0)));
 }
 
-void ResetJobs()
+// Whether any module still has a job in flight. Asked of the runtime, not of what this add-on
+// remembers recording: a job it forgot is still in the queue, and the next one retires after it.
+bool RuntimeBusy()
 {
-    g.lastJob = 0u;
-    for (UINT &j : g.lastJobs)
-        j = 0;
-    g.recordedMask = 0;
+    for (HMODULE m : g.runtimes)
+        if (m != nullptr && Outstanding(m) > 0)
+            return true;
+    return false;
 }
 
 // The frame-notify, to every module that recorded onto the lists being submitted. A module that
@@ -43,6 +39,19 @@ void NotifyRuntimes(ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *co
             reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtimes[i]) + rt::kNotifyFn)(
                 queue, count, lists);
     g.recordedMask = 0;
+}
+
+// A list the runtime recorded onto that will never run, because its Close failed. It is still
+// notified, on the queue it would have run on: the worker only takes a job it was told of, so an
+// untold one stays outstanding for ever and JobGate skips the network for good. Told, it waits for
+// a capture that never lands and retires on the runtime's own timeout. The notify compares the list
+// with its marker and never touches it (0x9460).
+void RetireUnsubmitted(ID3D12CommandQueue *queue, ID3D12CommandList *list)
+{
+    NotifyRuntimes(queue, 1, &list);
+    g.activePasses = 0;
+    g.historyValid.store(0);
+    g.jobRunning = false;  // that wait is the runtime's timeout, not what the network costs
 }
 
 // A removed device fails every call silently from here on: the copies stop landing, the shared
@@ -120,8 +129,9 @@ void WaitForWorkQueue(UINT64 value)
 // overlapped the network; a route that does finds the fence landed and only waits out the counter
 // below. Keyed on the engine's latched mode: until a job has latched same-frame
 // there is nothing to wait for, and a module that latches async stands the add-on down in
-// RecordNetwork (its kJobCounter never moves). Bounded by the skip window, so a stuck job still
-// ends in its ResetJobs, never in a hang.
+// RecordNetwork (its kJobCounter never moves). Bounded to 500 ms after the job was recorded, so a
+// stuck job costs raw frames, never a hang, and past that no spin either: a job that old is stuck,
+// not a counter a fraction of a millisecond behind its fence.
 void WaitForPreviousJob()
 {
     if (g.runtime == nullptr || At<uint8_t>(g.runtime, rt::kInlineActive) != 1)
@@ -136,6 +146,8 @@ void WaitForPreviousJob()
         if (FAILED(g.fence->SetEventOnCompletion(g.completion, ev)) ||
             WaitForSingleObject(ev, static_cast<DWORD>(deadline - now)) == WAIT_FAILED)
             break;
+    if (GetTickCount64() >= deadline)
+        return;
     // ponytail: kJobCounter lands ~0.1 ms after the flag releases the spin. A spin the watchdog cut
     // short leaves it behind for the rest of the network: 2 ms, then that frame goes raw as before.
     LARGE_INTEGER hz {}, t0 {}, t {};
@@ -147,13 +159,19 @@ void WaitForPreviousJob()
 
 // Whether this frame runs the network: the one run/skip decision, taken once a present by every
 // route before it records. A job still pending skips the network, and the frame goes out as the
-// game drew it, until the job is 500 ms old; then it is given up on and this frame runs. One copy,
-// because five had drifted: Vulkan and OpenGL recorded on top of a late job without letting go of
-// it, and never timed the jobs NoteJobCost needs to see.
+// game drew it, for as long as the runtime has not retired it. No timer lets it go: this once gave
+// up at 500 ms and recorded on top, but the runtime retires strictly in order, so the new job only
+// queued behind the late one, until four were in flight and the runtime refused. A job that never
+// retires is a device that is gone, and DeviceLost stands the add-on down for that. Our own queue
+// fence keeps its 500 ms: past that WaitForPreviousJob no longer waits on it, so a signal a
+// GPU-bound game keeps queued would skip every frame for good, and a list recorded behind it on
+// the same queue stacks no runtime job. One copy, because five had drifted: Vulkan and OpenGL
+// recorded on top of a late job, and never timed the jobs NoteJobCost needs to see.
 bool JobGate()
 {
     WaitForPreviousJob();
-    const bool pending = g.fence->GetCompletedValue() < g.completion || RuntimeBusy();
+    const bool pending = RuntimeBusy() || (g.fence->GetCompletedValue() < g.completion &&
+                                           GetTickCount64() - g.lastJobAt < 500);
     if (!pending && g.jobRunning)
     {
         g.jobRunning = false;
@@ -161,21 +179,21 @@ bool JobGate()
     }
     if (!pending)
         return true;
-    if (GetTickCount64() - g.lastJobAt < 500)
-    {
-        if (++g.status.skipped % 120 == 1)
-            Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). "
-                "Those frames go out as the game drew them; a correction aimed at an older "
-                "picture reads as a trail, not as detail.",
-                static_cast<unsigned long long>(g.status.skipped),
-                static_cast<unsigned long long>(g.status.frame));
-        return false;
-    }
+    DeviceLost();
+    if (++g.status.skipped % 120 == 1)
+        Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). "
+            "Those frames go out as the game drew them; a correction aimed at an older "
+            "picture reads as a trail, not as detail.",
+            static_cast<unsigned long long>(g.status.skipped),
+            static_cast<unsigned long long>(g.status.frame));
     if (g.status.skipped % 600 == 0)
-        Log("previous job did not finish in 500 ms; continuing anyway (%llu skipped)",
-            static_cast<unsigned long long>(g.status.skipped));
-    ResetJobs();
-    return true;
+        for (UINT m = 0; m < State::kMaxPasses; ++m)
+            if (g.runtimes[m] != nullptr && Outstanding(g.runtimes[m]) > 0)
+                Log("module %u: job %u still outstanding (the runtime has retired %u), %llu ms "
+                    "after the last record; the network waits for it.", m,
+                    At<UINT>(g.runtimes[m], rt::kJobId), At<UINT>(g.runtimes[m], rt::kJobCounter),
+                    static_cast<unsigned long long>(GetTickCount64() - g.lastJobAt));
+    return false;
 }
 
 // Both sides must finish before the next pass changes the module's tuning.

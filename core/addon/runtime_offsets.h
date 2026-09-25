@@ -11,8 +11,8 @@
 //
 // Nothing here is a guess. `tools/runtime_offsets_check.py` reads this file, checks every address
 // against the sections of the runtime it belongs to, decodes the record entry's first three tests
-// out of the instruction stream to prove they are the fields named below, and fails if any source
-// file has gone back to writing a literal.
+// and its in-flight test out of the instruction stream to prove they are the fields named below,
+// and fails if any source file has gone back to writing a literal.
 //
 // When the runtime moves again: re-derive, edit only this file, and run the checker.
 
@@ -60,7 +60,10 @@ constexpr size_t kWatchdogJobB = 0x97954;    // NOT a pointer, and writing throu
 
 constexpr size_t kInterop = 0x97984;
 constexpr size_t kListMarker = 0x97a60;      // ID3D12CommandList *, the list it accepted
-constexpr size_t kJobId = 0x97a6c;           // moves once per evaluation that really recorded
+constexpr size_t kJobId = 0x97a6c;           // moves once per evaluation that really recorded.
+                                             // kJobId - kJobCounter is the jobs in flight: the record
+                                             // entry refuses at four on that subtraction (0x15383),
+                                             // and the worker retires only a job it was notified of
 
 // The option struct, mapped by decompiling the runtime's own ini reader: the key string sits beside
 // the address it writes, so these are named rather than guessed.

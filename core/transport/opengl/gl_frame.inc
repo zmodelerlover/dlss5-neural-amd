@@ -293,9 +293,7 @@ void Present(command_queue *queue, swapchain *sc)
     {
         Log("opengl: closing work slot %u failed (0x%08lX); discarding the unsubmitted job and "
             "recreating the pair.", slot, hr);
-        ResetJobs();
-        g.activePasses = 0;
-        g.historyValid.store(false);
+        RetireUnsubmitted(g.bridge.workQueue.Get(), cmd12);
         if (!RecreateWorkSlot(slot))
             r.Stop("the D3D12 work slot could not be recovered after Close failed.");
         return;
