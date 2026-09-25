@@ -25,7 +25,14 @@ never submits through ReShade, so its InfoQueue sees none of it:
     Stage included), an MSAA back buffer goes out raw with the tallies cleared, and crossLocal is
     made in the format it is read as (host64 too);
   - every route (host64 too) sizes the network raster by EffectiveScale(), the Scale under the cap
-    NoteJobCost puts on after evaluations long enough to risk a display-driver reset.
+    NoteJobCost puts on after evaluations long enough to risk a display-driver reset;
+  - RecordNetwork asks HeapStillRead before it writes a descriptor, keyed on the last list that read
+    the heap and not on g.completion, which a skipped frame moves on;
+  - every present checks DeviceLost before a route runs (host64 before JobGate); each route
+    compares what it latched (the D3D12 device and queue, the D3D11 and Vulkan devices) and lets a
+    stranger's present go raw; D3D11 checks the game's device for removal; the D3D12 pre-clear copy
+    is taken on our device only; destroy_device is subscribed unconditionally and those three routes
+    stand down on it.
 
     python tools/transport_check.py
 """
@@ -134,11 +141,40 @@ if not all(s in msaa for s in ("g_depthTally.clear()", "return;")):
     bad.append("D3D11 BridgePresent: an MSAA back buffer must go out raw, tallies cleared, before anything is built")
 if not all(s in bridge for s in ("crossFmt = ColourReadFormat(fmt)", "Format != crossFmt", "CreateTexture(w, h, crossFmt,")):
     bad.append("D3D11 BridgePresent: crossLocal must be made, and remade, in the format it is read as")
-if "CreateTexture(w,h,ColourReadFormat(fmt),g.bridge.crossLocal" not in (ROOT / "core/x86bridge/host64.cpp").read_text(encoding="utf-8"):
+host = (ROOT / "core/x86bridge/host64.cpp").read_text(encoding="utf-8")
+if "CreateTexture(w,h,ColourReadFormat(fmt),g.bridge.crossLocal" not in host:
     bad.append("host64 Neural: crossLocal must be made in the format it is read as")
+
+record = body(neural, "RecordNetwork")
+heap = body(runtimes, "HeapStillRead")
+if not 0 <= record.find("HeapStillRead(runNetwork)") < record.find("CreateShaderResourceView("):
+    bad.append("RecordNetwork writes a descriptor before HeapStillRead says no list still reads the heap")
+if not all(s in heap for s in ("reader = g.completion;", "GetCompletedValue() >= reader", "DropStaleHistory(false)")):
+    bad.append("HeapStillRead: keyed on the last list that read the heap, dropping stale history on a skip")
+present = body(neural, "OnPresent")
+if "DeviceLost()" not in present[:present.find("transport->Present(")]:
+    bad.append("OnPresent: a removed device is not checked before the route runs")
+start = host.find("Result Neural()")
+if not start < host.find("DeviceLost()", start) < host.find("JobGate()", start):
+    bad.append("host64 Neural: a removed device is not checked before JobGate")
+latched = (("D3D12", D3D12, ("Foreign(g.device.Get() != device12 || g.queue.Get() != queue12",)),
+           ("D3D11", d3d11 / "D3D11Transport.inc",
+            ("gameDevice = native;", "!= gameDevice", "game11->GetDeviceRemovedReason()")),
+           ("Vulkan", ROOT / "core/transport/vulkan/VulkanTransport.inc",
+            ("native != g_route.device", "g_route.device = nullptr;")))
+for name, path, marks in latched:
+    text = path.read_text(encoding="utf-8")
+    if not all(s in text for s in marks + ("void OnDestroyDevice(device* dev) override", "DeviceGone(")):
+        bad.append(f"{name}: does not compare what it latched on each present and stand down on destroy_device")
+if "g.device.Get() != reinterpret_cast<ID3D12Device*>(dev->get_native())" not in snapshot:
+    bad.append("SnapshotBeforeClear: a clear on another device would be copied across devices")
+lines = neural.splitlines()
+at = [i for i, line in enumerate(lines) if "addon_event::destroy_device>(OnDestroyDevice)" in line]
+if len(at) != 1 or lines[at[0] - 1].strip().startswith("if (g.events"):
+    bad.append("neural.cpp: destroy_device is registered once and unconditionally")
 
 if bad:
     print("FAIL")
     print("\n".join(bad))
     sys.exit(1)
-print(f"PASS only the transport factory reads device_api; D3D12 states and lifetimes hold ({len(files)} files)")
+print(f"PASS only the transport factory reads device_api; D3D12 states and lifetimes, and every route's device identity, hold ({len(files)} files)")

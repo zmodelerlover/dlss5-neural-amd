@@ -81,6 +81,16 @@ notice:
   VRAM), which stays loaded until the game exits, and a copy that failed to load was tried again on
   every frame. Any other change waits until no copy has a job in flight, up to 2 s, and then
   starts history again, so a pass that sat out is no longer handed a frame from before.
+- On D3D12, and on OpenGL with its fences, a frame that arrives while the last one is still on the
+  GPU after the 500 ms hold ran out no longer rewrites the views that one is still reading, which
+  could compose it from another back buffer: an old frame flashing up. The frame goes out as the
+  game drew it, without the style or Network Output, and the log counts such frames every 600.
+- **When the game destroys the device the add-on runs on** (D3D12, D3D11, Vulkan), or a D3D11
+  game's device is removed, the effect switches off and the panel says to restart the game, instead
+  of carrying on with what was built on the old device. A removed device is checked on every
+  present, on every route. A present from a device or queue other than the first one seen goes out
+  as the game drew it, said once in the log. The D3D12 pre-clear depth copy is only ever taken on
+  the add-on's own device.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

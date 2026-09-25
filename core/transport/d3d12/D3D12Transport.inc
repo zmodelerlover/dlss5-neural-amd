@@ -16,19 +16,32 @@ struct Transport final : FrameTransport {
     void OnDepthCleared(command_list* cmd, device* dev, resource_view dsv) override {
         SnapshotBeforeClear(cmd, dev, dsv);
     }
+    // g.device and the runtime hold references, so the old device outlives this and a new one never
+    // takes its address: without this event, the compare in Present still skips the new one.
+    void OnDestroyDevice(device* dev) override {
+        if (g.device.Get() == reinterpret_cast<ID3D12Device*>(dev->get_native()))
+            DeviceGone("the game destroyed its D3D12 device; restart the game to re-enable");
+    }
     void Present(device* dev, command_queue* queue, swapchain* sc) override {
         if (!LoadGraphicsApi()) {
             g.status.unavailable = true;
             g.status.reason = "the D3D12 or DXGI entry points could not be resolved";
             return;
         }
+        auto* const device12 = reinterpret_cast<ID3D12Device*>(dev->get_native());
         if (g.device == nullptr)
-            g.device = reinterpret_cast<ID3D12Device*>(dev->get_native());
+            g.device = device12;
         if ((queue->get_type() & command_queue_type::graphics) ==
             static_cast<command_queue_type>(0))
             return;
+        auto* const queue12 = reinterpret_cast<ID3D12CommandQueue*>(queue->get_native());
         if (g.queue == nullptr)
-            g.queue = reinterpret_cast<ID3D12CommandQueue*>(queue->get_native());
+            g.queue = queue12;
+        // Latched once: the heap, the fence and the runtime are on these two. The device being
+        // destroyed or removed stands the add-on down before a present gets here.
+        if (Foreign(g.device.Get() != device12 || g.queue.Get() != queue12,
+                    "D3D12 device or queue"))
+            return;
         command_list* cmd_list = queue->get_immediate_command_list();
         if (cmd_list == nullptr)
             return;

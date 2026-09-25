@@ -13,6 +13,27 @@ bool CrossingReady(swapchain* sc) {
     return false;
 }
 
+// The device a route built on was destroyed or removed. What was built on it is gone with it and a
+// new device starts with none of it, so the add-on stands down until the game is restarted.
+void DeviceGone(const char* reason) {
+    g.status.unavailable = true;
+    g.status.reason = reason;
+    Log("off: %s", reason);
+}
+
+// A present from a device, or on a queue, other than the one a route latched: a second swapchain,
+// most likely. Nothing built on the first serves it, so it goes out as the game drew it and the
+// route carries on with its own; standing down would switch the played window off as well.
+bool Foreign(bool foreign, const char* what) {
+    static bool said = false;
+    if (foreign && !said) {
+        said = true;
+        Log("a present on another %s than the one the add-on runs on goes out as the game drew "
+            "it, as does every later one there. Said once.", what);
+    }
+    return foreign;
+}
+
 #include "d3d12/D3D12Guides.inc"
 #include "d3d12/D3D12Transport.inc"
 #include "d3d11/D3D11Guides.inc"

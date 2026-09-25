@@ -52,7 +52,10 @@ void SnapshotBeforeClear(command_list* cmd_list, device* dev, resource_view dsv)
             cd.DepthOrArraySize == 1)
             ++TallyD12Depth(native, cd).clears;
     }
-    if (!g.settings.useDepth.load() || native != g.depthBest.Get() || g.device == nullptr)
+    // Only on the device the snapshot and the network live on. This hook runs even once the add-on
+    // has stood down, and a clear on the game's next device would be a copy across devices.
+    if (!g.settings.useDepth.load() || native != g.depthBest.Get() ||
+        g.device.Get() != reinterpret_cast<ID3D12Device*>(dev->get_native()))
         return;
     ++g.depthClears;
 

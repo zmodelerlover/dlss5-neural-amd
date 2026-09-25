@@ -1,7 +1,7 @@
 // The runtime modules' job control: which module a pass records through, whether any still has a
 // job in flight, the frame-notify, the waits on our own queue, the run/skip gate every route goes
-// through, and how many modules the pass count runs on. Part of the core's unity build, included
-// by neural.cpp.
+// through, whether a list still reads the descriptor heap, and how many modules the pass count
+// runs on. Part of the core's unity build, included by neural.cpp.
 
 // The module pass `slot` records through. Without a copy of its own a pass shares the first
 // module, which is how every pass ran before the copies existed.
@@ -73,7 +73,7 @@ bool DeviceLost()
             "alone.", reason);
     }
     g.status.unavailable = true;
-    g.status.reason = "the D3D12 device was removed; see amd-nr.log";
+    g.status.reason = "the D3D12 device was removed; restart the game to re-enable";
     return true;
 }
 
@@ -195,6 +195,38 @@ bool JobGate()
                     At<UINT>(g.runtimes[m], rt::kJobId), At<UINT>(g.runtimes[m], rt::kJobCounter),
                     static_cast<unsigned long long>(GetTickCount64() - g.lastJobAt));
     return false;
+}
+
+void DropStaleHistory(bool ran);
+
+// Whether the last list that read the descriptor heap may still be running, in which case
+// RecordNetwork records nothing and the route skips the frame as it does when JobGate says no. The
+// heap is written on the CPU every present and a list reads its views when it executes, not when it
+// was recorded, so rewritten under a list still in flight that list composes from this frame's
+// views: another back buffer. Only D3D12, and OpenGL once its fences drive the queue, record ahead
+// of the GPU, and only where WaitForPreviousJob did not hold them: past its 500 ms, or before the
+// engine latched same-frame. Keyed on the last list that read the heap, not on g.completion: a
+// skipped frame still signals a list that reads nothing, and chasing that value would keep a
+// GPU-bound game raw for good. `ran`: whether JobGate let this frame run, so a skip counts once.
+// ponytail: skip, not a ring of heaps; a table set per frame in flight if the count logged says
+// this is common.
+bool HeapStillRead(bool ran)
+{
+    static bool wrote = false;  // whether the last call went on to write the heap
+    static UINT64 reader = 0;   // the fence value the last list that read it signals
+    static UINT64 held = 0;     // frames this held back
+    if (wrote)
+        reader = g.completion;
+    wrote = g.fence == nullptr || g.fence->GetCompletedValue() >= reader;
+    if (wrote)
+        return false;
+    if (ran)
+        ++g.status.skipped;
+    if (++held % 600 == 1)
+        Log("network skipped: the last list that read the descriptor heap is still on the GPU "
+            "(%llu such frames).", static_cast<unsigned long long>(held));
+    DropStaleHistory(false);
+    return true;
 }
 
 // Both sides must finish before the next pass changes the module's tuning.

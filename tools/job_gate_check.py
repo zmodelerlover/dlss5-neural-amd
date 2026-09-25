@@ -132,7 +132,8 @@ for name, path in routes.items():
         bad.append(f"{name}: decides the pass count itself instead of taking BringUpEngines' answer")
 # A pause runs no JobGate, so the latch would time the whole pause as one job; three cap the scale.
 host = code((ROOT / "core/x86bridge/host64.cpp").read_text(encoding="utf-8"))
-if (not re.search(r"\|\| g\.status\.failed\)\s*\{\s*g\.jobRunning = false;\s*return;", code(neural))
+if (not re.search(r"\|\| g\.status\.failed(?: \|\| DeviceLost\(\))?\)\s*\{\s*g\.jobRunning = false;\s*return;",
+                  code(neural))
         or "if(f.resetHistory){g.historyValid.store(false);g.jobRunning=false;}" not in host):
     bad.append("the effect switched off (64-bit) or a reset (32-bit host) keeps jobRunning set")
 

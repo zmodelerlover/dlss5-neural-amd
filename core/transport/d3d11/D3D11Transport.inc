@@ -4,6 +4,10 @@
 
 namespace d3d11route {
 
+// The game's device as ReShade hands it, before the QueryInterface: game11 need not be the same
+// pointer, and this is what a present and a destroy_device are compared against.
+ID3D11Device* gameDevice = nullptr;
+
 // D3D11 path, step 1. Brings up the work device and stops there: the network still does not run
 // on this API, so the picture is untouched. What this proves, and all it proves, is that the
 // second device comes up on the same GPU as the game.
@@ -24,6 +28,7 @@ void BridgeStep1(device* dev) {
         g.bridge.failed = true;
         return;
     }
+    gameDevice = native;
     ComPtr<ID3D11DeviceContext> ctx;
     g.bridge.game11->GetImmediateContext(&ctx);
     if (ctx == nullptr || FAILED(ctx.As(&g.bridge.game11ctx))) {
@@ -79,8 +84,6 @@ bool FlushAndWait11() {
 // opened from another device sits in COMMON, which promotes to COPY_SOURCE and COPY_DEST on a
 // direct queue, so there is no barrier here to get wrong.
 void BridgePresent(device* dev, swapchain* sc) {
-    if (DeviceLost())
-        return;
     const resource back = sc->get_current_back_buffer();
     if (back.handle == 0) {
         if (!g.loggedNoBackBuffer) {
@@ -306,10 +309,20 @@ struct Transport final : FrameTransport {
         std::lock_guard observe(g.lock);
         ObserveD3D11(dev, rtvs, count, depth);
     }
+    void OnDestroyDevice(device* dev) override {
+        if (gameDevice != nullptr &&
+            reinterpret_cast<ID3D11Device*>(dev->get_native()) == gameDevice)
+            DeviceGone("the game destroyed its D3D11 device; restart the game to re-enable");
+    }
     void Present(device* dev, command_queue*, swapchain* sc) override {
         // Between a teardown and the new swapchain being announced there is nothing safe to
         // touch, and touching it is exactly what makes the resize fail.
         if (g.noBridge.load() || g.goneSwapchain.load() == sc)
+            return;
+        // Before the watchdog: another device's presents must not count as the bridge stalling.
+        if (gameDevice != nullptr &&
+            Foreign(reinterpret_cast<ID3D11Device*>(dev->get_native()) != gameDevice,
+                    "D3D11 device"))
             return;
         // Whatever goes wrong below, the game keeps its picture. If presents keep arriving and the
         // bridge has not completed a frame in a long while, something is stuck, and the honest move
@@ -332,6 +345,12 @@ struct Transport final : FrameTransport {
         BridgeStep1(dev);
         if (g.bridge.workDevice == nullptr)
             return; // BridgeStep1 said why
+        // The bridge is built on the game's device as first seen. OnPresent checks our own device;
+        // a removed game device comes back as a new one, with none of this on it.
+        if (FAILED(g.bridge.game11->GetDeviceRemovedReason())) {
+            DeviceGone("the game's D3D11 device was removed; restart the game to re-enable");
+            return;
+        }
         if (g.bridge.failed) {
             if (++g.bridge.retries > State::kMaxBridgeRetries) {
                 g.status.unavailable = true;

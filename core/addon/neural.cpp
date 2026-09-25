@@ -2755,42 +2755,7 @@ void ReleaseSwapchainSized()
     g.outWidth = g.outHeight = 0;
 }
 
-void OnDestroySwapchain(swapchain *sc, bool resize)
-{
-    // Before the lock, so a present that is only just starting sees it and backs out.
-    g.goneSwapchain.store(sc);
-    std::lock_guard guard(g.lock);
-    Log("swapchain going away (resize %d) after %llu frames; draining and dropping everything "
-        "sized to it.", resize ? 1 : 0, static_cast<unsigned long long>(g.status.frame));
-
-    if (g.bridge.game11ctx != nullptr)
-    {
-        // Retiring the back-buffer reference needs the work to have *finished*, not just been
-        // submitted: DXGI refuses ResizeBuffers while a pending command references a back buffer,
-        // and the game quits over it. Flush does not drain it; an event query does, because it
-        // does not report until everything submitted before it has completed.
-        if (!d3d11guides::FlushAndWait11(g.bridge.game11.Get(), g.bridge.game11ctx.Get()))
-            Log("resize: the bridge did not drain (query failed, 2 s timeout, or device removed).");
-        // No ClearState: nothing of ours is bound, it only emptied the game's cached pipeline (PCSX2
-        // lost its device 57 ms later, DRIVER_INTERNAL_ERROR; gone without it on the bench).
-        g.bridge.game11ctx->Flush();
-    }
-    ReleaseSwapchainSized();
-}
-
-// The new swapchain is up; everything below is sized to it and will be rebuilt on demand.
-void OnInitSwapchain(swapchain *sc, bool resize)
-{
-    std::lock_guard guard(g.lock);
-    // Only lift the gate for the swapchain that was actually torn down. A different one being
-    // announced says nothing about this one.
-    void *gone = g.goneSwapchain.load();
-    if (gone == sc || gone == nullptr)
-        g.goneSwapchain.store(nullptr);
-    g.outWidth = g.outHeight = 0;
-    Log("swapchain back (resize %d); the bridge rebuilds at the new size on the next frame.",
-        resize ? 1 : 0);
-}
+#include "lifecycle.inc"
 
 bool ToggleRequested()
 {
@@ -2930,6 +2895,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                    DXGI_FORMAT colourFmt, ID3D12Resource *outTarget, bool runNetwork, UINT wanted,
                    const SubmitPassFn &submitPass)
 {
+    if (HeapStillRead(runNetwork))
+        return false;
     const UINT w = g.outWidth, h = g.outHeight, nw = g.netWidth, nh = g.netHeight;
     const UINT inc = g.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     const auto heapStart = g.heap->GetCPUDescriptorHandleForHeapStart();
@@ -3627,7 +3594,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         g.settings.enabled.store(on);
         Log("%s: %s", HotkeyName().c_str(), on ? "on" : "off");
     }
-    if (!g.settings.enabled.load() || g.status.unavailable || g.status.failed)
+    if (!g.settings.enabled.load() || g.status.unavailable || g.status.failed || DeviceLost())
     {
         g.jobRunning = false;  // off (hotkey, panel, alt-tab) is a pause too: see the restore below
         return;
@@ -3652,8 +3619,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     // iteration cap sized for a foreground frame, and it is what "Styx freezes randomly when I
     // alt-tab to desktop" looks like from inside the process.
     //
-    // Standing down here costs a frame nobody is looking at, and it covers all three routes.
-    //
+    // Standing down here costs a frame nobody is looking at, and it covers every route.
     if (auto *hwnd = static_cast<HWND>(sc->get_hwnd()); hwnd != nullptr)
     {
         // Alt-tab, when the user asked for it to switch the effect off. A real switch-off, not a
@@ -3977,6 +3943,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         if (g.events & 4)
             reshade::register_event<reshade::addon_event::clear_depth_stencil_view>(OnClearDepth);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+        reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
         reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
         reshade::register_event<reshade::addon_event::init_effect_runtime>(OnInitEffects);
         reshade::register_event<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffects);
@@ -3985,7 +3952,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         reshade::register_event<reshade::addon_event::present>(OnPresent);
         if (g.events & 16)
             reshade::register_overlay("AMD Neural Rendering", OnOverlay);
-        Log("events subscribed: mask %d (destroy_swapchain always on)", g.events);
+        Log("events subscribed: mask %d (destroy_swapchain and destroy_device always on)",
+            g.events);
         for (FrameTransport *transport : AllTransports())
             transport->OnAddonLoad();
         break;

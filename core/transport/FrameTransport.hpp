@@ -32,6 +32,9 @@ struct FrameTransport {
                                 reshade::api::resource_view dsv) {
         (void)cmd, (void)dev, (void)dsv;
     }
+    // ReShade's destroy_device. A route that latched this device stands down with DeviceGone
+    // (Transports.inc): nothing it built there serves the device the game makes next.
+    virtual void OnDestroyDevice(reshade::api::device* dev) { (void)dev; }
     // DllMain. Some routes have to hook before the game creates its device.
     virtual void OnAddonLoad() {}
     virtual void OnAddonUnload(bool processExit) { (void)processExit; }

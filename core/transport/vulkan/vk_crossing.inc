@@ -31,11 +31,12 @@ struct Crossing
     VkImage image = nullptr;
     VkDeviceMemory memory = nullptr;
 
+    // No device: it was destroyed with the image and memory still on it (VulkanTransport.inc).
     void Release(Api &api, VkDevice device)
     {
-        if (image != nullptr)
+        if (image != nullptr && device != nullptr)
             api.destroyImage(device, image, nullptr);
-        if (memory != nullptr)
+        if (memory != nullptr && device != nullptr)
             api.freeMemory(device, memory, nullptr);
         if (handle != nullptr)
             CloseHandle(handle);
@@ -116,11 +117,8 @@ void ReleaseSwapchainSized()
         if (result != 0)
             Log("vulkan: vkDeviceWaitIdle during swapchain teardown returned %d.", result);
     }
-    if (r.device != nullptr)
-    {
-        r.in.Release(r.api, r.device);
-        r.out.Release(r.api, r.device);
-    }
+    r.in.Release(r.api, r.device);
+    r.out.Release(r.api, r.device);
 
     r.width = 0;
     r.height = 0;
