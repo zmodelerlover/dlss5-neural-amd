@@ -72,10 +72,15 @@ hhkbble's cube scaling, which the fork ships on by default.
   Motion=0
   Depth=0
   Temporal=2
+  OutputSmooth=0
+  FixedSeed=0
   ```
 
   Motion off and depth off remove the guides; Temporal forced on keeps the history running with
-  zero motion, which is what the DLL did with the dummies.
+  zero motion, which is what the DLL did with the dummies. Output smoothing and Fixed seed off,
+  because the DLL runs no output smoothing and does not pin its seed (see below).
+- **Output smoothing and Fixed seed.** Ours, and on by default here (0.8 with a 10/255 limit, seed
+  pinned). NVIDIA runs no output smoothing and cycles its seed 0..7 per frame.
 - **DepthInverted.** RenoDX writes 0; the runtime's default, and what this add-on wrote until now,
   is 1. Its 0 was measured with a dummy depth, so it is not a reading about any game. Now an ini
   key (`DepthInverted`, default 1) and a checkbox under Depth, so it can be measured on a game with

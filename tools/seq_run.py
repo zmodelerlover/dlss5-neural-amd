@@ -26,7 +26,8 @@ BASE = dict(Scale=1.0, Passes=1, Encoding=0, Tonemap=0, Structure=1.0, Skin=-1.0
             AutoMask=1, EngineScale=0.03125, ToneChannels=0, Inline=1, Bicubic=1, Motion=1,
             History=1, Temporal=0, Depth=0, GameGuides=0, Guard=2, GuardPerPass=0,
             ColourStrength=1, ResidualLimit=0.25, EdgeFade=0, PassTaper=0, DebugView=0,
-            SerialPasses=1, Tone=1, Style=0, StyleStrength=1, NetworkOutput=0)
+            SerialPasses=1, Tone=1, Style=0, StyleStrength=1, NetworkOutput=0,
+            FixedSeed=0, OutputSmooth=0)  # the defaults before Temporal=2 FixedSeed=1 OutputSmooth=0.8
 RUNTIME = ("dlssnr_amd_pass1.dll", "dlssnr_on_amd_weights.bin", "dlssnr_on_amd.ini")
 
 

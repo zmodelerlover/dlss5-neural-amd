@@ -82,7 +82,12 @@ The main controls:
   It is saved as `Async` in `amd-nr.ini`. The network itself runs same-frame on every route:
   a 64-bit game has no Timing, and an `Inline=0` left in `amd-nr.ini` is ignored and logged.
 
-The defaults are a reasonable starting point.
+The defaults are a reasonable starting point. For a steady picture they turn on **Temporal**
+(`Temporal=2`), **Fixed seed** (`FixedSeed=1`) and **Output smoothing** at 0.80 with a 10/255
+limit (`OutputSmooth=0.8`, `OutputSmoothLimit=10`), the steadiest set measured on recorded play.
+An `amd-nr.ini` you already have keeps every value it sets. To go back, set Temporal to Auto,
+untick Fixed seed and slide Output smoothing to off, or write `Temporal=0`, `FixedSeed=0` and
+`OutputSmooth=0` in `amd-nr.ini`.
 
 The panel shows fifteen controls, fourteen on a 64-bit game, which has no Timing. Everything
 else it can do is one tick away under **More settings** at the bottom, and all of it is

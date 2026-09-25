@@ -22,7 +22,8 @@ BASE = dict(Scale=1.0, Passes=1, Encoding=0, Tonemap=0, Structure=1.0, Skin=-1.0
             AutoMask=1, EngineScale=0.03125, ToneChannels=0, Inline=1, Bicubic=1, Motion=0,
             History=0, Temporal=1, Depth=0, GameGuides=0, Guard=2, GuardPerPass=0,
             ColourStrength=1, ResidualLimit=0.25, EdgeFade=0, PassTaper=0, DebugView=0,
-            SerialPasses=1, Tone=1, Style=0, StyleStrength=1, NetworkOutput=0)
+            SerialPasses=1, Tone=1, Style=0, StyleStrength=1, NetworkOutput=0,
+            FixedSeed=0, OutputSmooth=0)  # off, as a release from before they were defaults runs
 # Not here: Tonemap=1. The runtime is not deterministic with it -- the same build against itself
 # differs in three runs of four -- so a comparison there says nothing about the add-on.
 CASES = {

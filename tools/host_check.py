@@ -40,9 +40,11 @@ ShowScreenshotMessage=0
 TutorialProgress=4
 """
 # Temporal=1 forces the runtime's temporal accumulation off, as framecheck does: with it on the
-# result depends on how many frames ran before the capture, which no two runs agree on.
+# result depends on how many frames ran before the capture, which no two runs agree on. FixedSeed
+# and OutputSmooth off, as a release from before they were defaults runs.
 BASE = dict(StartOn=1, FeedEffect=0, Temporal=1, Passes=1, Scale=1, Inline=1, Style=0, DebugView=0,
-            NetworkOutput=0, Motion=0, History=0, Depth=0, GameGuides=0, Diagnostics=1)
+            NetworkOutput=0, Motion=0, History=0, Depth=0, GameGuides=0, Diagnostics=1,
+            FixedSeed=0, OutputSmooth=0)
 CASES = {
     "off": dict(StartOn=0),  # the control: what the host draws with nothing applied
     "inline1": {},

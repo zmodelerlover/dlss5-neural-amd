@@ -4,8 +4,8 @@
 
 The source is laid out by layer, one transport per graphics API, and both routes draw the same
 panel. The output was checked against v0.6.6 byte for byte in 26 settings that move the picture,
-with the temporal path (motion, history, depth) switched off for that check. Fixes a player would
-notice:
+with the temporal path (motion, history, depth) and Fixed seed switched off for that check. Fixes
+a player would notice:
 
 - **Replace `dlssnr_amd_pass1.dll`: the runtime must be the new build.** It is still v0.3.0 with
   a fourth byte patch, and the old file is refused by hash (the log says so by name). The runtime's
@@ -209,6 +209,16 @@ notice:
 - **The 32-bit panel says why the helper switched off**: the device was removed, the engine or its
   textures could not be brought up, or otherwise to look in `amd-nr-x86-host.log`. Bridge protocol
   v4: replace `amd-nr.addon32` and `amd-nr-host64.exe` together.
+- **Temporal On, Fixed seed and Output smoothing are the defaults** on every route, the steadiest
+  set measured on recorded play. Fixed seed holds the network's noise pattern still, so a still
+  frame gets the same answer every time. Output smoothing blends each pixel toward the previous
+  answer, moved by the motion, by up to 0.80 where the two agree and less as they differ, and
+  leaves differences of 10/255 or more alone. A fresh `amd-nr.ini` is written with `Temporal=2`,
+  `FixedSeed=1`, `OutputSmooth=0.8` and `OutputSmoothLimit=10`, and Factory Defaults restores them
+  on both panels. An existing `amd-nr.ini` is not rewritten and keeps every key it has, so one
+  from v0.6.6 keeps its `Temporal`; it has no `FixedSeed` or `OutputSmooth` key, so those two read
+  as on. To go back, set Temporal to Auto, untick Fixed seed and slide Output smoothing to off, or
+  put `Temporal=0`, `FixedSeed=0` and `OutputSmooth=0` in `amd-nr.ini`.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 
