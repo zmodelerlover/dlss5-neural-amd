@@ -43,6 +43,7 @@ assert not feed([[5, 5], [np.inf, 1]], False, cap).any(), "no source this frame:
 
 inc = (ROOT / "core/temporal/motion_feed.inc").read_text()
 cpp = (ROOT / "core/addon/neural.cpp").read_text()
+probes = (ROOT / "core/addon/probes.inc").read_text()
 host = (ROOT / "core/x86bridge/host64.cpp").read_text()
 src = "".join(p.read_text(encoding="utf-8", errors="replace") for p in (ROOT / "core").rglob("*")
               if p.suffix in (".cpp", ".inc", ".h"))
@@ -52,7 +53,8 @@ fails = [why for ok, why in [
     (not re.search(r"maxPx\s*<=\s*0\.0f\)\s*\n\s*return;", inc), "motion_feed.inc: FeedMotion skips again with no cap set"),
     (re.search(r"\bFeedMotion\(cmd,\s*haveMotion\)", cpp) is not None, "neural.cpp: FeedMotion(cmd, haveMotion) is not called"),
     (not re.search(r"if\s*\(haveMotion\)\s*\n\s*FeedMotion", cpp), "neural.cpp: FeedMotion is gated on haveMotion again"),
-    ("DemoteMotion(" in cpp, "neural.cpp: the probe no longer demotes a field longer than the raster"),
+    (re.search(r"^\s+DemoteMotion\(", probes, re.M) is not None,
+     "probes.inc: the probe no longer demotes a field longer than the raster"),
     ("!g.guideMotion.failed" in host, "host64.cpp: a demoted motion guide is still read on the x86 bridge"),
     (flow and all(re.fullmatch(r"AMDNR_WITH_FFX \? \w+ : 0", s) for s in flow)
      and not re.search(r"\.opticalFlow\s*=[^=]", src),

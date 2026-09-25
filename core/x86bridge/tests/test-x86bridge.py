@@ -140,7 +140,7 @@ for word in ['FrameFlagClassicD3D9','EfficientClassicD3D9Scale','D3D9 timing avg
  assert word not in f,word
 
 # Verify the copied job-pending decision has identical executable text to upstream.
-u=read(root/'core/addon/neural.cpp')
+u=read(root/'core/addon/neural.cpp')+read(root/'core/addon/probes.inc')+read(root/'core/temporal/motion_sources.inc')
 # Ends at RenderEffectsAheadOfNetwork rather than at the comment after it: that call is the
 # D3D12 route's own business and has no counterpart in the bridge, so including it made this
 # compare a policy against a policy plus one unrelated line.

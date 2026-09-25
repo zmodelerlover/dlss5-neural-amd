@@ -38,6 +38,8 @@ NEURAL = ROOT / "core/addon/neural.cpp"
 D3D12 = ROOT / "core/transport/d3d12/D3D12Transport.inc"
 GUIDES = ROOT / "core/transport/d3d12/D3D12Guides.inc"
 RUNTIMES = ROOT / "core/addon/runtimes.inc"
+PROBES = ROOT / "core/addon/probes.inc"
+MOTION = ROOT / "core/temporal/motion_sources.inc"  # included inside RecordNetwork
 
 
 def body(text, name):
@@ -83,11 +85,11 @@ for n in range(first, last):
         bad.append(f"D3D12 route returns between RecordNetwork and its tail at line {n + 1}: {route[n].strip()}")
 
 neural = NEURAL.read_text(encoding="utf-8")
-drain = body(neural, "DrainReadbacks")
+drain = body(PROBES.read_text(encoding="utf-8"), "DrainReadbacks")
 fences, mapped, parked = (drain.count(s) for s in ("Signal(f.Get(), 1)", "GetCompletedValue() >= 1 &&", "g.parked.insert("))
 if not fences or not fences == mapped == parked:
     bad.append(f"DrainReadbacks: {fences} fences, {mapped} maps behind them, {parked} parks; each readback needs all three")
-if "depthBest" in body(neural, "RecordNetwork"):
+if "depthBest" in body(neural, "RecordNetwork") + MOTION.read_text(encoding="utf-8"):
     bad.append("RecordNetwork reads the live D3D12 depth buffer, which measured zeros")
 snapshot = body(GUIDES.read_text(encoding="utf-8"), "SnapshotBeforeClear")
 if "Format != DepthAliasFormat(" not in snapshot or "depthSnapshot.Reset()" in snapshot:
