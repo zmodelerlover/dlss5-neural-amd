@@ -135,7 +135,9 @@ both work on this driver in a 3.3 core context as well.
 ## The route
 
 `core/transport/opengl/gl_route.inc`, included from `neural.cpp` behind `AMDNR_WITH_OPENGL`
-(`core/addon/build_config.h`). Integration is five small edits, mirroring the Vulkan ones: the
+(`core/addon/build_config.h`), with three pieces beside it: `gl_api.inc` (the GL entry points,
+loaded by hand), `gl_crossing.inc` (the route's state and the shared textures) and `gl_frame.inc`
+(the two blits and `Present`). Integration is five small edits, mirroring the Vulkan ones: the
 include, the `device_api::opengl` branch in `OnPresent`, a call in `ReleaseSwapchainSized`, the API
 name in the status log, and the description string. There is no `DllMain` work at all — unlike
 Vulkan, nothing has to be arranged before the host's device exists.
@@ -386,7 +388,10 @@ In the order the value falls out:
 
 | Path | |
 |---|---|
-| `core/transport/opengl/gl_route.inc` | the route |
+| `core/transport/opengl/gl_route.inc` | the route: `Ensure` and the teardown, and the includes below |
+| `core/transport/opengl/gl_api.inc` | the GL entry points, loaded by hand from `opengl32.dll` |
+| `core/transport/opengl/gl_crossing.inc` | the route's state, the GL state it puts back, the shared textures |
+| `core/transport/opengl/gl_frame.inc` | `BlitIn`, `BlitOut` and `Present` |
 | `core/addon/build_config.h` | `AMDNR_WITH_OPENGL` |
 | `core/addon/neural.cpp` | the branch in `OnPresent`, the teardown hook, `SelfIssued` |
 | `core/diagnostics/glprobe/glprobe.cpp` | the offline driver probe (`-Target glprobe -Exe`) |

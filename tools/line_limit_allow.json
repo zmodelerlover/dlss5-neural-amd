@@ -1,8 +1,6 @@
 {
   "core/diagnostics/glprobe/glprobe.cpp": 1886,
-  "core/transport/opengl/gl_route.inc": 1308,
   "core/addon/neural.cpp": 4719,
-  "core/transport/vulkan/vk_route.inc": 1152,
   "core/diagnostics/session/session.cpp": 1129,
   "core/diagnostics/vkbridge/vkbridge.cpp": 687,
   "core/diagnostics/vkprobe/vkprobe.cpp": 579,
