@@ -110,7 +110,7 @@ void Raster(const PanelSettings &s, const PanelStatus &status)
                "slider para pedir a escala cheia de novo."));
 }
 
-void Passes(PanelSettings &s)
+void Passes(PanelSettings &s, const PanelStatus &status)
 {
     int passes = s.passes;
     if (Risk r(kDanger, s.inlineMode != 0 && passes > 1 && s.scale > 1.0f);
@@ -127,6 +127,15 @@ void Passes(PanelSettings &s)
          "porque cada passe está editando o trabalho do anterior.\n\n"
          "1 é o padrão. Olhe a porcentagem de pulados lá em cima ao subir: rede que para de "
          "terminar dentro do quadro é o piscar.");
+    if (status.passesAvailable != 0 && static_cast<uint32_t>(s.passes) > status.passesAvailable)
+    {
+        char note[160];
+        std::snprintf(note, sizeof(note),
+                      T("More than %u passes take effect when the game restarts; until then it runs %u.",
+                        "Mais de %u passes valem quando o jogo reiniciar; até lá roda %u."),
+                      status.passesAvailable, status.passesAvailable);
+        Note(kWarn, note);
+    }
 }
 
 void Taper(PanelSettings &s)
@@ -203,7 +212,7 @@ void DrawPerformance(PanelSettings &s, const PanelStatus &status, PanelActions &
         Timing(s);
     Scale(s, actions);
     Raster(s, status);
-    Passes(s);
+    Passes(s, status);
     if (Shown(s, kOptTaper) && s.passes > 1)
         Taper(s);
     if (Shown(s, kOptPerPass) && s.passes > 1)

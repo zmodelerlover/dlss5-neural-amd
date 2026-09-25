@@ -27,7 +27,7 @@ ui::PanelStatus BridgeStatus(){
     s.routeNote=Pipelined()?ui::T("32-bit bridge, async","ponte 32 bits, assíncrona")
                            :ui::T("32-bit bridge, same frame","ponte 32 bits, mesmo quadro");
     s.outWidth=w.outWidth;s.outHeight=w.outHeight;s.netWidth=w.netWidth;s.netHeight=w.netHeight;
-    s.scaleCap=w.scaleCap;
+    s.scaleCap=w.scaleCap;s.passesAvailable=w.loadedPasses;
     s.depthSource=w.depthActive?ui::GuideSource::Game:ui::GuideSource::None;
     s.motionSource=w.motionActive?ui::GuideSource::Game:ui::GuideSource::Estimated;
     s.gameMotionActive=w.motionActive!=0;
@@ -43,7 +43,7 @@ ui::PanelStatus BridgeStatus(){
     std::snprintf(line,sizeof(line),"Protocol v%u | %s | %s",x86bridge::Version,Pipelined()?"async":"same frame",
                   w.transportOnly?"TRANSPORT_ONLY":"neural");
     s.routeDiagnostics.push_back(line);
-    std::snprintf(line,sizeof(line),"passes loaded/active=%u/%u",w.loadedPasses,w.activePasses);
+    std::snprintf(line,sizeof(line),"passes runnable/active=%u/%u",w.loadedPasses,w.activePasses);
     s.routeDiagnostics.push_back(line);
     for(std::string& candidate:GuideCandidates())s.routeDiagnostics.push_back(std::move(candidate));
     s.routeDiagnostics.push_back("Logs: amd-nr-x86.log / amd-nr-x86-host.log");

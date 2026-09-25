@@ -246,7 +246,8 @@ void CascadeRows() {
 
 // Bench 2: Portuguese is a whole other panel, and every string in it is clean UTF-8.
 void Language() {
-    const ui::PanelStatus st = Status64();
+    ui::PanelStatus st = Status64();
+    st.passesAvailable = 1; // the Passes restart note is drawn, and checked, in both languages
     g_openMore = true;
     ui::PanelSettings en = Base(), pt = Base();
     en.optional = pt.optional = ui::kOptAll;
@@ -309,6 +310,23 @@ void Actions() {
     g_click.clear();
     CHECK(s.scale == 1.0f && a.Has(ui::PanelAction::LiftScaleCap),
           "releasing Scale unchanged: scale=%.2f", s.scale);
+}
+
+// More passes than the runtime copies loaded this session wait for a restart, and the panel says so.
+void PassesRestart() {
+    ui::PanelStatus st = Status64();
+    ui::PanelSettings s = Base(); // two passes
+    auto says = [&] {
+        bool note = false;
+        for (const std::string& x : Draw(s, st, nullptr, true))
+            note |= x.find("when the game restarts") != std::string::npos;
+        return note;
+    };
+    CHECK(!says(), "restart note before any engine is up");
+    st.passesAvailable = 1;
+    CHECK(says(), "two passes over one loaded copy show no restart note");
+    st.passesAvailable = 2;
+    CHECK(!says(), "restart note with a copy loaded for every pass");
 }
 
 // The rows that wait for another setting: ticked, they stay off screen until it is on.
@@ -406,6 +424,7 @@ int main() {
     Dependencies();
     Language();
     Actions();
+    PassesRestart();
     Factory();
     Route32();
     if (g_failures) {

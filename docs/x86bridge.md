@@ -45,7 +45,7 @@ The panel is `core/ui/`, one implementation shared with the 64-bit add-on. `pane
 - Engine: Character Mask; Temporal; Tonemap; Tone Channels; Engine Scale; Reset to 1/32; original informational Model A/B/C text.
 - Advanced: Local Tone Strength; read-only startup diagnostics.
 - Experimental: Network Output, still strictly current-frame on this bridge.
-- Status: connected/enabled/engine status, successful processed/skipped requests, dimensions, loaded/active passes, actual guide state, frontend candidates, protocol and transport mode.
+- Status: connected/enabled/engine status, successful processed/skipped requests, dimensions, runnable/active passes, actual guide state, frontend candidates, protocol and transport mode.
 - Save Settings; Reload Settings; original warning/tag legend.
 
 Timing is a live control and selects the presentation mode: Same frame, or pipelined, which is the default. It reads and writes the frontend's own `Async` flag and saves it to `amd-nr.ini`; see the note on it below, which is the whole of what it does. It is a separate thing from inline composition, which is not a control on this route: host startup/reload force `g.inlineMode=true`, logging any Inline=0 override. Encoding and Tonemap retain restart warnings. Stage/Events/NoBridge/NoBackBuffer remain read-only INI diagnostics; no unsafe engine reinitialization is added. Transport-only keeps result=4 and disables engine widgets; control synchronization does not load HIP.

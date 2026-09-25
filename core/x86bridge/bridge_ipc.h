@@ -33,6 +33,7 @@ struct WireCommand { uint64_t id=0;CommandCode code=CommandCode::MeasureResidual
 struct WireStatus {
     uint64_t processed=0,skipped=0;
     uint32_t connected=0,engineReady=0,unavailable=0,failed=0,transportOnly=0;
+    // loadedPasses: how many passes the helper's loaded runtime copies can run (PassesAvailable).
     uint32_t outWidth=0,outHeight=0,netWidth=0,netHeight=0,loadedPasses=0,activePasses=0;
     uint32_t depthActive=0,motionActive=0,probeValid=0;
     float depthMin=0,depthMax=0,motionMean=0,motionMax=0;

@@ -44,7 +44,7 @@ struct Host {
         s.engineReady=!transport&&g.runtime!=nullptr&&!g.status.unavailable&&!g.status.failed;
         s.unavailable=g.status.unavailable;s.failed=g.status.failed;
         s.outWidth=spec.colour.width;s.outHeight=spec.colour.height;s.netWidth=g.netWidth;s.netHeight=g.netHeight;
-        s.loadedPasses=g.loadedPasses;s.activePasses=g.activePasses;
+        s.loadedPasses=PassesAvailable();s.activePasses=g.activePasses;
         s.depthActive=!transport&&built&&g.gameDepthActive;s.motionActive=!transport&&built&&g.gameMotionActive;
         s.probeValid=!transport&&built&&g.probeStillPct.load()>=0;
         s.depthMin=g.probeDepthMin.load();s.depthMax=g.probeDepthMax.load();s.motionMean=g.probeMotionMean.load();s.motionMax=g.probeMotionMax.load();s.stillPct=g.probeStillPct.load();

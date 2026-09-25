@@ -25,6 +25,15 @@ still in the runtime's in-order queue, so recording on top only stacked work beh
   - every Close-failure branch on the four bridge routes calls RetireUnsubmitted, which still tells
     the runtime, so the job it recorded retires instead of reading busy for ever.
 
+And the pass count has one latch, BringUpEngines (runtimes.inc), which every route calls before
+JobGate; the 32-bit host's SET_STATE only stores the request. So:
+  - a change waits, bounded at 2 s, until no module has a job in flight, then starts history again;
+  - it never exceeds PassesAvailable, what the copies loaded this session can run: LoadExtraRuntime
+    is called once, in the first bring-up, so a copy is neither loaded later nor tried again;
+  - no route decides the count itself: each hands WantedPasses to BringUpEngines once and stores
+    only its answer in g.loadedPasses, and both panels are told PassesAvailable, which is what their
+    "takes effect when the game restarts" note compares Passes with.
+
     python tools/job_gate_check.py
 """
 import re
@@ -48,7 +57,8 @@ def code(text):
 
 
 bad = []
-record, bring, draw = (body(neural, "bool RecordNetwork("), body(neural, "bool BringUpEngines("),
+runtimes = (ROOT / "core/addon/runtimes.inc").read_text(encoding="utf-8")
+record, bring, draw = (body(neural, "bool RecordNetwork("), body(runtimes, "bool BringUpEngines("),
                        body(perf, "void DrawPerformance("))
 temporal = sorted((ROOT / "core/temporal").glob("*.inc"))
 # The control line: a check that found nothing to read passes on nothing.
@@ -78,7 +88,6 @@ else:
 if not re.search(r"if \(status\.helperProcess\)\s*\n\s*Timing\(s\);", draw) or draw.count("Timing(") != 1:
     bad.append("performance.cpp: Timing is drawn outside the 32-bit bridge's helperProcess")
 
-runtimes = (ROOT / "core/addon/runtimes.inc").read_text(encoding="utf-8")
 gate = code(body(runtimes, "bool JobGate("))
 if not all(s in gate for s in ("WaitForPreviousJob();", "RuntimeBusy()", "NoteJobCost(", "DeviceLost()")):
     bad.append("runtimes.inc: JobGate must wait, test the job, note its cost and check the device")
@@ -114,10 +123,38 @@ for name, path in routes.items():
         fails = re.findall(r"->Close\(\); FAILED\(hr\)\)\s*\{(.*?)\breturn\b", text, re.S)
         if not fails or any("RetireUnsubmitted(" not in f for f in fails):
             bad.append(f"{name}: a Close failure drops its recorded job without RetireUnsubmitted")
+    # The pass count is BringUpEngines' answer, asked for once a present and never second-guessed.
+    stores = re.findall(r"g\.loadedPasses\s*=(?!=)\s*([^;]*);", text)
+    if (text.count("WantedPasses()") != 1 or text.count("BringUpEngines(wanted)") != 1
+            or stores != ["wanted"] or "settings.passes.load()" in text):
+        bad.append(f"{name}: decides the pass count itself instead of taking BringUpEngines' answer")
+
+latch = code(bring)
+# The count moves only in the branch that found every module drained, and that branch also resets
+# history and the run of timeouts; `asked` keeps a request from loading or logging on every present.
+drained = re.search(r"if \(!RuntimeBusy\(\)\)\s*\{([^}]*)\}", latch)
+if not (all(s in latch for s in ("PassesAvailable()", "timeouts < 3", "asked = wanted;", "wanted = live;"))
+        and re.search(r"GetTickCount64\(\) \+ 2000;", latch) and drained
+        and all(s in drained.group(1)
+                for s in ("live = next;", "timeouts = 0;", "g.historyValid.store(0);"))):
+    bad.append("runtimes.inc: BringUpEngines does not drain for 2 s, reset history and cap the count "
+               "at the loaded copies on a Passes change")
+core_code = "".join(code(p.read_text(encoding="utf-8", errors="replace"))
+                    for p in sorted((ROOT / "core").rglob("*")) if p.suffix in (".cpp", ".h", ".inc"))
+if (len(re.findall(r"(?<!bool )LoadExtraRuntime\(", core_code)) != 1
+        or not re.search(r"if \(asked == 0\)\s*for \([^\n]*\)\s*if \(!LoadExtraRuntime\(slot\)\)", latch)):
+    bad.append("a runtime copy loads outside BringUpEngines' first bring-up, so a failed one is retried")
+for path, wiring in (("core/addon/neural.cpp", "st.passesAvailable = PassesAvailable();"),
+                     ("core/x86bridge/host64.cpp", "s.loadedPasses=PassesAvailable();"),
+                     ("core/x86bridge/panel32.cpp", "s.passesAvailable=w.loadedPasses;"),
+                     ("core/ui/sections/performance.cpp", "s.passes) > status.passesAvailable")):
+    if wiring not in code((ROOT / path).read_text(encoding="utf-8")):
+        bad.append(f"{path}: the panel is not told what the loaded copies can run ({wiring})")
 
 if bad:
     print("FAIL\n  " + "\n  ".join(bad))
     sys.exit(1)
 print("PASS same frame only: Inline=0 ignored, no decision on the menu flag, a latched async stands "
       "down, Timing only on the 32-bit bridge, one JobGate on each of the five routes, busy from the "
-      "runtime's own count, no timed let-go of a runtime job, every failed Close retires its job")
+      "runtime's own count, no timed let-go of a runtime job, every failed Close retires its job, one "
+      "pass-count latch that drains, resets history and loads copies only at the first bring-up")

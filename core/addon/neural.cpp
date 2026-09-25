@@ -2115,8 +2115,8 @@ bool ArmRuntime(HMODULE h)
 // A second (third) copy of the runtime, for pass `slot` + 1. The loader keys modules by file
 // name, so a byte-identical copy under another name is a separate module: its own globals, its
 // own HIP engine object, its own weights in VRAM (about 150 MB each) and, the point of it, its
-// own temporal state. Loaded on demand, the first time the pass count asks for it, which costs
-// one long frame once.
+// own temporal state. Loaded once, at the first bring-up, for the count asked for then
+// (BringUpEngines), which costs one long frame.
 bool LoadExtraRuntime(UINT slot)
 {
     if (g.runtime == nullptr || g.runtimeFile.empty() || slot == 0 || slot >= State::kMaxPasses)
@@ -3480,49 +3480,6 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     return true;
 }
 
-// How many passes to run this frame.
-//
-// Same frame means the game is blocked on the GPU until every pass has finished, so N passes add
-// into one stall of N times a single evaluation. That used to force the count back to 1, so the
-// slider moved, saved, and did nothing. The reason for the force was the crash theory, and one
-// full engine per pass in VRAM is gone. The cost is framerate, which the overlay colours and says.
-UINT WantedPasses()
-{
-    return static_cast<UINT>(
-        std::clamp(g.settings.passes.load(), 1, static_cast<int>(State::kMaxPasses)));
-}
-
-// The first engine, plus one copy per further pass. Copies only in serial mode: that is the only
-// mode in which each pass is submitted and finished on its own, which is what lets each module be
-// told about exactly the list it recorded. The legacy batch path keeps the single shared module
-// it always had. A copy that fails to come up clamps the pass count to what did, and says so once,
-// rather than silently running that pass through pass 1's state.
-bool BringUpEngines(UINT &wanted)
-{
-    if (!InitPipeline() || !InitEngine())
-        return false;
-    if (!g.settings.serialPasses.load())
-        return true;
-    for (UINT slot = 1; slot < wanted; ++slot)
-    {
-        if (g.runtimes[slot] != nullptr)
-            continue;
-        if (!LoadExtraRuntime(slot))
-        {
-            static UINT saidFor = 0;
-            if (saidFor != wanted)
-            {
-                saidFor = wanted;
-                Log("pass count clamped to %u: no separate runtime for pass %u. See the lines "
-                    "above for why.", slot, slot + 1);
-            }
-            wanted = slot;
-            break;
-        }
-    }
-    return true;
-}
-
 #include "../transport/Transports.inc"
 
 // Which D3D12 buffer is the scene depth, decided once per present.
@@ -3784,6 +3741,7 @@ PanelStatus ReadPanelStatus()
     st.netWidth = g.netWidth;
     st.netHeight = g.netHeight;
     st.scaleCap = g.scaleCap.load();
+    st.passesAvailable = PassesAvailable();
     st.depthSource = g.guideDepth.external && g.gameDepthActive ? GuideSource::Effect
                      : g.gameDepthActive                        ? GuideSource::Game
                      : g.depthSnapshot                          ? GuideSource::Snapshot

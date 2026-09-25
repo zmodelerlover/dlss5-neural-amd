@@ -1,6 +1,7 @@
 // The runtime modules' job control: which module a pass records through, whether any still has a
-// job in flight, the frame-notify, the waits on our own queue, and the run/skip gate every route
-// goes through. Part of the core's unity build, included by neural.cpp.
+// job in flight, the frame-notify, the waits on our own queue, the run/skip gate every route goes
+// through, and how many modules the pass count runs on. Part of the core's unity build, included
+// by neural.cpp.
 
 // The module pass `slot` records through. Without a copy of its own a pass shares the first
 // module, which is how every pass ran before the copies existed.
@@ -233,4 +234,96 @@ bool SubmitPrivatePass(ID3D12GraphicsCommandList *cmd, ID3D12CommandAllocator *a
     if (!FinishSubmittedPass())
         return false;
     return SUCCEEDED(allocator->Reset()) && SUCCEEDED(cmd->Reset(allocator, nullptr));
+}
+
+// How many passes are asked for. BringUpEngines decides how many run.
+//
+// Same frame means the game is blocked on the GPU until every pass has finished, so N passes add
+// into one stall of N times a single evaluation. That used to force the count back to 1, so the
+// slider moved, saved, and did nothing. The reason for the force was the crash theory, and one
+// full engine per pass in VRAM is gone. The cost is framerate, which the overlay colours and says.
+UINT WantedPasses()
+{
+    return static_cast<UINT>(
+        std::clamp(g.settings.passes.load(), 1, static_cast<int>(State::kMaxPasses)));
+}
+
+// How many passes the modules already loaded can run: pass 1's and each copy after it, or every
+// pass on the legacy batch path, which runs them all through pass 1's. 0 until the engine is up.
+UINT PassesAvailable()
+{
+    UINT n = g.runtime == nullptr ? 0 : g.settings.serialPasses.load() ? 1 : State::kMaxPasses;
+    while (n != 0 && n < State::kMaxPasses && g.runtimes[n] != nullptr)
+        ++n;
+    return n;
+}
+
+bool InitPipeline();
+bool InitEngine();
+bool LoadExtraRuntime(UINT slot);
+
+// The first engine, plus one copy per further pass, and the one latch on the pass count: every
+// route calls this before JobGate, and the 32-bit host's SET_STATE only stores the request.
+//
+// Copies only in serial mode: that is the only mode in which each pass is submitted and finished on
+// its own, which is what lets each module be told about exactly the list it recorded. The legacy
+// batch path keeps the single shared module it always had. A copy that fails to come up clamps the
+// pass count to what did, and says so, rather than silently running that pass through pass 1's
+// state.
+//
+// Copies load at the first bring-up only. A module is never unloaded -- about 150 MB of VRAM and a
+// worker polling with Sleep(0) each, for the session -- and a copy that failed was tried again on
+// every present, a 7 MB file copy and a LoadLibrary a frame. So a later change runs on what is
+// loaded, and more passes than that wait for a restart, which the panel says.
+//
+// A change is taken on a present with no job in flight in any module, and history starts again:
+// a pass that sat out holds an old frame, and the chain ends on another pass. The drain is a wait,
+// not a skip to the next present, because on D3D12 the last job is still running when the next
+// present arrives, every frame. Bounded at 2 s under g.lock, one job in practice and only when
+// somebody moved the slider; three in a row that ran out mean the runtime is not retiring jobs,
+// and every later change waits for a restart too. A drain that succeeds starts the count over.
+bool BringUpEngines(UINT &wanted)
+{
+    if (!InitPipeline() || !InitEngine())
+        return false;
+    // The request last seen (0: none yet), the count running, and drains in a row that ran out.
+    static UINT asked = 0, live = 0, timeouts = 0;
+    if (asked == 0)
+        for (UINT slot = 1; slot < wanted && g.settings.serialPasses.load(); ++slot)
+            if (!LoadExtraRuntime(slot))
+            {
+                Log("pass count clamped to %u: no separate runtime for pass %u. See the lines "
+                    "above for why.", slot, slot + 1);
+                break;
+            }
+    const UINT next = std::min(wanted, PassesAvailable());
+    const bool fresh = wanted != asked;
+    if (fresh && next < wanted && asked != 0)
+        Log("passes %u: the runtime is loaded for %u this session; the rest start after a restart.",
+            wanted, next);
+    asked = wanted;
+    if (live == 0 || next == live)
+        live = next;
+    else if (timeouts < 3)
+    {
+        const UINT64 deadline = GetTickCount64() + 2000;
+        while (RuntimeBusy() && GetTickCount64() < deadline && !DeviceLost())
+            Sleep(1);
+        if (!RuntimeBusy())
+        {
+            Log("passes %u -> %u, taken with every module drained; history starts again.", live, next);
+            live = next;
+            timeouts = 0;
+            g.historyValid.store(0);
+        }
+        else
+            Log("passes %u -> %u: a job was still in flight after 2 s; %s.", live, next,
+                ++timeouts < 3 ? "trying again next frame"
+                               : "this change and every later one apply after a restart");
+    }
+    else if (fresh)
+        Log("passes %u -> %u applies after a restart: the runtime did not drain in 2 s, three times "
+            "running.", live, next);
+    wanted = live;
+    return true;
 }

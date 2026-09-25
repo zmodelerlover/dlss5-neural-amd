@@ -110,6 +110,9 @@ struct PanelStatus
     uint32_t outWidth = 0, outHeight = 0, netWidth = 0, netHeight = 0;
     // What the network is really held to when the card's own limit fired. 0 is no cap.
     float scaleCap = 0.0f;
+    // How many passes the runtime copies loaded this session can run. A Passes above it waits for
+    // a restart: a copy is never unloaded, so copies load only when the game starts. 0 until then.
+    uint32_t passesAvailable = 0;
 
     GuideSource depthSource = GuideSource::None, motionSource = GuideSource::Estimated;
     bool gameMotionActive = false;
