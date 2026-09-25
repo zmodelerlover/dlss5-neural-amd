@@ -351,10 +351,8 @@ struct Route
     // own image on those frames is what the first semaphore build did, and alternating between a
     // corrected frame and an uncorrected one at a hundred and ninety a second is a strobe, not an
     // effect. The result texture still holds the last composed frame, so it is shown again.
-    unsigned held = 0;
     bool haveResult = false;
-    bool loggedHold = false;
-    UINT64 freshFrames = 0, heldFrames = 0;
+    UINT64 freshFrames = 0;
 
     // Deliberately leaked, one per crossing ever built. See rule 1 in the header: closing these
     // is what faults the driver, and there are two per swapchain size the game ever uses.
@@ -1118,15 +1116,6 @@ void Present(command_queue *queue, swapchain *sc)
     // side -- which reads the engine's job counter through g.runtime -- is evaluated even when
     // the engine was never loaded, which in transport-only mode is a null dereference on the
     // first frame. That is precisely how this route's second run ended.
-    // How many frames in a row may repeat the last result before the route waits for a new one.
-    // Zero by default, and the default is the point: a repeated frame is one the player cannot
-    // tell from a new one, so a route that repeats frames makes every frame counter -- the
-    // game's, the overlay's, the driver's -- report a rate nobody is seeing. Waiting instead
-    // paces the game to the network, which is what the D3D11 and Vulkan routes have always done
-    // and what makes the number on screen mean something. GlHoldFrames in the ini raises it for
-    // anyone who wants the present rate instead.
-    const unsigned kMaxHeld = static_cast<unsigned>(g.settings.glHoldFrames.load());
-
     auto jobPending = [&] {
         return !transportOnly &&
                (g.fence->GetCompletedValue() < g.completion ||
@@ -1134,62 +1123,19 @@ void Present(command_queue *queue, swapchain *sc)
     };
 
     bool runNetwork = !transportOnly;
-    bool holdThisFrame = false;
     if (jobPending() && GetTickCount64() - g.lastJobAt < 500)
     {
         // Starting a second evaluation on top of one still running is how this hangs rather than
-        // skips, which is why the other routes carry the same guard. What is different here is
-        // what happens to the frame: it is not handed back to the game, it is given the last
-        // result again -- up to kMaxHeld times. After that the route waits for the outstanding
-        // job instead, so the picture is never older than a few frames and never falls back to
-        // an uncorrected one mid-sequence.
-        if (kMaxHeld != 0 && r.haveResult && r.held < kMaxHeld)
+        // skips, which is why the other routes carry the same guard. The route waits for the
+        // outstanding job, as the D3D11 and Vulkan routes do: that paces the game to the network,
+        // so every frame counter -- the game's, the overlay's, the driver's -- counts frames the
+        // player can actually see, instead of duplicates of the last result.
+        if (g.fence->GetCompletedValue() < g.completion)
         {
-            holdThisFrame = true;
-            runNetwork = false;
+            g.fence->SetEventOnCompletion(g.completion, g.completionEvent);
+            WaitForSingleObject(g.completionEvent, 500);
         }
-        else
-        {
-            if (g.fence->GetCompletedValue() < g.completion)
-            {
-                g.fence->SetEventOnCompletion(g.completion, g.completionEvent);
-                WaitForSingleObject(g.completionEvent, 500);
-            }
-            runNetwork = !jobPending();
-            // Only with holding enabled. With it off, a frame the network could not answer shows
-            // the game's own image rather than a duplicate -- that is the honest thing, and after
-            // the wait above it is also rare.
-            holdThisFrame = !runNetwork && r.haveResult && kMaxHeld != 0;
-        }
-    }
-
-    // A held frame does nothing but put the last result back on the screen. Crossing the game's
-    // new frame over to a device that is not going to look at it, copying it there and submitting
-    // a command list for it is work whose only effect is to slow the game down -- and the first
-    // build of this hold did exactly that, which cost more than half the frame rate.
-    if (holdThisFrame)
-    {
-        ++r.held;
-        ++r.heldFrames;
-        ++g.status.skipped;
-        if (!g.noBackBuffer.load() && !BlitOut(r))
-        {
-            r.Stop("the blit back into the default framebuffer reported a GL error.");
-            return;
-        }
-        if (!r.loggedHold)
-        {
-            r.loggedHold = true;
-            Log("opengl: GlHoldFrames=%u, so a frame the network has not answered repeats the "
-                "last result instead of waiting. The present rate rises and part of it is "
-                "duplicates -- every frame counter will read high by that much.", kMaxHeld);
-        }
-        if (++g.status.frame % 600 == 0)
-            Log("frame %llu processed (%llu fresh, %llu held)",
-                static_cast<unsigned long long>(g.status.frame),
-                static_cast<unsigned long long>(r.freshFrames),
-                static_cast<unsigned long long>(r.heldFrames));
-        return;
+        runNetwork = !jobPending();
     }
 
     // --- 1. the host's frame comes over -------------------------------------------------------
@@ -1325,14 +1271,12 @@ void Present(command_queue *queue, swapchain *sc)
     //
     // `fresh` means the network produced a new composition this frame. When it did not, the
     // result texture still holds the last one and showing it again is what keeps the effect from
-    // strobing; the count is bounded above, where the decision is made. The same reasoning is
-    // already written down for Network Output in CompositionIsFresh: a held frame and a
-    // correction aimed at where the edges used to be are different artefacts, and flickering
-    // between two different pictures is worse than either.
+    // strobing. The same reasoning is already written down for Network Output in
+    // CompositionIsFresh: a held frame and a correction aimed at where the edges used to be are
+    // different artefacts, and flickering between two different pictures is worse than either.
     if (fresh)
     {
         r.haveResult = true;
-        r.held = 0;
         ++r.freshFrames;
     }
     // Before the first result there is nothing to show but the game's own frame, and after a
@@ -1357,9 +1301,8 @@ void Present(command_queue *queue, swapchain *sc)
         Log("opengl: first full round trip done at %ux%u.", r.width, r.height);
     }
     if (++g.status.frame <= 3 || g.status.frame % 120 == 0)
-        Log("frame %llu processed (%llu fresh, %llu held)", static_cast<unsigned long long>(g.status.frame),
-            static_cast<unsigned long long>(r.freshFrames),
-            static_cast<unsigned long long>(r.heldFrames));
+        Log("frame %llu processed (%llu fresh)", static_cast<unsigned long long>(g.status.frame),
+            static_cast<unsigned long long>(r.freshFrames));
 }
 
 }  // namespace glroute

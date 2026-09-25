@@ -8,7 +8,9 @@ at all, against 0.61e-3 with zero motion.
 
 So the feed runs every frame and anything longer than the raster -- or inf, or NaN -- becomes zero, by
 comparing the float's bits. The model below is that compare; the source checks say the feed still does
-it, still always runs, and that the probe still hands such a field back to the estimator.
+it, still always runs, and that the probe still hands such a field back to the estimator. One more says
+OpticalFlow reads as 0 in a build without FFX: at 2 it passed over the game's vectors for a flow that
+is not there, and the estimator took the motion over without a word.
 
     python tools/motion_feed_check.py
 """
@@ -42,6 +44,9 @@ assert not feed([[5, 5], [np.inf, 1]], False, cap).any(), "no source this frame:
 inc = (ROOT / "core/temporal/motion_feed.inc").read_text()
 cpp = (ROOT / "core/addon/neural.cpp").read_text()
 host = (ROOT / "core/x86bridge/host64.cpp").read_text()
+src = "".join(p.read_text(encoding="utf-8", errors="replace") for p in (ROOT / "core").rglob("*")
+              if p.suffix in (".cpp", ".inc", ".h"))
+flow = [" ".join(s.split()) for s in re.findall(r"opticalFlow\s*\.\s*(?:store|exchange)\s*\((.*?)\);", src, re.S)]
 fails = [why for ok, why in [
     ("asuint(v) & 0x7fffffff" in inc, "motion_feed.inc: the shader lost the bit compare"),
     (not re.search(r"maxPx\s*<=\s*0\.0f\)\s*\n\s*return;", inc), "motion_feed.inc: FeedMotion skips again with no cap set"),
@@ -49,6 +54,9 @@ fails = [why for ok, why in [
     (not re.search(r"if\s*\(haveMotion\)\s*\n\s*FeedMotion", cpp), "neural.cpp: FeedMotion is gated on haveMotion again"),
     ("DemoteMotion(" in cpp, "neural.cpp: the probe no longer demotes a field longer than the raster"),
     ("!g.guideMotion.failed" in host, "host64.cpp: a demoted motion guide is still read on the x86 bridge"),
+    (flow and all(re.fullmatch(r"AMDNR_WITH_FFX \? \w+ : 0", s) for s in flow)
+     and not re.search(r"\.opticalFlow\s*=[^=]", src),
+     "core: an OpticalFlow write is not forced to 0 without FFX, so a release build can drop the game's vectors"),
 ] if not ok]
 if fails:
     print("\n".join(fails))

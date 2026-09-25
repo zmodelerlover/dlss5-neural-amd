@@ -120,7 +120,7 @@ if ($Ffx) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\gen_ffx_opticalflow.ps1') `
         -SdkDirectory $sdk -OutputDirectory $gen -DxcPath $dxc
     if ($LASTEXITCODE -ne 0) { throw "optical flow shader generation failed" }
-    $env:INCLUDE = (@($env:INCLUDE) + @('api\include', 'api\internal', 'backend\dx12', 'upscalers\include', 'framegeneration\fsr3\include',
+    $env:INCLUDE = (@($env:INCLUDE) + @('api\include', 'api\internal', 'backend\dx12', 'framegeneration\fsr3\include',
         'framegeneration\fsr3\internal' | ForEach-Object { Join-Path $kit $_ }) + @($gen, (Join-Path $root 'core\temporal'))) -join ';'
     $ffxSources = @('api\internal\ffx_assert.cpp', 'api\internal\ffx_message.cpp', 'api\internal\ffx_object_management.cpp',
         'backend\dx12\ffx_backends_dx12.cpp', 'backend\dx12\ffx_dx12.cpp', 'framegeneration\fsr3\internal\ffx_opticalflow.cpp',

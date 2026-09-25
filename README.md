@@ -213,4 +213,6 @@ Thanks to everyone who ran a build and sent back a log.
 ## License
 
 MIT, in `LICENSE`. Third-party headers in `3rdparty/` keep their own licences, listed in
-`3rdparty/reshade/NOTICE.md`.
+`3rdparty/reshade/NOTICE.md`. `core/temporal/smooth.inc` and `core/temporal/motion_feed.inc` port
+shaders from lmxxf's dlss5-on-amd-9070xt-porting (MIT, Copyright (c) 2026 Kien), whose notice is in
+`docs/third-party/lmxxf-LICENSE.md`.

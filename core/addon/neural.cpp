@@ -809,8 +809,6 @@ struct State
         std::atomic<float> motionScale { 1.0f };
         // Lab: FidelityFX optical flow as the motion source. See core/temporal/optical_flow.inc.
         std::atomic<int> opticalFlow { 0 };
-        std::atomic<int> stabilise { 0 };  // Lab: FSR3 1x ahead of the network, core/temporal/stabilize.inc
-        std::atomic<int> motionCompat { 0 };  // Lab: the reference's motion feed, core/temporal/motion_feed.inc
         std::atomic<float> motionMaxPx { 0.0f };
         std::atomic<int> historyGuard { 0 };  // Lab: the reference's history filters, core/temporal/smooth.inc
         std::atomic<float> outputSmooth { 0.0f }, outputSmoothLimit { 10.0f };
@@ -851,13 +849,6 @@ struct State
         // to 0 puts it back on the CPU stall the other routes use, which is the only way to compare
         // the two on one machine and the first thing to try if a GL host misbehaves.
         std::atomic<bool> glSemaphores { true };
-        // OpenGL only. How many frames in a row may repeat the last result when the game presents
-        // faster than the network answers. Zero -- the default -- means never: the route waits for
-        // the network instead, so every frame that reaches the screen is a new one and the frame
-        // counter the player sees counts frames they can actually see. Above zero trades that for a
-        // higher present rate made partly of duplicates, which is a real choice on a
-        // variable-refresh display and a misleading number everywhere else.
-        std::atomic<int> glHoldFrames { 0 };
     } settings;
     UINT loadedPasses = 0;
 
@@ -1397,7 +1388,6 @@ void LoadSettings()
     g.noBackBuffer.store(flag(L"NoBackBuffer", g.noBackBuffer.load()));
     g.noBridge.store(flag(L"NoBridge", g.noBridge.load()));
     g.settings.glSemaphores.store(flag(L"GlSemaphores", g.settings.glSemaphores.load()));
-    g.settings.glHoldFrames.store(std::clamp(static_cast<int>(num(L"GlHoldFrames", 0.0f)), 0, 8));
     g.stage.store(static_cast<int>(num(L"Stage", 3.0f)));
     g.events = static_cast<int>(num(L"Events", 31.0f));
     // Diagnostic, in the same family as Stage / Events / NoBridge: read at load, never written
@@ -1420,9 +1410,13 @@ void LoadSettings()
     g.settings.toggleMods.store(std::clamp(static_cast<int>(num(L"ToggleMods", 1.0f)), 0, 7));
     g.settings.disableOnAltTab.store(flag(L"DisableOnAltTab", false));
     g.settings.motionScale.store(num(L"MotionScale", g.settings.motionScale.load()));
-    g.settings.opticalFlow.store(std::clamp(static_cast<int>(num(L"OpticalFlow", 0.0f)), 0, 2));
-    g.settings.stabilise.store(std::clamp(static_cast<int>(num(L"Stabilise", 0.0f)), 0, 2));
-    g.settings.motionCompat.store(std::clamp(static_cast<int>(num(L"MotionCompat", 0.0f)), 0, 1));
+    // Optical flow exists only in a lab build (build.ps1 -Ffx). Anywhere else OpticalFlow=2 would pass
+    // over the game's vectors for a flow that is not there and hand the motion to the estimator.
+    const int opticalFlow = std::clamp(static_cast<int>(num(L"OpticalFlow", 0.0f)), 0, 2);
+    if (opticalFlow != 0 && !AMDNR_WITH_FFX)
+        Log("OpticalFlow=%d needs a lab build with FidelityFX; this one reads it as 0, so the game's own "
+            "vectors are still used when it has them.", opticalFlow);
+    g.settings.opticalFlow.store(AMDNR_WITH_FFX ? opticalFlow : 0);
     g.settings.motionMaxPx.store(std::max(0.0f, num(L"MotionMaxPx", 0.0f)));
     g.settings.historyGuard.store(std::clamp(static_cast<int>(num(L"HistoryGuard", 0.0f)), 0, 1));
     g.settings.outputSmooth.store(std::clamp(num(L"OutputSmooth", 0.0f), 0.0f, 1.0f));
@@ -3352,7 +3346,6 @@ bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
 
 #include "../temporal/history.inc"
 #include "../temporal/optical_flow.inc"
-#include "../temporal/stabilize.inc"
 #include "../temporal/motion_feed.inc"
 #include "../temporal/smooth.inc"
 #include "../temporal/seed.inc"
@@ -3383,16 +3376,14 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav {};
     uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 
-    // Lab: optical flow and FSR3 1x ahead of the pass, which then reads their frame. See stabilize.inc.
-    const Ahead ahead = RunAhead(cmd, runNetwork, colourSrc, colourFmt);
-    srv.Format = ColourReadFormat(ahead.fmt);
+    srv.Format = ColourReadFormat(colourFmt);
     for (UINT i = 0; i < 3; ++i)
-        g.device->CreateShaderResourceView(ahead.src, &srv, slot(i));
+        g.device->CreateShaderResourceView(colourSrc, &srv, slot(i));
     uav.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     g.device->CreateUnorderedAccessView(g.netColour.Get(), nullptr, &uav, slot(3));
 
-    srv.Format = ColourReadFormat(ahead.fmt);
-    g.device->CreateShaderResourceView(ahead.src, &srv, slot(8));
+    srv.Format = ColourReadFormat(colourFmt);
+    g.device->CreateShaderResourceView(colourSrc, &srv, slot(8));
     srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     g.device->CreateShaderResourceView(g.netResidual.Get(), &srv, slot(9));
     // Network Output reaches the shader as view 2, which is the same path the debug view has
@@ -3547,8 +3538,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                 static_cast<double>(mscale));
         }
     }
-    else if (flow != 0 && (ahead.flowRan || OpticalFlowReady(w, h)))
-        haveMotion = FlowMotion(cmd, ahead, colourSrc, colourFmt);
+    else if (flow != 0 && OpticalFlowReady(w, h))
+        haveMotion = FlowMotion(cmd, colourSrc, colourFmt);
     else if (g.settings.useMotion.load() && g.flowSmall != nullptr)
     {
         // Swapped per estimator run, not per present: with the network sitting out every other

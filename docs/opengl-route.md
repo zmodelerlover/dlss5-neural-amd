@@ -192,16 +192,6 @@ Decisions worth writing down:
   skipped about two frames in three as well, because the engine's own job counter lags even when
   our fence has completed. Waiting on the outstanding job and re-testing, rather than skipping,
   is what fixed both.
-
-- **Repeating the last result is available and is not the default.** `GlHoldFrames=N` lets up to
-  N frames in a row show the last composition again instead of waiting, which raises the present
-  rate -- measured at roughly 180 against 97 -- by filling the gaps with duplicates.
-
-  It is off because of what it does to every frame counter in the system. A repeated frame is one
-  the player cannot distinguish from a new one, so the game's counter, the overlay's and the
-  driver's all report a rate nobody is seeing: 181 presents a second carrying 61 distinct images.
-  The number on screen should mean what it says, and the route should not be the reason it does
-  not. On a variable-refresh display, with eyes open about the trade, the switch is there.
 - **A multisampled default framebuffer is resolved on the way in.** The sample count is read from
   GL (`GL_SAMPLES` with FBO 0 bound) rather than taken from ReShade's description of the back
   buffer -- the two agree on this driver, and the log prints both so they can be compared
@@ -265,16 +255,11 @@ inline timing. "Distinct images" is what the player actually sees change.
 |---|---:|---:|---:|---:|
 | Fences, pacing on (**the default**) | 3897 | ~97 fps | ~97/s | 0 |
 | CPU stall, pacing on (`GlSemaphores=0`) | 3438 | ~86 fps | ~86/s | 0 |
-| Fences, `GlHoldFrames=3` | 4520 in 25 s | ~181 fps | ~61/s | 0, but two in three repeat |
 | First semaphore build, no pacing | 7554 | ~189 fps | ~64/s | ~5000 -- **strobed** |
 
 The fences are worth about 13% over the stall with everything else equal, and that is the whole of
 their benefit: they remove two synchronisation points per frame, they do not make the network
 faster. The last row is the build that shipped the strobe and is here as a record, not an option.
-
-The third row is the honest picture of what holding buys: nearly twice the presents, fewer
-distinct images than the default. A frame counter cannot tell the difference; a player looking at
-motion can.
 
 **Multisampling:** Luanti with `antialiasing = fsaa`, `fsaa = 4` and post-processing off gives a
 genuinely multisampled default framebuffer -- ReShade and GL both report 4 samples -- and the
@@ -350,8 +335,6 @@ Stage=2          ; transport only; 3 runs the network
 Scale=0.5
 Passes=1
 GlSemaphores=1   ; 0 forces the CPU stall, for comparison or when a host misbehaves
-GlHoldFrames=0   ; above 0 repeats the last result instead of waiting, and inflates every
-                 ; frame counter by the number of duplicates
 ```
 
 The panel writes the full settings back to this file as soon as a control settles, so a file

@@ -9,12 +9,12 @@
 // there. Then into the raster the engine reads, scaled by nw/w, the way the estimator's field is.
 //
 // OpticalFlow in the ini: 0 off (the estimator, as shipped), 1 when the game and the companion
-// effect give nothing, 2 always -- parity with the reference, which has nothing else.
+// effect give nothing, 2 always -- parity with the reference, which has nothing else. A build
+// without -Ffx reads it as 0 (LoadSettings), so the game's vectors are never passed over there.
 
 // Descriptor tables of the root signature's t0-t2/u0 shape live in slots 32..63, one each, because a
 // descriptor is read when the list executes and a slot rewritten later in the same list would be
-// read by both: prepare 32, densify 36, the raster 40, the motion feed 44, the stabiliser's fills
-// 48, 52, 56 and 60.
+// read by both: prepare 32, densify 36, the raster 40 and the motion feed 44.
 void DispatchOn(ID3D12GraphicsCommandList *cmd, ID3D12PipelineState *pso, UINT base, ID3D12Resource *out,
                 const UINT *k, UINT count, UINT dw, UINT dh)
 {
@@ -197,9 +197,6 @@ bool RecordOpticalFlow(ID3D12GraphicsCommandList *cmd, ID3D12Resource *src, DXGI
     return real;
 }
 
-// Whether the flow was just (re)started: its first dispatch, the one with no previous frame.
-bool FlowStarted() { return g_flow.dispatched == 1; }
-
 // The frame-size field into the raster the engine reads, in raster pixels.
 void FlowToRaster(ID3D12GraphicsCommandList *cmd)
 {
@@ -224,7 +221,16 @@ void FlowToRaster(ID3D12GraphicsCommandList *cmd)
 bool OpticalFlowReady(UINT, UINT) { return false; }
 bool RecordOpticalFlow(ID3D12GraphicsCommandList *, ID3D12Resource *, DXGI_FORMAT) { return false; }
 void FlowToRaster(ID3D12GraphicsCommandList *) {}
-bool FlowStarted() { return false; }
 void DestroyOpticalFlow() {}
 
 #endif
+
+// The optical flow as the network's motion. Returns whether it is real motion, which also spans
+// the gap since the last evaluation: the flow runs only on evaluated frames.
+bool FlowMotion(ID3D12GraphicsCommandList *cmd, ID3D12Resource *src, DXGI_FORMAT fmt)
+{
+    const bool real = RecordOpticalFlow(cmd, src, fmt);
+    FlowToRaster(cmd);
+    g_motionSinceEvaluation = real;
+    return real;
+}

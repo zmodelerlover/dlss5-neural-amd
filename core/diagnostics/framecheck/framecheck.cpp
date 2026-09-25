@@ -323,7 +323,6 @@ ID3D12Resource *Capture(const std::string &kind)
         { "flow", [] { return g_flow.dense.Get(); } },
         { "sparse", [] { return g_flow.sparse.Get(); } },
         { "scd", [] { return g_flow.scd.Get(); } },
-        { "stabilised", [] { return g_stab.output.Get(); } },
 #endif
     };
     const auto it = kinds.find(kind);

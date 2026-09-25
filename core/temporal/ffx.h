@@ -10,7 +10,5 @@
 #include <ffx_opticalflow.h>
 #include <ffx_message.h>
 #include <ffx_api.h>
-#include <ffx_upscale.h>
 #include <dx12/ffx_api_dx12.h>
-#include <cfloat>
 #endif

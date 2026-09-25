@@ -6,12 +6,8 @@
 // pan the true motion halves the output's frame-to-frame change, zero or reversed motion does
 // nothing), so warping it again would be twice.
 //
-// MotionCompat in the ini: 0 hands over pixels of the raster, which is what the runtime reads. 1
-// reproduces what the reference actually does on its Magpie route: it takes the FFX descriptor's
-// jitter (+360) for the motion scale (+368), finds 0, and multiplies motion that is already in
-// pixels by the fit width as if it were UV (native_submission_order_probe.cpp:225 against
-// native_pre_upscale.h:18-20, native_game_frame.h:192). With its 64 px cap that zeroes all but the
-// smallest vectors. MotionMaxPx is the cap; the reference runs 64, and 0 means the raster itself.
+// The motion goes over in pixels of the raster, which is what the runtime reads. MotionMaxPx in the
+// ini is the cap; the reference runs 64, and 0 means the raster itself.
 //
 // It runs every frame, whatever the source. A vector longer than the raster is not motion, and
 // Tomb Raider showed what one does: the 960x540 RG16F the guide took there reads 65504 px (FP16
@@ -45,13 +41,12 @@ void DemoteMotion(double meanPx)
 
 void FeedMotion(ID3D12GraphicsCommandList *cmd, bool haveMotion)
 {
-    const bool compat = g.settings.motionCompat.load() != 0;
     const float set = g.settings.motionMaxPx.load();
     const float maxPx = set > 0.0f ? set : static_cast<float>(std::max(g.netWidth, g.netHeight));
     if (g.netMotion == nullptr || (g_motionFeed == nullptr &&
         !CompileShader(kMotionFeedShader, sizeof(kMotionFeedShader), "motion feed", g_motionFeed)))
         return;
-    const float k = !haveMotion ? 0.0f : compat ? static_cast<float>(g.netWidth) : 1.0f;
+    const float k = haveMotion ? 1.0f : 0.0f;
     ViewAt(47, g.netMotion.Get(), DXGI_FORMAT_R16G16_FLOAT, true);
     UINT c[4] { g.netWidth, g.netHeight, 0, 0 };
     std::memcpy(&c[2], &k, sizeof(k));

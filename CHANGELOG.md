@@ -18,6 +18,9 @@ notice:
   language, the hotkey and which controls are shown, and sets Scale back to the 1.0 a fresh
   `amd-nr.ini` starts with.
 - With the additive composition, the Guard help no longer leaves its `(?)` on its own.
+- **Removed: `GlHoldFrames`**, the OpenGL route's option to repeat the last result instead of
+  waiting for the network (v0.6.0, off by default). The route now always waits, which is what the
+  default did, and an ini that still sets it is ignored.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

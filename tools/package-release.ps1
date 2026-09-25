@@ -18,6 +18,9 @@ New-Item -ItemType Directory -Path (Join-Path $stage 'files') -Force | Out-Null
 try {
     foreach($name in @('payload.sha256','files/amd-nr.addon32','files/amd-nr-host64.exe')){Copy-Item -LiteralPath (Join-Path $release $name) -Destination (Join-Path $stage $name)}
     Copy-Item -LiteralPath (Join-Path $root 'docs/install.md') -Destination (Join-Path $stage 'README.md')
+    # Both binaries carry lmxxf's HLSL as source text (smooth.inc, motion_feed.inc), so its MIT notice ships too.
+    New-Item -ItemType Directory -Path (Join-Path $stage 'third-party') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'docs/third-party/lmxxf-LICENSE.md') -Destination (Join-Path $stage 'third-party/lmxxf-LICENSE.md')
     # Shipped loose as well so a 64-bit install can be done by hand without the installer.
     $addon64=Join-Path $root 'build/amd-nr.addon64'
     if(!(Test-Path -LiteralPath $addon64)){throw 'Run ./build.ps1 -Target neural first; missing build/amd-nr.addon64'}
@@ -30,7 +33,6 @@ try {
         $d3d8to9=Join-Path $release 'files/d3d8to9.dll'
         if(Test-Path -LiteralPath $d3d8to9){
             Copy-Item -LiteralPath $d3d8to9 -Destination (Join-Path $stage 'files/d3d8to9.dll')
-            New-Item -ItemType Directory -Path (Join-Path $stage 'third-party') -Force | Out-Null
             Copy-Item -LiteralPath (Join-Path $root 'docs/third-party/d3d8to9-LICENSE.md') -Destination (Join-Path $stage 'third-party/d3d8to9-LICENSE.md')
         }
         'PRIVATE LOCAL TEST PACKAGE - do not publish third-party payloads as public release.' | Set-Content (Join-Path $stage 'PRIVATE_TEST_ONLY.txt')
