@@ -12,7 +12,7 @@ static_assert(ui::kMaxPasses == 3, "WireSettings carries three passes");
 inline ui::PanelSettings ToPanel(const WireSettings &w)
 {
     ui::PanelSettings p;
-#define X(type, name, low, high) p.name = w.name;
+#define X(type, name, key, def, low, high) p.name = w.name;
 #include "settings_fields.inc"
 #undef X
     for (unsigned i = 0; i < 3; ++i)
@@ -29,7 +29,7 @@ inline ui::PanelSettings ToPanel(const WireSettings &w)
 // kept as they were.
 inline WireSettings FromPanel(WireSettings w, const ui::PanelSettings &p)
 {
-#define X(type, name, low, high) w.name = p.name;
+#define X(type, name, key, def, low, high) w.name = p.name;
 #include "settings_fields.inc"
 #undef X
     for (unsigned i = 0; i < 3; ++i)

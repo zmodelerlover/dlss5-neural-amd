@@ -3,10 +3,11 @@
 #include <cstddef>
 #include <type_traits>
 namespace x86bridge {
-// Version 3: the panel rebuild added five settings fields and the host now reports the
-// scale cap, so a v2 peer would read this layout wrong rather than fail. Both sides are
-// built together by build-x86bridge.ps1, and a mismatched pair is refused at the header.
-constexpr uint32_t Magic=0x42313158, Version=3;
+// Version 4: WireSettings carries the whole settings table (settings_fields.inc), the three
+// temporal-stability rows included, and WireStatus says why the helper stood down, so a v3 peer
+// would read this layout wrong rather than fail. Both sides are built together by
+// build-x86bridge.ps1, and a mismatched pair is refused at the header.
+constexpr uint32_t Magic=0x42313158, Version=4;
 enum class Kind:uint32_t { Hello=1, Build=2, Frame=3, Drop=4, Quit=5, GetState=6, SetState=7, SaveSettings=8, ReloadSettings=9, Command=10, Status=11 };
 enum class Result:uint32_t { Original=0, Neural=1, Error=2, Ready=3, Transport=4 };
 #pragma pack(push,1)
@@ -27,13 +28,16 @@ struct Ack { Header header;Result result=Result::Error;uint32_t error=0;uint64_t
 enum class CommandCode:uint32_t { MeasureResidualAgain=1, FactoryDefaults=2, LiftScaleCap=3 };
 struct WireSettings {
     uint64_t settings_revision=0;
-#define X(type,name,low,high) type name=0;
+#define X(type,name,key,def,low,high) type name=0;
 #include "settings_fields.inc"
 #undef X
     uint32_t passOverride[3]{};
     float passStructure[3]{},passTone[3]{},passSkin[3]{};
 };
 struct WireCommand { uint64_t id=0;CommandCode code=CommandCode::MeasureResidualAgain;uint32_t reserved=0; };
+// Why the helper stood down (WireStatus::unavailable), so the 32-bit panel can say it as the 64-bit
+// one does; amd-nr-x86-host.log has the words either way. Other is a reason with no code of its own.
+enum class StandDown:uint32_t { None=0, Other=1, DeviceLost=2, EngineInit=3, Resources=4 };
 struct WireStatus {
     uint64_t processed=0,skipped=0;
     uint32_t connected=0,engineReady=0,unavailable=0,failed=0,transportOnly=0;
@@ -48,6 +52,7 @@ struct WireStatus {
     // slider. 0 means no cap. Without it the panel would compare the raster against the
     // slider and report a working configuration as "not applied yet" for ever.
     float scaleCap=0;
+    uint32_t reason=0;  // StandDown
 };
 struct StateSnapshot { WireSettings settings;WireStatus status; };
 #pragma pack(pop)
@@ -58,10 +63,10 @@ static_assert(sizeof(Build)==104 && offsetof(Build,motion)==80);
 static_assert(sizeof(Frame)==32 && offsetof(Frame,resetHistory)==24 && offsetof(Frame,guideTaken)==28);
 static_assert(sizeof(Ack)==48 && offsetof(Ack,generation)==24 && offsetof(Ack,luidHigh)==44);
 static_assert(std::is_trivially_copyable_v<Build> && std::is_standard_layout_v<Frame>);
-static_assert(sizeof(WireSettings)==224 && offsetof(WireSettings,passOverride)==176);
+static_assert(sizeof(WireSettings)==236 && offsetof(WireSettings,passOverride)==188);
 static_assert(sizeof(WireCommand)==16 && offsetof(WireCommand,code)==8);
-static_assert(sizeof(WireStatus)==112 && offsetof(WireStatus,depthMin)==72);
-static_assert(sizeof(StateSnapshot)==336 && offsetof(StateSnapshot,status)==224);
+static_assert(sizeof(WireStatus)==116 && offsetof(WireStatus,depthMin)==72 && offsetof(WireStatus,reason)==112);
+static_assert(sizeof(StateSnapshot)==352 && offsetof(StateSnapshot,status)==236);
 #define CHECK_WIRE(T) static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
 CHECK_WIRE(Header) CHECK_WIRE(Hello) CHECK_WIRE(Texture) CHECK_WIRE(Build) CHECK_WIRE(Frame) CHECK_WIRE(Ack)
 CHECK_WIRE(WireSettings) CHECK_WIRE(WireCommand) CHECK_WIRE(WireStatus) CHECK_WIRE(StateSnapshot)

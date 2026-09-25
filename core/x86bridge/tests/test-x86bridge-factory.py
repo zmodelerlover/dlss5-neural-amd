@@ -7,16 +7,18 @@ compiler=os.environ.get('CXX') or shutil.which('g++')
 if not compiler:raise SystemExit('Set CXX to a C++20 compiler')
 h=read(n/'host64.cpp');u=read(r/'core/addon/neural.cpp');front=read(n/'frontend32.cpp')
 adapter=read(n/'panel32.cpp')
-fields=re.findall(r'^X\((\w+), (\w+),', read(n/'settings_fields.inc'), re.M)
-# Every test initial value comes from the original State declaration, not a second default table.
+fields=re.findall(r'^X\((\w+), (\w+), "\w*", ([-.0-9e]+),', read(n/'settings_fields.inc'), re.M)
+# Every test initial value is the settings table's default, which is what State's constructor
+# stores: the table is the one place the defaults live.
 initial=[]
-for typ,name in fields:
- m=re.search(r'std::atomic<[^>]+>\s+'+name+r'\s*\{([^}]+)\}',u);assert m,name
- initial.append('settings.'+name+'.store('+m[1].strip()+');')
+for typ,name,default in fields:
+ initial.append('settings.'+name+'.store('+default+');')
+assert 'SettingsState()' in u and u.count('#include "../x86bridge/settings_fields.inc"')>=4
+assert not re.search(r'std::atomic<[^>]+>\s+('+'|'.join(f[1] for f in fields)+r')\s*\{',u),'a table row has a second default in State'
 methods=h[h.index('    WireSettings ExportSettings()'):h.index('    WireStatus ExportStatus()')]
-methods+=h[h.index('    void CaptureFactoryDefaults()'):h.index('    void EnsureX86Ini()')]
+methods+=h[h.index('    void CaptureFactoryDefaults()'):h.index('    void RestoreFactoryDefaults()')]
 restore=h[h.index('    void RestoreFactoryDefaults()'):h.index('    void Init(')]
-assert all(x not in restore for x in ['SaveSettings(', 'LoadSettings(', 'WritePrivateProfile', 'EnsureX86Ini('])
+assert all(x not in restore for x in ['SaveSettings(', 'LoadSettings(', 'WritePrivateProfile', 'EnsureNeuralIni('])
 methods+=restore
 source='''#include "control_state.h"
 #include <atomic>
@@ -25,12 +27,11 @@ source='''#include "control_state.h"
 #include <iterator>
 #include <cstring>
 using namespace x86bridge;
-constexpr int VK_END=35;
 void Require(bool b,const char*){assert(b);}
 struct Watch {bool value=true;unsigned writes=0;void store(bool v){value=v;++writes;}bool load(){return value;}};
 struct Engine {
  struct {
-#define X(type,name,low,high) std::atomic<type> name{};
+#define X(type,name,key,def,low,high) std::atomic<type> name{};
 #include "settings_fields.inc"
 #undef X
  std::atomic<bool> passOverride[3]{};
@@ -50,13 +51,13 @@ int main(){
  custom.enabled=1;custom.startOn=1;custom.toggleKey=65;custom.toggleMods=5;custom.language=1;custom.disableOnAltTab=1;custom.useHistory=0;custom.useDepth=0;
  assert(host.ApplySettings(custom));g.historyValid.value=true;g.historyValid.writes=0;
  host.RestoreFactoryDefaults();auto result=host.ExportSettings();
- assert(result.colourStrength==0.25f&&result.structure==1&&result.skin==-1&&result.passes==1&&result.inlineMode==1);
+ assert(result.colourStrength==1&&result.structure==1&&result.skin==-1&&result.passes==1&&result.inlineMode==1&&result.scale==1); // the 64-bit route's
  auto expected=FactorySettings(captured,custom);assert(std::memcmp(&result,&expected,sizeof(result))==0);
  assert(result.enabled==1&&result.startOn==1&&result.toggleKey==65&&result.toggleMods==5&&result.language==1&&result.disableOnAltTab==1);
  assert(result.optional==7); // a panel arrangement is a preference, not tuning
 
  assert(!g.historyValid.load()&&g.historyValid.writes==1);assert(file()==original);
- StateSnapshot snapshot{result,{}};assert(snapshot.settings.colourStrength==0.25f&&snapshot.settings.settings_revision==3);
+ StateSnapshot snapshot{result,{}};assert(snapshot.settings.colourStrength==1&&snapshot.settings.settings_revision==3);
  WireCommand c;c.id=12;c.code=CommandCode::FactoryDefaults;assert(NewCommand(c,11)&&!NewCommand(c,12));
 }
 '''
@@ -64,6 +65,6 @@ with tempfile.TemporaryDirectory(prefix='factory-test-') as d:
  p=Path(d);(p/'test.cpp').write_text(source,encoding='utf-8')
  subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-I'+str(n),str(p/'test.cpp'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],cwd=p,check=True)
-assert 'CaptureFactoryDefaults();EnsureX86Ini();LoadSettings();' in h
+assert 'CaptureFactoryDefaults();EnsureNeuralIni();LoadSettings();' in h and 'EnsureX86Ini' not in h and 'L"0.25"' not in h
 assert 'controls.factory=true' in adapter and 'Kind::Command,&c,sizeof(c),true' in front
-print('PASS factory: captured original defaults, x86 overrides, preferences preserved, history reset once, INI byte-identical, snapshot updated, replay rejected; actual host methods compiled/executed with engine atomics doubled')
+print('PASS factory: captured the settings table defaults (Colour Strength 1.0, Scale 1.0, as on the 64-bit route), preferences preserved, history reset once, INI byte-identical, snapshot updated, replay rejected; actual host methods compiled/executed with engine atomics doubled')

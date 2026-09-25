@@ -648,23 +648,33 @@ struct State
         // in which every wait in this file misbehaves.
         bool windowHidden = false, loggedHidden = false;
     } status;
-    // What the ini and the panel set. The X-macro in settings_fields.inc is the list both
-    // routes share; the rest are this add-on's own restart-only knobs.
+    // What the ini and the panel set. The settings table (settings_fields.inc) is the list both
+    // routes share, and the one place each of its rows has an ini key, a default and a range; the
+    // rest are this add-on's own restart-only knobs.
     struct SettingsState
     {
+        // So the table's rows start at its defaults, the ones LoadSettings falls back to and
+        // Factory Defaults restores; none is written again beside its field below.
+        SettingsState()
+        {
+#define X(type, name, key, def, low, high) name.store(static_cast<decltype(name.load())>(def));
+#include "../x86bridge/settings_fields.inc"
+#undef X
+        }
         // Starts off unless StartOn says otherwise. The add-on rewrites every presented frame, and
         // the settings that do that are the ones that have taken the machine down, so the shipped
         // default is still off -- but "off every single launch" was a diagnostic's rule, not a
         // user's, and somebody who has already chosen their settings should not have to press a key
         // every time. StartOn is a normal setting now: in the overlay, and written back.
-        std::atomic<bool> enabled { false };
-        std::atomic<bool> startOn { false };
+        std::atomic<bool> enabled;
+        std::atomic<bool> startOn;
         // Which key toggles the effect. A virtual-key code plus a modifier mask: 1 Ctrl, 2 Alt,
         // 4 Shift. Ctrl+End is the default because that is what every note, log line and README
         // already says. A bare key with no modifier is allowed and is the user's business -- it will
-        // fire during normal play if they bind a letter.
-        std::atomic<int> toggleKey { VK_END };
-        std::atomic<int> toggleMods { 1 };
+        // fire during normal play if they bind a letter. Not text: parsing "Ctrl+End" back into a key
+        // is a table that is wrong on the first non-US layout, and the overlay captures a keypress.
+        std::atomic<int> toggleKey;
+        std::atomic<int> toggleMods;
         // Switch the effect off when the game stops being the focused window, and leave it off.
         //
         // Not a pause. Coming back to a game that quietly resumed rewriting every frame is the
@@ -674,44 +684,44 @@ struct State
         // Separate from the minimised handling further down, which is an unconditional safety and
         // does resume on its own: nothing we draw is visible while minimised and every wait in this
         // file misbehaves there, so sitting those frames out is never a user-visible decision.
-        std::atomic<bool> disableOnAltTab { false };
-        std::atomic<float> structure { 1.0f };
-        std::atomic<float> tone { 1.0f };
+        std::atomic<bool> disableOnAltTab;
+        std::atomic<float> structure;
+        std::atomic<float> tone;
         // -1, not 1. It is the value the engine boots with and it means "derive it from local
         // structure" -- a mode, not a strength. Shipping 1.0 here wrote that automatic off on
         // startup, before anybody had touched a control, while the overlay's own tooltip said the
         // add-on had stopped doing exactly that.
-        std::atomic<float> skin { -1.0f };
-        std::atomic<int> passes { 1 };
-        std::atomic<bool> serialPasses { true };
+        std::atomic<float> skin;
+        std::atomic<int> passes;
+        std::atomic<bool> serialPasses;
         // 0 English, 1 Portugues do Brasil. English by default.
-        std::atomic<int> language { 0 };
+        std::atomic<int> language;
         // A bit per optional control, saying whether the panel draws a widget for it. Nothing else:
         // every one of them is live and settable from the ini whether its bit is set or not. The
         // cascade at the bottom of the panel is what turns them on, one at a time, so a panel grows
         // by what somebody asked for rather than by everything that exists. See enum Opt.
-        std::atomic<uint32_t> optional { 0 };
+        std::atomic<uint32_t> optional;
         // The engine's own option struct, mapped by decompiling its ini reader rather than guessed:
         //   97b30 LocalTone (0.0)   97b34 LocalStructure (1.0)   97b38 SkinStructure (-1.0)
         //   97b3c Scale (0.03125)   97b40 UseAutoMask (1)        97b44 ToneChannels (0)
         //   97b1c Enabled  97b1d Temporal  97b1e UseFsrInputs  97b1f UseDepth  97b20 Tonemap (-1)
         // The last four of these were never written by this add-on, and two were written wrong.
-        // Defaults here are the engine's own, so leaving them alone changes nothing.
-        std::atomic<int> autoMask { 1 };
-        std::atomic<int> toneChannels { 0 };
-        std::atomic<float> engineScale { 0.03125f };
+        // Their defaults are the engine's own, so leaving them alone changes nothing.
+        std::atomic<int> autoMask;
+        std::atomic<int> toneChannels;
+        std::atomic<float> engineScale;
         // -1 follows the selected input encoding. Our FP16 transport is also used
         // for SDR, so the runtime's format-based auto detection alone is incorrect.
-        std::atomic<int> tonemap { -1 };
+        std::atomic<int> tonemap;
         // 0 follow the guides, 1 force off, 2 force on.
-        std::atomic<int> temporalMode { 0 };
-        std::atomic<float> scale { 0.5f };
-        std::atomic<bool> inlineMode { true };
-        std::atomic<int> encoding { 0 };
+        std::atomic<int> temporalMode;
+        std::atomic<float> scale;
+        std::atomic<bool> inlineMode;
+        std::atomic<int> encoding;
         // 100 nits is the automatic ShortFuse documents for linear BT.709; the old 500 here
         // matched none of the documented conventions (100 / 203 / 250).
-        std::atomic<float> diffuseWhite { 100.0f };
-        std::atomic<float> intensity { 1.0f };
+        std::atomic<float> diffuseWhite;
+        std::atomic<float> intensity;
         // Two limits on the correction itself, applied in compose after the intensity mix. The
         // network is tiled and the tiles at the frame border are extrapolated on one side, so the
         // correction there is invented rather than seen; bicubic upsampling rings on top of it. The
@@ -724,8 +734,8 @@ struct State
         // and it is exactly the blown block on screen. Off was the old default and it let all of that
         // through. 0.25 is still more than three times the typical correction, so an ordinary pixel
         // never meets it.
-        std::atomic<float> residualLimit { 0.25f };
-        std::atomic<float> residualFade { 0.0f };
+        std::atomic<float> residualLimit;
+        std::atomic<float> residualFade;
         // Halve Structure for each later pass. Ours, not the reference's -- upstream leaves structure
         // at full on every pass and only zeroes Local Tone after the first, which this now does by
         // default. Off, because the residual measurement says the chain compounds (one pass is a mean
@@ -736,7 +746,7 @@ struct State
         // Intensity 1, LocalStructure 1, SkinStructure -1 on pass 1 and the identical three on pass
         // 2, with only LocalTone going 1 -> 0. Their ini says it in one line: "Omitted controls
         // inherit pass 1, except later-pass local tone defaults to 0." Nothing tapers over there.
-        std::atomic<bool> passTaper { false };
+        std::atomic<bool> passTaper;
         // How the network's answer is put back onto the frame. Above zero this is the highlight
         // guard -- the most compose may move a pixel's luminance, in either direction -- and it
         // doubles as the switch: zero selects the old additive composition, which is kept only so
@@ -748,7 +758,7 @@ struct State
         // then as garbage. The ratio path bounds luminance instead and leaves hue to a blend between
         // two finished pictures, which is what the OptiScaler DLSS-NR fork does and where the
         // arrangement comes from. 2.0 is that fork's own default.
-        std::atomic<float> ratioGuard { 2.0f };
+        std::atomic<float> ratioGuard;
         // The guard is applied once, to the finished composition, while the passes compound the
         // ratio it bounds. Left fixed, the third pass spends most of its contribution against the
         // clamp -- the fork's own tooltip says to raise it by hand with the count. Doing it here
@@ -761,19 +771,19 @@ struct State
         // "Default (auto) is 2.0", with no mention of the pass count. So the shipped behaviour over
         // there is a fixed bound at every count, and matching it is worth more than our idea about
         // headroom. The idea stays available as a switch; it is just not what runs unasked.
-        std::atomic<bool> guardTracksPasses { false };
+        std::atomic<bool> guardTracksPasses;
         // Whether the network's colour arrives with its light. Both ends of the blend carry the same
         // luminance, so this cannot shift hue on its own: at 0 every pixel keeps the game's exact
         // colour and only its brightness carries the network's verdict.
-        std::atomic<float> colourStrength { 1.0f };
+        std::atomic<float> colourStrength;
         // Neural Rendering Model A (0), B (1) or C (2). A is the neutral vector and what every
         // release so far has drawn, so 0 is the default and selecting it changes nothing.
-        std::atomic<int> style { 0 };
+        std::atomic<int> style;
         // DLSSNR scales a style's coefficients by LocalToneStrength, clamped to [0,1], as
         // (value - neutral) * t + neutral. Same knob, same range, so a style can be taken at part
         // strength instead of only on or off.
-        std::atomic<float> styleStrength { 1.0f };
-        std::atomic<bool> bicubic { true };
+        std::atomic<float> styleStrength;
+        std::atomic<bool> bicubic;
         // Show the network's own answer instead of composing it onto the game's frame.
         //
         // This is the picture the Debug View "Network output" always drew; it is here as a mode
@@ -781,33 +791,33 @@ struct State
         // hours should not live in a diagnostics dropdown. It is not a better composition -- it is
         // no composition. Highlight Guard, Colour Strength and both residual limits are bypassed
         // entirely, because there is no residual for them to bound.
-        std::atomic<bool> networkOutput { false };
-        std::atomic<int> debugView { 0 };
+        std::atomic<bool> networkOutput;
+        std::atomic<int> debugView;
         std::atomic<bool> measureNow { false };
         bool diagnostics = false;
         bool capturePair = false;
-        std::atomic<float> flowGate { 0.02f };
-        std::atomic<float> flowRatio { 0.70f };
-        std::atomic<bool> useMotion { true };
-        std::atomic<bool> useHistory { true };
-        std::atomic<bool> useDepth { true };
-        std::atomic<bool> useGameGuides { true };
+        std::atomic<float> flowGate;
+        std::atomic<float> flowRatio;
+        std::atomic<bool> useMotion;
+        std::atomic<bool> useHistory;
+        std::atomic<bool> useDepth;
+        std::atomic<bool> useGameGuides;
         // Frostbite stores velocity as a UV-space delta; the engine reads motion in raster pixels,
         // so the field is multiplied by the target size. Sign and magnitude are engine convention,
         // not something that can be read off the resource, so leave the knob: -1 flips the direction,
         // and a value other than 1 rescales. Watch Debug View "Motion vectors" while panning.
-        std::atomic<float> motionScale { 1.0f };
+        std::atomic<float> motionScale;
         // Lab: FidelityFX optical flow as the motion source. See core/temporal/optical_flow.inc.
         std::atomic<int> opticalFlow { 0 };
         std::atomic<float> motionMaxPx { 0.0f };
         std::atomic<int> historyGuard { 0 };  // Lab: the reference's history filters, core/temporal/smooth.inc
-        std::atomic<float> outputSmooth { 0.0f }, outputSmoothLimit { 10.0f };
-        std::atomic<int> fixedSeed { 0 };  // Lab: the pre-block's noise seed pinned, core/temporal/seed.inc
+        std::atomic<float> outputSmooth, outputSmoothLimit;
+        std::atomic<int> fixedSeed;  // Lab: the pre-block's noise seed pinned, core/temporal/seed.inc
         // 97b10 DepthInverted. 1 is both runtimes' own default; RenoDX writes 0 explicitly on its
         // Present route (ETS2 trace, where its depth was a dummy, so that 0 says nothing about any
         // game's real buffer). Exposed so the two can be told apart on a game with real depth; no run
         // here has yet.
-        std::atomic<int> depthInverted { 1 };
+        std::atomic<bool> depthInverted;
         // The same measurement, on the path the network actually reads. The probe was already
         // computing 1/max for the debug view and throwing it away everywhere else, so the guide the
         // network got was the raw buffer: on PCSX2 that is 0..0.002, which is 0.2% of the range and
@@ -819,7 +829,7 @@ struct State
         // by 1/max lands nearly every pixel at 0.99 rather than spreading anything out. A control
         // the overlay painted amber for being past what was measured has no business being the
         // default. Still settable as DepthNormalise in the ini.
-        std::atomic<bool> depthNormalise { false };
+        std::atomic<bool> depthNormalise;
         // Per-pass profiles, the same idea as the reference fork's "Per pass" tree: what each run of
         // the network over this frame is told, where it should differ from the values above.
         //
@@ -1289,15 +1299,26 @@ bool EnsureNeuralIni()
     // here and a file written by Save carry exactly the same set -- an edit made without the
     // overlay cannot need a key that only exists once somebody has pressed a button.
     //
-    // LoadSettings first, and not because anything needs reading: the default that belongs in the
-    // file is the one LoadSettings applies when a key is absent, and for a dozen of them that is a
-    // literal in the reader rather than g's constructed value (Passes, Encoding, Tonemap and the
-    // rest). Reading the eight keys above and letting every other fallback land in g is what makes
-    // the written file describe the run it is about to have instead of a slightly different one.
+    // LoadSettings first: every key the header above leaves out reads as its default in the
+    // settings table, the same value g is constructed with, and DllMain skips its own read on the
+    // run that writes the file.
     LoadSettings();
     SaveSettings(/*quiet=*/true);
     Log("wrote a commented amd-nr.ini next to the exe; every value in it is a default.");
     return true;
+}
+
+// One value from the settings table's point of view (settings_fields.inc): what is not a finite
+// number is the row's default, a flag is anything but zero, and the rest clamps to the row's range
+// -- the one the panel and the 32-bit bridge's wire clamp to as well.
+template <class T>
+T SettingValue(double v, double def, double low, double high)
+{
+    if (!std::isfinite(v))
+        v = def;
+    if constexpr (std::is_same_v<T, bool>)
+        v = v != 0.0 ? 1.0 : 0.0;
+    return static_cast<T>(std::clamp(v, low, high));
 }
 
 void LoadSettings()
@@ -1306,45 +1327,36 @@ void LoadSettings()
     if (ini_text::StripUtf8Bom(ini))
         Log("removed a UTF-8 byte-order mark from amd-nr.ini: it was hiding every setting "
             "in the file, and all of them were reading as their defaults.");
-    auto num = [&](const wchar_t *key, float fallback) {
+    auto numd = [&](const wchar_t *key, double fallback) {
         wchar_t buf[64] {};
         if (GetPrivateProfileStringW(L"amd-nr", key, L"", buf, 64, ini.c_str()) == 0)
             return fallback;
-        // wcstof honours the process locale's decimal separator. On a pt-BR install that is a
+        // wcstod honours the process locale's decimal separator. On a pt-BR install that is a
         // comma, so "0.50" parses as 0 and stops at the dot -- Scale=0.50 silently became the
         // clamp floor of 0.25. The file is ours and always writes a dot, so parse it in the C
         // locale regardless of what the user's machine is set to.
         static _locale_t c_locale = _create_locale(LC_NUMERIC, "C");
         wchar_t *end = nullptr;
-        const float v = c_locale != nullptr ? static_cast<float>(_wcstod_l(buf, &end, c_locale))
-                                            : std::wcstof(buf, &end);
-        return end == buf ? fallback : v;
+        const double v = c_locale != nullptr ? _wcstod_l(buf, &end, c_locale) : std::wcstod(buf, &end);
+        return end == buf || !std::isfinite(v) ? fallback : v;  // nan and inf are no value either
     };
+    auto num = [&](const wchar_t *key, float fallback) { return static_cast<float>(numd(key, fallback)); };
     auto flag = [&](const wchar_t *key, bool fallback) {
         return num(key, fallback ? 1.0f : 0.0f) != 0.0f;
     };
 
-    g.settings.scale.store(std::clamp(num(L"Scale", g.settings.scale.load()), 0.25f, 2.0f));
-    g.settings.language.store(std::clamp(static_cast<int>(num(L"Language", 0.0f)), 0, 1));
+    // Every row of the table with a key. One that is absent reads as its default, not as the value
+    // before a reload, so the file alone says what runs.
+#define X(type, name, key, def, low, high)                                                         \
+    if (*key)                                                                                      \
+        g.settings.name.store(SettingValue<decltype(g.settings.name.load())>(numd(L"" key, def), def, low, high));
+#include "../x86bridge/settings_fields.inc"
+#undef X
     // Advanced=1 was the single switch this replaced; honour it once as "show all of them".
-    // kOptAll lives beside enum Opt, so a new bit widens both the mask and this in one edit. Read as an integer: 25 bits do not survive float.
+    // kOptAll lives beside enum Opt, so a new bit widens both the mask and this in one edit. Read as
+    // an integer: 25 bits do not survive float. Masked, so a bit a newer build saved is dropped.
     g.settings.optional.store(static_cast<uint32_t>(GetPrivateProfileIntW(L"amd-nr", L"HiddenShown",
         static_cast<INT>(flag(L"Advanced", false) ? kOptAll : g.settings.optional.load()), ini.c_str())) & kOptAll);
-    g.settings.passes.store(std::clamp(static_cast<int>(num(L"Passes", 1.0f)), 1,
-                             static_cast<int>(State::kMaxPasses)));
-    g.settings.serialPasses.store(flag(L"SerialPasses", true));
-    g.settings.intensity.store(num(L"Intensity", g.settings.intensity.load()));
-    g.settings.residualLimit.store(std::max(0.0f, num(L"ResidualLimit", g.settings.residualLimit.load())));
-    g.settings.residualFade.store(std::clamp(num(L"EdgeFade", 0.0f), 0.0f, 0.49f));
-    g.settings.passTaper.store(flag(L"PassTaper", g.settings.passTaper.load()));
-    g.settings.ratioGuard.store(std::clamp(num(L"Guard", g.settings.ratioGuard.load()), 0.0f, 8.0f));
-    g.settings.guardTracksPasses.store(flag(L"GuardPerPass", g.settings.guardTracksPasses.load()));
-    g.settings.colourStrength.store(std::clamp(num(L"ColourStrength", g.settings.colourStrength.load()), 0.0f, 1.0f));
-    g.settings.structure.store(num(L"Structure", g.settings.structure.load()));
-    g.settings.skin.store(num(L"Skin", g.settings.skin.load()));
-    g.settings.tone.store(num(L"Tone", g.settings.tone.load()));
-    g.settings.style.store(std::clamp(static_cast<int>(num(L"Style", 0.0f)), 0, 2));
-    g.settings.styleStrength.store(std::clamp(num(L"StyleStrength", 1.0f), 0.0f, 1.0f));
     {
         // Stated in the log because a style is a small change to the whole frame, and a
         // measurement run that does not say which one it drew cannot be compared to another.
@@ -1369,20 +1381,7 @@ void LoadSettings()
         swprintf_s(key, L"Pass%uSkin", i + 1);
         g.settings.passSkin[i].store(num(key, g.settings.skin.load()));
     }
-    g.settings.flowGate.store(num(L"FlowGate", g.settings.flowGate.load()));
-    g.settings.flowRatio.store(num(L"FlowRatio", g.settings.flowRatio.load()));
-    g.settings.encoding.store(static_cast<int>(num(L"Encoding", 0.0f)));
-    g.settings.diffuseWhite.store(num(L"DiffuseWhite", g.settings.diffuseWhite.load()));
-    g.settings.debugView.store(std::clamp(static_cast<int>(num(L"DebugView", 0.0f)), 0, 5));
     if (!flag(L"Inline", true)) Log("Inline=0 ignored: every route runs the engine same-frame");
-    g.settings.bicubic.store(flag(L"Bicubic", g.settings.bicubic.load()));
-    g.settings.networkOutput.store(flag(L"NetworkOutput", false));
-    g.settings.useMotion.store(flag(L"Motion", g.settings.useMotion.load()));
-    g.settings.useHistory.store(flag(L"History", g.settings.useHistory.load()));
-    g.settings.useDepth.store(flag(L"Depth", g.settings.useDepth.load()));
-    g.settings.depthInverted.store(flag(L"DepthInverted", true) ? 1 : 0);
-    g.settings.depthNormalise.store(flag(L"DepthNormalise", g.settings.depthNormalise.load()));
-    g.settings.useGameGuides.store(flag(L"GameGuides", g.settings.useGameGuides.load()));
     g.settings.useFeedEffect.store(flag(L"FeedEffect", g.settings.useFeedEffect.load()));
     g.noBackBuffer.store(flag(L"NoBackBuffer", g.noBackBuffer.load()));
     g.noBridge.store(flag(L"NoBridge", g.noBridge.load()));
@@ -1392,26 +1391,14 @@ void LoadSettings()
     g.settings.watchdogStandDown.store(std::max(0, static_cast<int>(num(L"WatchdogStandDown", 8.0f))));
     g.stage.store(static_cast<int>(num(L"Stage", 3.0f)));
     g.events = static_cast<int>(num(L"Events", 31.0f));
-    // Diagnostic, in the same family as Stage / Events / NoBridge: read at load, never written
-    // back, and off unless the file asks for it. The add-on starts switched off on purpose and
-    // the switch is a keypress, which means a route can only be exercised by a person standing
-    // at the machine -- and the Vulkan route is the one that has to be booted, watched and shut
-    // down without one. Anything left holding this on gets an add-on that starts on, which is
-    // why it is not in the overlay and not saved.
-    const bool startOn = flag(L"StartOn", false);
-    g.settings.startOn.store(startOn);
-    g.settings.enabled.store(startOn);
-    if (startOn)
+    // Enabled starts as StartOn says. StartOn began as a diagnostic in the family of Stage / Events /
+    // NoBridge: the add-on starts switched off on purpose and the switch is a keypress, so a route
+    // could only be exercised by a person at the machine -- and the Vulkan route is the one that has
+    // to be booted, watched and shut down without one. It is a normal setting now, in the overlay.
+    g.settings.enabled.store(g.settings.startOn.load());
+    if (g.settings.startOn.load())
         Log("StartOn=1: the effect is on from the first frame. Set it to 0, or clear the box in "
             "the overlay, to go back to starting with the game's own image.");
-
-    // Hotkey. Stored as a virtual-key code and a modifier mask rather than as text, because
-    // parsing "Ctrl+End" back into a key is a table that is wrong on the first non-US layout.
-    // The overlay writes both by capturing an actual keypress, so nobody has to look up a code.
-    g.settings.toggleKey.store(std::clamp(static_cast<int>(num(L"ToggleKey", VK_END)), 0, 0xFE));
-    g.settings.toggleMods.store(std::clamp(static_cast<int>(num(L"ToggleMods", 1.0f)), 0, 7));
-    g.settings.disableOnAltTab.store(flag(L"DisableOnAltTab", false));
-    g.settings.motionScale.store(num(L"MotionScale", g.settings.motionScale.load()));
     // Optical flow exists only in a lab build (build.ps1 -Ffx). Anywhere else OpticalFlow=2 would pass
     // over the game's vectors for a flow that is not there and hand the motion to the estimator.
     const int opticalFlow = std::clamp(static_cast<int>(num(L"OpticalFlow", 0.0f)), 0, 2);
@@ -1421,28 +1408,17 @@ void LoadSettings()
     g.settings.opticalFlow.store(AMDNR_WITH_FFX ? opticalFlow : 0);
     g.settings.motionMaxPx.store(std::max(0.0f, num(L"MotionMaxPx", 0.0f)));
     g.settings.historyGuard.store(std::clamp(static_cast<int>(num(L"HistoryGuard", 0.0f)), 0, 1));
-    g.settings.outputSmooth.store(std::clamp(num(L"OutputSmooth", 0.0f), 0.0f, 1.0f));
-    g.settings.outputSmoothLimit.store(num(L"OutputSmoothLimit", 10.0f));
-    g.settings.fixedSeed.store(std::clamp(static_cast<int>(num(L"FixedSeed", 0.0f)), 0, 1));
-    g.settings.autoMask.store(static_cast<int>(num(L"AutoMask", 1.0f)));
-    g.settings.toneChannels.store(static_cast<int>(num(L"ToneChannels", 0.0f)));
+    // The post kernel's output scale; at zero the network's answer never reaches the frame, which
+    // reads as "enabled and disabled look the same" with the log saying every frame was processed.
+    // Refused here rather than allowed, because nothing distinguishes a run with it at zero from a
+    // run where the network broke, and Intensity 0 already exists for "show me the game's own
+    // frame". 0.03125 is the runtime's own default and the table's.
+    if (const float es = g.settings.engineScale.load(); !(es >= 1e-4f))
     {
-        // The post kernel's output scale; at zero the network's answer never reaches the frame,
-        // which reads as "enabled and disabled look the same" with the log saying every frame was
-        // processed. Refused here rather than allowed, because nothing distinguishes a run with
-        // it at zero from a run where the network broke, and Intensity 0 already exists for
-        // "show me the game's own frame".
-        float es = num(L"EngineScale", 0.03125f);
-        if (!(es >= 1e-4f))
-        {
-            Log("WARNING: EngineScale=%.6f would make the network's output identical to its "
-                "input; using the runtime's default 0.03125 instead.", static_cast<double>(es));
-            es = 0.03125f;
-        }
-        g.settings.engineScale.store(es);
+        Log("WARNING: EngineScale=%.6f would make the network's output identical to its "
+            "input; using the runtime's default 0.03125 instead.", static_cast<double>(es));
+        g.settings.engineScale.store(0.03125f);
     }
-    g.settings.tonemap.store(static_cast<int>(num(L"Tonemap", -1.0f)));
-    g.settings.temporalMode.store(std::clamp(static_cast<int>(num(L"Temporal", 0.0f)), 0, 2));
     g.settings.diagnostics = flag(L"Diagnostics", false);
 
     Log("settings: scale %.2f passes %d intensity %.2f structure %.2f skin %.2f tone %.2f "
@@ -1478,36 +1454,16 @@ void LoadSettings()
 // the matching Win32 writer, and the numbers are formatted in the C locale for the same reason
 // the reader parses in it -- a pt-BR install would otherwise write "0,50", which the reader then
 // stops at the comma.
-// Every key that belongs in the ini, listed once. SaveSettings writes them and the overlay's
-// autosave hashes them; two lists would drift, and a setting present in one but not the other is a
-// control that quietly stops being saved -- which is the bug this whole pair exists to prevent.
+// Every key that belongs in the ini, listed once: the settings table's rows with a key, then the
+// per-pass profiles and FeedEffect. SaveSettings writes them and the overlay's autosave hashes them;
+// two lists would drift, and a setting present in one but not the other is a control that quietly
+// stops being saved -- which is the bug this whole pair exists to prevent.
 template <class Num, class Flag>
 void ForEachSetting(Num num, Flag flag)
 {
-    num(L"Scale", g.settings.scale.load());
-    num(L"Passes", g.settings.passes.load());
-    num(L"Language", g.settings.language.load());
-    num(L"HiddenShown", static_cast<double>(g.settings.optional.load()));
-    num(L"AutoMask", g.settings.autoMask.load());
-    num(L"ToneChannels", g.settings.toneChannels.load());
-    num(L"EngineScale", g.settings.engineScale.load());
-    num(L"Tonemap", g.settings.tonemap.load());
-    num(L"Temporal", g.settings.temporalMode.load());
-    num(L"FixedSeed", g.settings.fixedSeed.load());
-    num(L"OutputSmooth", g.settings.outputSmooth.load());
-    num(L"OutputSmoothLimit", g.settings.outputSmoothLimit.load());
-    num(L"Intensity", g.settings.intensity.load());
-    num(L"ResidualLimit", g.settings.residualLimit.load());
-    num(L"EdgeFade", g.settings.residualFade.load());
-    num(L"Guard", g.settings.ratioGuard.load());
-    num(L"ColourStrength", g.settings.colourStrength.load());
-    num(L"Style", static_cast<float>(g.settings.style.load()));
-    num(L"StyleStrength", g.settings.styleStrength.load());
-    flag(L"GuardPerPass", g.settings.guardTracksPasses.load());
-    flag(L"PassTaper", g.settings.passTaper.load());
-    num(L"Structure", g.settings.structure.load());
-    num(L"Skin", g.settings.skin.load());
-    num(L"Tone", g.settings.tone.load());
+#define X(type, name, key, def, low, high) if (*key) num(L"" key, static_cast<double>(g.settings.name.load()));
+#include "../x86bridge/settings_fields.inc"
+#undef X
     for (UINT i = 0; i < State::kMaxPasses; ++i)
     {
         wchar_t key[32];
@@ -1520,29 +1476,7 @@ void ForEachSetting(Num num, Flag flag)
         swprintf_s(key, L"Pass%uSkin", i + 1);
         num(key, g.settings.passSkin[i].load());
     }
-    num(L"FlowGate", g.settings.flowGate.load());
-    num(L"FlowRatio", g.settings.flowRatio.load());
-    num(L"Encoding", g.settings.encoding.load());
-    num(L"DiffuseWhite", g.settings.diffuseWhite.load());
-    num(L"DebugView", g.settings.debugView.load());
-    num(L"MotionScale", g.settings.motionScale.load());
-    flag(L"Inline", g.settings.inlineMode.load());
-    flag(L"Bicubic", g.settings.bicubic.load());
-    flag(L"NetworkOutput", g.settings.networkOutput.load());
-    flag(L"Motion", g.settings.useMotion.load());
-    flag(L"History", g.settings.useHistory.load());
-    flag(L"Depth", g.settings.useDepth.load());
-    flag(L"DepthInverted", g.settings.depthInverted.load() != 0);
-    flag(L"DepthNormalise", g.settings.depthNormalise.load());
-    flag(L"GameGuides", g.settings.useGameGuides.load());
     flag(L"FeedEffect", g.settings.useFeedEffect.load());
-    // StartOn used to be deliberately unsaved, so a diagnostic could not leave an install that
-    // boots with the effect on. It is a normal setting now and the overlay owns it, so it has to
-    // survive a save like everything else beside it.
-    flag(L"StartOn", g.settings.startOn.load());
-    flag(L"DisableOnAltTab", g.settings.disableOnAltTab.load());
-    num(L"ToggleKey", g.settings.toggleKey.load());
-    num(L"ToggleMods", g.settings.toggleMods.load());
     // Stage / Events / NoBridge / NoBackBuffer are deliberately not written back. They are
     // startup diagnostics, they cannot take effect live, and rewriting them here would quietly
     // re-save a one-off value that was meant for a single run.
@@ -3688,9 +3622,8 @@ PanelStatus ReadPanelStatus()
 PanelSettings ReadPanelSettings()
 {
     PanelSettings s;
-#define X(type, name, low, high) s.name = static_cast<type>(g.settings.name.load());
+#define X(type, name, key, def, low, high) s.name = static_cast<type>(g.settings.name.load());
 #include "../x86bridge/settings_fields.inc"
-#include "../temporal/lab_fields.inc"
 #undef X
     for (int i = 0; i < kMaxPasses; ++i)
     {
@@ -3703,24 +3636,25 @@ PanelSettings ReadPanelSettings()
     return s;
 }
 
-// The settings as the engine constructs them, before amd-nr.ini is read: what a fresh ini is
-// written with, and so what Factory Defaults restores. Captured once, in DllMain.
+// The settings as the engine constructs them, before amd-nr.ini is read: the table's defaults, what
+// a fresh ini is written with, and so what Factory Defaults restores. Captured once, in DllMain.
 PanelSettings g_factory;
 
 // What the panel changed, written back to the engine. Only the fields that moved: the render thread
 // writes some of these atomics too -- the scale cap's partner fields, the history flag -- and a
-// whole-struct write would put back what the panel read before it did.
+// whole-struct write would put back what the panel read before it did. Clamped to the table's
+// ranges, as the 32-bit bridge's wire is: a value typed into a slider can be anything.
 void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)
 {
-#define X(type, name, low, high)                                                                   \
+#define X(type, name, key, def, low, high)                                                         \
     if (after.name != before.name)                                                                 \
     {                                                                                              \
-        g.settings.name.store(static_cast<decltype(g.settings.name.load())>(after.name));         \
+        using T = decltype(g.settings.name.load());                                                \
+        g.settings.name.store(SettingValue<T>(after.name, def, low, high));                        \
         Log("menu: " #name " %g -> %g", static_cast<double>(before.name),                          \
-            static_cast<double>(after.name));                                                      \
+            static_cast<double>(g.settings.name.load()));                                          \
     }
 #include "../x86bridge/settings_fields.inc"
-#include "../temporal/lab_fields.inc"
 #undef X
     for (int i = 0; i < kMaxPasses; ++i)
     {
@@ -3782,10 +3716,9 @@ void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)
 }
 
 // The overlay, rebuilt 22/09/2026. It used to carry 47 controls across eight headers; it carries
-// fourteen across five now. Nothing was deleted: every atomic, every LoadSettings line and every
-// SaveSettings line is untouched, so each hidden control still reads its key out of amd-nr.ini and
-// still writes it back. What went is the widget, and with it the chance of somebody dragging a
-// slider whose effect nobody here has established into a state that makes the add-on look broken.
+// fourteen across five now. Nothing was deleted: every atomic and every ini key is untouched, so
+// each hidden control still reads and writes its key in amd-nr.ini. What went is the widget, and
+// with it the chance of dragging a slider nobody here has measured into a state that looks broken.
 //
 // The panel itself is core/ui/, shared with the 32-bit bridge. This is the 64-bit side of it: fill
 // the panel's copy from the engine, draw, write back what changed, carry out what was asked.
@@ -3876,7 +3809,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
             // something to edit without being told which keys exist. On the run that writes it,
             // it has already read the settings for the reason its own comment gives, and a second
             // read here would only re-parse what it just wrote.
-            g_factory = ReadPanelSettings(); g_factory.scale = 1.0f;  // constructed defaults; Scale as a fresh ini ships it
+            g_factory = ReadPanelSettings();  // the table's defaults, as g is constructed
             if (!EnsureNeuralIni())
                 LoadSettings();
         }

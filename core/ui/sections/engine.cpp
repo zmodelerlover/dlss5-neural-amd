@@ -193,7 +193,7 @@ void DrawEngine(PanelSettings &s, const PanelStatus &status)
         Mask(s);
     if (Shown(s, kOptTemporal))
         Temporal(s);
-    if (Shown(s, kOptSeed) && !status.helperProcess)  // not on the bridge's wire
+    if (Shown(s, kOptSeed))
         Seed(s);
     if (Shown(s, kOptTonemap))
         Tonemap(s);

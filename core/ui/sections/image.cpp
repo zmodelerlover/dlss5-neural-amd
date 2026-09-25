@@ -210,7 +210,7 @@ void Smooth(PanelSettings &s)
 
 } // namespace
 
-void DrawImage(PanelSettings &s, const PanelStatus &status)
+void DrawImage(PanelSettings &s)
 {
     if (!SectionHeader(kHueImage, T("Image", "Imagem"), true))
         return;
@@ -233,7 +233,7 @@ void DrawImage(PanelSettings &s, const PanelStatus &status)
     ImGui::EndDisabled();
     if (Shown(s, kOptLocalTone))
         LocalTone(s);
-    if (Shown(s, kOptSmooth) && !status.helperProcess)  // not on the bridge's wire
+    if (Shown(s, kOptSmooth))
         Smooth(s);
 }
 

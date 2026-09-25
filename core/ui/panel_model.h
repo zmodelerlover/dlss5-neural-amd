@@ -51,18 +51,16 @@ enum Opt : uint32_t
     kOptSeed         = 1u << 24,
 };
 constexpr uint32_t kOptAll = (1u << 25) - 1u;
-// Rows whose settings do not cross the bridge's wire (core/temporal/lab_fields.inc).
-constexpr uint32_t kOptHostOnly = kOptSmooth | kOptSeed;
 
 constexpr int kMaxPasses = 3;
 
-// The settings, as plain values. The field list is the bridge's X-macro, so a setting added there
-// is a setting the panel has, with the type it travels in: flags are uint32_t, not bool.
+// The settings, as plain values. The field list is the settings table (settings_fields.inc), so a
+// setting added there is a setting the panel has, with the type it travels in on the bridge's wire:
+// flags are uint32_t, not bool.
 struct PanelSettings
 {
-#define X(type, name, low, high) type name = 0;
+#define X(type, name, key, def, low, high) type name = 0;
 #include "../x86bridge/settings_fields.inc"
-#include "../temporal/lab_fields.inc"
 #undef X
     uint32_t passOverride[kMaxPasses] {};
     float passStructure[kMaxPasses] {}, passTone[kMaxPasses] {}, passSkin[kMaxPasses] {};

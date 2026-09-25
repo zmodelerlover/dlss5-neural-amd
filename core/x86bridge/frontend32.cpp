@@ -534,7 +534,7 @@ void Settings(){
     const auto ini=(dir/L"amd-nr.ini").wstring();
     if(ini_text::StripUtf8Bom(ini))Log("x86bridge: removed a UTF-8 byte-order mark from amd-nr.ini; every setting in it was reading as its default");
     g.enabled=GetPrivateProfileIntW(L"amd-nr",L"StartOn",0,ini.c_str())!=0;
-    g.toggleKey=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"amd-nr",L"ToggleKey",VK_END,ini.c_str())),0,255);
+    g.toggleKey=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"amd-nr",L"ToggleKey",VK_END,ini.c_str())),0,254);
     g.toggleMods=std::clamp(static_cast<int>(GetPrivateProfileIntW(L"amd-nr",L"ToggleMods",1,ini.c_str())),0,7);
     g.disableAltTab=GetPrivateProfileIntW(L"amd-nr",L"DisableOnAltTab",0,ini.c_str())!=0;
     wchar_t flag[8]{};g.transport=GetEnvironmentVariableW(L"AMDNR_X86BRIDGE_TRANSPORT_ONLY",flag,8)==1&&flag[0]==L'1';

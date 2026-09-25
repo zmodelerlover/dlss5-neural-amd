@@ -21,11 +21,11 @@ using namespace x86bridge;
 int main(){WireSettings w;unsigned char* b=reinterpret_cast<unsigned char*>(&w);
  for(size_t i=0;i<sizeof(w);++i)b[i]=static_cast<unsigned char>(i*7+3);
  for(unsigned i=0;i<3;++i){w.passStructure[i]=1.5f+i;w.passTone[i]=.25f*i;w.passSkin[i]=-1.f+i;}
-#define X(type,name,low,high) w.name=static_cast<type>(high);
+#define X(type,name,key,def,low,high) w.name=static_cast<type>(high);
 #include "settings_fields.inc"
 #undef X
  const ui::PanelSettings p=ToPanel(w);assert(p.useFeedEffect==0);
-#define X(type,name,low,high) assert(p.name==w.name);
+#define X(type,name,key,def,low,high) assert(p.name==w.name);
 #include "settings_fields.inc"
 #undef X
  WireSettings back=FromPanel(w,p);assert(std::memcmp(&back,&w,sizeof(w))==0);
@@ -50,7 +50,7 @@ state=r'''#include "control_state.h"
 using namespace x86bridge;
 struct Engine {
  struct {
-#define X(type,name,low,high) std::atomic<type> name{};
+#define X(type,name,key,def,low,high) std::atomic<type> name{};
 #include "settings_fields.inc"
 #undef X
  std::atomic<bool> passOverride[3]{};
@@ -62,7 +62,7 @@ void ResetTemporal(const char*){g.historyValid.store(false);}
 struct Host{uint64_t settingsRevision=1;
 '''+methods+r'''};
 int main(){Host host;WireSettings s; s.settings_revision=2;s.skin=-1;s.useHistory=1;s.scale=.5f;s.structure=1;s.tone=1;
- g.settings.useHistory.store(1);g.settings.scale.store(.5f);g.settings.flowGate.store(.002f);g.settings.flowRatio.store(.5f);assert(host.ApplySettings(s));assert(g.historyValid.load());assert(g.settings.skin.load()==-1);assert(g.settings.inlineMode.load()==1);
+ g.settings.useHistory.store(1);g.settings.scale.store(.5f);assert(host.ApplySettings(s));assert(g.historyValid.load());assert(g.settings.skin.load()==-1);assert(g.settings.inlineMode.load()==1);
  auto before=host.ExportSettings();assert(!host.ApplySettings(s));auto after=host.ExportSettings();assert(std::memcmp(&before,&after,sizeof(before))==0);
  s.settings_revision=3;s.scale=std::numeric_limits<float>::infinity();assert(!host.ApplySettings(s));after=host.ExportSettings();assert(std::memcmp(&before,&after,sizeof(before))==0);
  s.scale=.5f;s.useHistory=0;assert(host.ApplySettings(s));assert(!g.historyValid.load());
@@ -127,5 +127,16 @@ assert 'g.settings.inlineMode.store(true)' in h and 'LoadSettings();ForceInline(
 assert 'register_overlay("AMD Neural Rendering (32-bit)",OnOverlay32)' in front
 assert h.index('SaveSettings();Snapshot')>h.index('case Kind::SaveSettings:')
 fields=read(n/'settings_fields.inc')
-assert all(re.fullmatch(r'X\((uint32_t|int32_t|float), [A-Za-z]+, [-.0-9]+, [-.0-9]+\)',line) for line in fields.splitlines() if not line.startswith('//'))
+rows=[re.fullmatch(r'X\((uint32_t|int32_t|float), ([A-Za-z]+), "([A-Za-z]*)", ([-.0-9e]+), ([-.0-9e]+), ([-.0-9e]+)\)',line) for line in fields.splitlines() if not line.startswith('//')]
+assert all(rows),'a settings_fields.inc row is not X(type, field, "Key", default, low, high)'
+# One table: each key once, only Enabled without one, every default inside its own range, and the
+# 64-bit reader, writer and panel write-back generated from it rather than written out beside it.
+keys=[m[3] for m in rows];assert len(set(keys))==len(keys) and [m[2] for m in rows if not m[3]]==['enabled'],keys
+for m in rows:assert float(m[5])<=float(m[4])<=float(m[6]),m[0]
+neural=read(r/'core/addon/neural.cpp')
+for fn in ['void LoadSettings()\n{','void ForEachSetting(Num num, Flag flag)\n{','void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)\n{','SettingsState()\n']:
+ at=neural.index(fn);assert '#include "../x86bridge/settings_fields.inc"' in neural[at:neural.index('\n}',at)],fn
+for key in keys:
+ if key and key!='Inline':assert f'num(L"{key}"' not in neural and f'flag(L"{key}"' not in neural,key
+assert '#include "settings_fields.inc"' in read(n/'control_state.h') and 'lab_fields' not in neural+ui
 print('PASS panel has no IPC/waits; present-only controls; frontend-only shadow; original host Save/Reload; same-frame lock; generic source; route differences are data')

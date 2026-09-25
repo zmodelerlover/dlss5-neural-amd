@@ -15,10 +15,8 @@ struct Host {
     Build spec{};
     WireSettings factoryDefaults{};
     uint64_t settingsRevision=1,lastCommand=0;
-    void ForceInline(){
-        if(!g.settings.inlineMode.load())Log("x86bridge forced same-frame: Inline=0 is unsupported on this route");
-        g.settings.inlineMode.store(true);
-    }
+    StandDown standDown=StandDown::Other;  // what Neural() saw stand the helper down, for WireStatus
+    void ForceInline(){g.settings.inlineMode.store(true);}  // the table holds Inline at 1 already; LoadSettings logs an Inline=0
     // The fence waits end before the frontend's IpcTimeoutMs, or the frontend kills this process
     // mid-wait with our work still on the GPU: FenceWaitCapMs is held to 4 s, 0 (for ever) included.
     // A wait that gives up stands the helper down (WaitFence) and the frame is answered Original.
@@ -29,7 +27,7 @@ struct Host {
         g.settings.fenceWaitCapMs.store(cap==0||cap>most?most:cap);}
     WireSettings ExportSettings(){
         WireSettings s;s.settings_revision=settingsRevision;
-#define X(type,name,low,high) s.name=static_cast<type>(g.settings.name.load());
+#define X(type,name,key,def,low,high) s.name=static_cast<type>(g.settings.name.load());
 #include "settings_fields.inc"
 #undef X
         for(unsigned i=0;i<3;++i){s.passOverride[i]=g.settings.passOverride[i].load();s.passStructure[i]=g.settings.passStructure[i].load();s.passTone[i]=g.settings.passTone[i].load();s.passSkin[i]=g.settings.passSkin[i].load();}
@@ -39,7 +37,7 @@ struct Host {
         if(!NewRevision(s.settings_revision,settingsRevision))return false;
         if(!NormalizeSettings(s))return false;
         const bool historyChanged=SettingsInvalidateHistory(ExportSettings(),s);  // the 64-bit panel's list
-#define X(type,name,low,high) g.settings.name.store(s.name);
+#define X(type,name,key,def,low,high) g.settings.name.store(s.name);
 #include "settings_fields.inc"
 #undef X
         for(unsigned i=0;i<3;++i){g.settings.passOverride[i].store(s.passOverride[i]!=0);g.settings.passStructure[i].store(s.passStructure[i]);g.settings.passTone[i].store(s.passTone[i]);g.settings.passSkin[i].store(s.passSkin[i]);}
@@ -57,40 +55,26 @@ struct Host {
         s.probeValid=!transport&&built&&g.probeStillPct.load()>=0;
         s.depthMin=g.probeDepthMin.load();s.depthMax=g.probeDepthMax.load();s.motionMean=g.probeMotionMean.load();s.motionMax=g.probeMotionMax.load();s.stillPct=g.probeStillPct.load();
         s.stage=g.stage.load();s.events=g.events;s.noBridge=g.noBridge.load();s.noBackBuffer=g.noBackBuffer.load();
-        s.scaleCap=g.scaleCap.load();return s;
+        s.scaleCap=g.scaleCap.load();
+        s.reason=static_cast<uint32_t>(!g.status.unavailable?StandDown::None:g.loggedDeviceLost?StandDown::DeviceLost:standDown);return s;
     }
     void Snapshot(Kind kind,Result result=Result::Ready){
         StateSnapshot s{ExportSettings(),ExportStatus()};Reply(kind,result);
         Require(Send(pipe.value,parent.value,&s,sizeof(s)),"state snapshot write failed");
     }
 
-    void CaptureFactoryDefaults(){
-        factoryDefaults=ExportSettings(); // g's constructed defaults, BEFORE LoadSettings.
-        factoryDefaults=FactorySettings(factoryDefaults,factoryDefaults);
-    }
-    void EnsureX86Ini(){
-        const auto ini=ExeDirectory()/L"amd-nr.ini";
-        std::error_code ec;const bool existed=std::filesystem::exists(ini,ec);
-        EnsureNeuralIni();
-        if(!existed&&!ec){
-            g.settings.colourStrength.store(0.25f);g.settings.structure.store(1);g.settings.skin.store(-1);g.settings.passes.store(1);
-            WritePrivateProfileStringW(L"amd-nr",L"ColourStrength",L"0.25",ini.c_str());
-            WritePrivateProfileStringW(L"amd-nr",L"Structure",L"1",ini.c_str());
-            // -1 is the engine's automatic. A fresh ini used to write 1 here, which switched it off
-            // before anybody had touched a control -- the panel's Auto skin box then came up
-            // unticked on this route and ticked on the other, for the same shipped defaults.
-            WritePrivateProfileStringW(L"amd-nr",L"Skin",L"-1",ini.c_str());
-            WritePrivateProfileStringW(L"amd-nr",L"Passes",L"1",ini.c_str());
-        }
-    }
+    // The table's defaults (settings_fields.inc), as g is constructed with them, BEFORE LoadSettings.
+    // A fresh ini is the 64-bit one (EnsureNeuralIni) and Factory Defaults the 64-bit Factory
+    // Defaults: this route used to ship Colour Strength 0.25 in both.
+    void CaptureFactoryDefaults(){factoryDefaults=ExportSettings();}
     void RestoreFactoryDefaults(){
-        // No INI access. Restore constructed upstream defaults plus the five x86 overrides.
+        // No INI access. Restore the captured defaults, keeping the preferences (FactorySettings).
         // ApplySettings drops the history once if anything in SettingsInvalidateHistory moved.
         Require(ApplySettings(FactorySettings(factoryDefaults,ExportSettings())),"factory defaults rejected");
     }
     void Init(const Hello& h){
         Require(h.pid==GetProcessId(parent.value),"parent PID mismatch");
-        CaptureFactoryDefaults();EnsureX86Ini();LoadSettings();ForceInline();BoundWaits();Require(LoadGraphicsApi(),"graphics API load failed");
+        CaptureFactoryDefaults();EnsureNeuralIni();LoadSettings();ForceInline();BoundWaits();Require(LoadGraphicsApi(),"graphics API load failed");
         ComPtr<IDXGIFactory4> factory;Check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)),"DXGI factory");
         LUID luid{h.luidLow,h.luidHigh};ComPtr<IDXGIAdapter1> adapter;
         Check(factory->EnumAdapterByLuid(luid,IID_PPV_ARGS(&adapter)),"exact LUID adapter unavailable");
@@ -151,10 +135,10 @@ struct Host {
         if(g.bridge.failed)throw std::runtime_error("work slot unavailable");
         if(g.status.failed||g.status.unavailable||DeviceLost())return Result::Original;
         if(g.noBridge.load()||g.stage.load()<3)return Result::Original;
-        UINT wanted=WantedPasses();if(!BringUpEngines(wanted)){g.status.unavailable=true;return Result::Original;}
+        UINT wanted=WantedPasses();if(!BringUpEngines(wanted)){g.status.unavailable=true;standDown=StandDown::EngineInit;return Result::Original;}
         g.loadedPasses=wanted;
         const UINT w=spec.colour.width,h=spec.colour.height;const auto fmt=static_cast<DXGI_FORMAT>(spec.colour.format);
-        if(!EnsureResources(w,h,fmt,EffectiveScale())){g.status.unavailable=true;return Result::Original;}
+        if(!EnsureResources(w,h,fmt,EffectiveScale())){g.status.unavailable=true;standDown=StandDown::Resources;return Result::Original;}
         if(!g.bridge.crossLocal && !CreateTexture(w,h,ColourReadFormat(fmt),g.bridge.crossLocal,"crossLocal",D3D12_RESOURCE_STATE_COPY_DEST))return Result::Original;
     const bool runNetwork = JobGate();
 
@@ -263,7 +247,9 @@ struct Host {
         Require(Send(pipe.value,parent.value,&a,sizeof(a)),"ACK write failed");
     }
     void Run(){
-        Header h;Require(Receive(pipe.value,parent.value,&h,sizeof(h))&&ValidHeader(h)&&h.kind==Kind::Hello,"HELLO header");
+        Header h;const bool got=Receive(pipe.value,parent.value,&h,sizeof(h));
+        if(got&&h.magic==Magic&&h.version!=Version)Log("x86bridge: the frontend speaks protocol v%u, this helper v%u: install amd-nr.addon32 and amd-nr-host64.exe together",h.version,Version);
+        Require(got&&ValidHeader(h)&&h.kind==Kind::Hello,"HELLO header");
         Hello hello;Require(Receive(pipe.value,parent.value,&hello,sizeof(hello)),"HELLO body");Init(hello);Reply(Kind::Hello,Result::Ready);
         for(;;){
             // Waiting for the next request while the game is idle is intentionally unbounded.

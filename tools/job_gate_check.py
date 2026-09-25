@@ -5,7 +5,9 @@ sample of kInlineActive (runtime_offsets.h). A job recorded async therefore read
 old 500 ms reset, ~2 evaluations a second, while history copied the frame's input and the output
 smooth blended it; with no reset it would read busy for ever. So async is retired, and these hold
 it retired:
-  - LoadSettings reads `Inline` only to say it ignores 0; nothing in neural.cpp stores the flag;
+  - LoadSettings reads `Inline` only to say it ignores 0; the settings table holds the flag at 1
+    (default 1, range 1..1) for the ini, both panels and the bridge's wire, and nothing in neural.cpp
+    stores it by hand;
   - no history, smooth or pass-control decision reads the menu flag (core/temporal/, RecordNetwork,
     BringUpEngines);
   - RecordNetwork reads the module's own latched kInlineActive after each record, stands down
@@ -69,6 +71,8 @@ temporal = sorted((ROOT / "core/temporal").glob("*.inc"))
 if not (record and bring and draw and temporal):
     bad.append("could not find RecordNetwork, BringUpEngines, DrawPerformance or core/temporal")
 
+if 'X(uint32_t, inlineMode, "Inline", 1, 1, 1)' not in (ROOT / "core/x86bridge/settings_fields.inc").read_text(encoding="utf-8"):
+    bad.append("settings_fields.inc: Inline is not held at 1 (default 1, range 1..1)")
 if "inlineMode.store(" in neural:
     bad.append("neural.cpp stores inlineMode; the ini's Inline=0 must be ignored, not taken")
 if not re.search(r'if \(!flag\(L"Inline", true\)\) Log\(', neural):

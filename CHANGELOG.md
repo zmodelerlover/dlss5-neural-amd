@@ -191,6 +191,24 @@ notice:
   lost its accumulation each time; neither route drops it there now, nor when the game's depth and
   motion are found again a few presents after it, unless the guide probe had withheld that depth:
   finding it again hands it back, which drops the history, and again when the probe withholds it.
+- **One settings table for every route** (`core/x86bridge/settings_fields.inc`): each setting's
+  ini key, default and range, from which the ini is read and written, both panels are filled and
+  the 32-bit bridge's wire is laid out. The same ini now gives the same settings on both routes:
+  - The 32-bit panel no longer clips what the 64-bit route keeps as soon as a control moves: Edge
+    Fade up to 0.49, a per-pass Skin at its -1 automatic, and Intensity, Structure, Tone, Skin,
+    Motion Scale, Diffuse White and the other keys the 64-bit route never bounded.
+  - A value typed into a 64-bit slider is clamped to the same ranges.
+  - Output smoothing and Fixed seed are on the 32-bit panel, and Factory Defaults resets them there
+    too.
+  - A fresh 32-bit `amd-nr.ini` and the 32-bit Factory Defaults are the 64-bit ones: Colour
+    Strength 1.0 instead of 0.25, and Scale 1.0 instead of 0.5 for Factory Defaults. On both
+    routes an `amd-nr.ini` without a `Scale` key reads 1.0, as a fresh one is written.
+  - A key missing from `amd-nr.ini` reads as its default on a Reload too, where it used to keep the
+    value from before; one set to nan or inf reads as its default instead of being taken.
+  - `SerialPasses` is saved.
+- **The 32-bit panel says why the helper switched off**: the device was removed, the engine or its
+  textures could not be brought up, or otherwise to look in `amd-nr-x86-host.log`. Bridge protocol
+  v4: replace `amd-nr.addon32` and `amd-nr-host64.exe` together.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

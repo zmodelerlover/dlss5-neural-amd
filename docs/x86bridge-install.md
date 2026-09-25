@@ -15,10 +15,10 @@ Open `release/amd-nr-installer.exe` -- one installer for both architectures sinc
 
 ## Defaults and UI
 
-- Fresh install only: ColourStrength=0.25, Structure=1, Skin=1, Passes=1. Other values follow upstream; Scale=1 matches original EnsureNeuralIni. Existing amd-nr.ini stays byte-identical.
-- Host captures constructed upstream settings before LoadSettings. Factory Defaults restores that memory snapshot with the five x86 overrides, including inline=1; it writes nothing itself, and the overlay's autosave carries it to the ini on the next frame like any other change. Constructed Scale is 0.5, whereas upstream fresh INI sets Scale=1; this original distinction is preserved.
+- Fresh install only: the same amd-nr.ini the 64-bit add-on writes (EnsureNeuralIni), every value the default in the settings table `core/x86bridge/settings_fields.inc`: ColourStrength=1, Structure=1, Skin=-1, Passes=1, Scale=1. This route used to write ColourStrength=0.25 over it. Existing amd-nr.ini stays byte-identical.
+- Host captures its constructed settings, which are the table's defaults, before LoadSettings. Factory Defaults restores that memory snapshot, the same values the 64-bit panel's Factory Defaults restores; it writes nothing itself, and the overlay's autosave carries it to the ini on the next frame like any other change.
 - Factory preserves Enabled, StartOn, hotkey/modifiers, alt-tab preference and language. It leaves restart-only diagnostics alone and invalidates history once when temporal/guide switches change.
-- Save and Reload retain their previous semantics. Factory uses CommandCode=2 in protocol v2; all wire sizes and frame messages are unchanged. Only SyncControls in Present sends it; overlay sets a pending flag.
+- Save and Reload retain their previous semantics. Factory uses CommandCode=2 (added in protocol v2; its layout is unchanged since). Only SyncControls in Present sends it; overlay sets a pending flag.
 - Autosave arms the same pending Save flag, from the overlay, when `shadow.settings_revision` has moved past `savedRevision` and no ImGui item is active. No new wire message: the write is the Save the host already implements, requested by the overlay instead of by a button. `savedRevision` follows `sentRevision` on the first sync, on a successful Save and on Reload, and deliberately does not on SetState or Factory — those change memory only.
 
 ## Docking
@@ -49,6 +49,6 @@ MSVC build/PE imports are covered by `build-x86bridge.ps1` and CI. Windows insta
 Local checklist (no game-specific production code):
 1. Half-Life 2, RE1 HD Remaster and RE5: use the native D3D9 preset; test resize, fullscreen/windowed transitions and RE5 4K. Verify LUID MATCH and `result=1 same_frame=1`.
 2. Silent Hill 3 or another true D3D8 x86 title: select D3D8 and verify that the game loads `d3d8.dll`, ReShade loads through `d3d9.dll`, the add-on panel appears and the log reports the native D3D9 frontend. Test fullscreen/window transitions and Alt+Tab.
-3. Check 1/2 passes and live controls. Fresh install Colour Strength=0.25; new panel docked. Undock, restart/reinstall and verify personal layout remains.
+3. Check 1/2 passes and live controls. Fresh install Colour Strength=1, as on the 64-bit route; new panel docked. Undock, restart/reinstall and verify personal layout remains.
 4. Change tuning; Save. Change again; Factory Defaults. Confirm INI unchanged by Factory and preferences preserved. Reload must recover the last Save.
 5. Test uninstall in a copied game folder first; inspect retained config/backups. Send the installer log, frontend/host logs and build/import/protocol logs.

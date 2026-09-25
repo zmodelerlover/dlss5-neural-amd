@@ -20,8 +20,12 @@ ui::PanelStatus BridgeStatus(){
     ui::PanelStatus s;
     s.run=!w.connected?ui::RunState::NoHelper:w.failed?ui::RunState::Error:w.transportOnly?ui::RunState::TransportOnly
          :w.unavailable?ui::RunState::Unavailable:!w.engineReady?ui::RunState::EngineNotReady:ui::RunState::Ready;
-    // A stand-down, as the 64-bit panel shows one. WireStatus carries no reason yet; the helper's log does.
-    if(w.unavailable)s.reason="the helper stood down; amd-nr-x86-host.log says why";
+    // A stand-down, as the 64-bit panel shows one, by the code the helper sends; its log has the rest.
+    using SD=x86bridge::StandDown;const auto code=static_cast<SD>(w.reason);
+    if(w.unavailable)s.reason=code==SD::DeviceLost?"the D3D12 device was removed; restart the game to re-enable"
+        :code==SD::EngineInit?"the helper could not bring the engine up; amd-nr-x86-host.log says why"
+        :code==SD::Resources?"the helper could not create its working textures; amd-nr-x86-host.log says why"
+        :"the helper stood down; amd-nr-x86-host.log says why";
     s.processed=w.processed;s.skipped=w.skipped;
     // Where the 64-bit panel prints the profile it picked for this game. This frontend has no
     // profile table and is not getting one -- what it can say instead is which of the two things it

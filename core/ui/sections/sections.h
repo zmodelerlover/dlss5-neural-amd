@@ -13,7 +13,7 @@ namespace ui {
 
 void DrawGeneral(PanelSettings &s, const PanelStatus &status, PanelActions &actions);
 void DrawPerformance(PanelSettings &s, const PanelStatus &status, PanelActions &actions);
-void DrawImage(PanelSettings &s, const PanelStatus &status);
+void DrawImage(PanelSettings &s);
 void DrawDebug(PanelSettings &s, const PanelStatus &status, PanelActions &actions);
 void DrawExperimental(PanelSettings &s, const PanelStatus &status);
 void DrawGuides(PanelSettings &s, const PanelStatus &status);

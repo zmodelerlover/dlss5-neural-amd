@@ -46,8 +46,7 @@ uint32_t AvailableOpts(const PanelStatus &status)
     // claimed by it -- which is also what the All button writes.
     uint32_t bits = 0;
     for (int i = 0; i < kOptCount; ++i)
-        if ((kOpts[i].bit != kOptFeed || status.hasFeedEffect) &&
-            !((kOpts[i].bit & kOptHostOnly) && status.helperProcess))
+        if (kOpts[i].bit != kOptFeed || status.hasFeedEffect)
             bits |= kOpts[i].bit;
     return bits;
 }
