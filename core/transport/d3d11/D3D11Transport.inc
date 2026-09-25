@@ -173,6 +173,12 @@ void BridgePresent(device* dev, swapchain* sc) {
     if (tookDepth || tookMotion)
         RearmGuideProbe((tookDepth && hadDepth) || (tookMotion && hadMotion));
     AdoptFeedEffect();
+    // Depth the probe withheld as copied at present is copied before the game's clears instead,
+    // and looked at again, the first time on trial (d3d11_guides.h). depthUsable and depthVaried
+    // are this buffer's: every take re-arms the probe.
+    if (d3d11guides::FallBackToPreClear(g.guideDepth, !g.depthUsable.load(), g.depthVaried.load(),
+                                        Log))
+        RearmGuideProbe(false);
     g.guideDepth.ready = g.guideMotion.ready = false;
     if (g.settings.useGameGuides.load()) {
         // The effect's depth is already a plain R32_FLOAT, which opens on the second device as
@@ -315,6 +321,18 @@ struct Transport final : FrameTransport {
                         resource depth) override {
         std::lock_guard observe(g.lock);
         ObserveD3D11(dev, rtvs, count, depth);
+    }
+    // The depth copy before a clear, once the probe withheld the one taken at present
+    // (d3d11_guides.h); not while ReShade draws its chain, or while nothing would read the copy:
+    // ObserveD3D11's stand-down test, and the Depth switch.
+    void OnDepthCleared(command_list* cmd, device*, resource_view dsv) override {
+        if (g.inEffects.load())
+            return;
+        std::lock_guard guard(g.lock);
+        if (g.settings.enabled.load() && g.settings.useGameGuides.load() &&
+            g.settings.useDepth.load() && !g.status.unavailable && !g.status.failed &&
+            !g.status.windowHidden && !g.bridge.failed && !g.noBridge.load() && g.stage.load() >= 3)
+            d3d11guides::SnapshotDepthBeforeClear(cmd, dsv, gameDevice, g.guideDepth);
     }
     void OnDestroyDevice(device* dev) override {
         if (gameDevice != nullptr &&

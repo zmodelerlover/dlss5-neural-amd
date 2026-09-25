@@ -162,6 +162,22 @@ notice:
   The log says each change (`guide depth: ... handed depth`), the probe's arm line says
   `depth fed 1 (handed 0)`, and the Status column reads `depth unusable` on both panels while it
   is withheld.
+- **Depth a game clears before present is copied just before the clear instead**, on the 64-bit
+  D3D11 route and the 32-bit bridge (a 32-bit Tomb Raider), and the guide probe looks at that copy.
+  Only once the probe has withheld the copy taken at present, and the first time only on trial: an
+  engine that clears at the start of a frame would hand over the last frame's depth there, and a
+  menu that moves is withheld the same way before its scene arrives in that buffer. So the first
+  copy before a clear that reads right goes back to the copy at present, once, and is probed again,
+  and depth that reads right at present stays this frame's. Withheld there a second time, the copy
+  before the clears stays until the depth moves to another buffer; Tomb Raider pays one more probe
+  cycle for it (some 14 s at 60 fps). A copy that reads no better is withheld as before. The log
+  says `withheld as copied at present, so it is copied just before the game clears it`, `reads right
+  as copied just before the game clears it, so copied at present again, once`, and `the snapshot
+  taken just before the game's last clear` once such a copy is used; the 32-bit panel's Depth
+  candidate line says `before_clear=1`. On D3D12 the pre-clear copy is handed over only while it is
+  of the buffer the depth pick holds and at most two presents old: a game that stops clearing, or a
+  newly picked buffer, now gives no depth instead of an old frame's, and the Status column no
+  longer names the snapshot as the depth source then.
 - **The temporal history is dropped by one rule on every route**, and the log says why
   (`temporal history dropped: <reason> (<n> so far)`, a line each time the reason changes). It goes
   when a raster of a new size is built, when Scale, DepthInverted, History, Temporal, Motion, Depth,

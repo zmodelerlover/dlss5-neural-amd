@@ -65,7 +65,8 @@ void SnapshotBeforeClear(command_list* cmd_list, device* dev, resource_view dsv)
         g.depthSnapshot->GetDesc().Format != DepthAliasFormat(d.Format)) {
         // Parked, not released: last present's list may still read it and nothing here waits for
         // the queue. ponytail: one per size or format change, freed at the next raster change,
-        // after EnsureResources' fence wait.
+        // after EnsureResources' fence wait. Nor is it the snapshot of anything any more.
+        g.snapshotOf = nullptr;
         if (g.depthSnapshot != nullptr)
             g.parked.push_back(std::move(g.depthSnapshot));
         auto sd = d;
@@ -104,6 +105,10 @@ void SnapshotBeforeClear(command_list* cmd_list, device* dev, resource_view dsv)
     Barrier(cmd, g.depthSnapshot.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Barrier(cmd, native, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    // Provenance: of the pick (a new pick, or letting it go, drops it) and at most two presents old
+    // is the only snapshot RecordNetwork hands over, so a game that stops clearing is no depth.
+    g.snapshotOf = native;
+    g.snapshotAt = g.status.frame;
     if (!g.loggedSnapshot) {
         g.loggedSnapshot = true;
         Log("depth: first snapshot copied before a clear. If the engine log still says depth off, "

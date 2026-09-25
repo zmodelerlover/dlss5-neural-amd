@@ -286,7 +286,12 @@ bool PrepareGuide(ID3D11Device* dev, ID3D11DeviceContext* ctx, Guide& guide, boo
         guide.snapH = h;
         guide.snapFmt = guide.format;
     }
-    ctx->CopyResource(guide.snap.Get(), guide.chosen.Get());
+    // The frame's depth is copied now, unless SnapshotDepthBeforeClear already copied it just
+    // before the game's last clear of the buffer; a frame that cleared nothing is copied now.
+    const bool beforeClear = guide.snapFresh;
+    guide.snapFresh = false;
+    if (!beforeClear)
+        ctx->CopyResource(guide.snap.Get(), guide.chosen.Get());
 
     if (!ensure(w, h, DXGI_FORMAT_R32_FLOAT, true)) {
         guide.failed = true;
@@ -360,13 +365,73 @@ bool PrepareGuide(ID3D11Device* dev, ID3D11DeviceContext* ctx, Guide& guide, boo
         oldUav->Release();
 
     guide.ready = true;
-    if (!guide.logged) {
+    // Once switched, said when the first copy taken before a clear is used: none means no clear of
+    // the buffer is seen, and every frame is still copied at present.
+    if (!guide.logged && (beforeClear || !guide.preClear)) {
         guide.logged = true;
         Log("guide depth: %ux%u format %u -> shared R32_FLOAT, one snapshot and one dispatch per "
-            "frame. PS2 depth tops out near 0.002; a modern engine's fills the range.",
-            w, h, static_cast<unsigned>(guide.format));
+            "frame, the snapshot taken %s. PS2 depth tops out near 0.002; a modern engine's fills "
+            "the range.",
+            w, h, static_cast<unsigned>(guide.format),
+            beforeClear ? "just before the game's last clear" : "at present");
     }
     return true;
+}
+
+// The probe withheld the depth this guide copied at present -- JUNK, or FLAT in a moving scene: a
+// game that clears its depth before Present (Tomb Raider on the 32-bit bridge) leaves a constant
+// plane there. The copy is then taken just before the game's clears instead, and probed again. At
+// first only on trial: an engine that clears at the start of a frame hands over the previous
+// frame's depth there, where the copy at present is this frame's, and a menu that moves is withheld
+// just the same before the scene arrives in that buffer. So the first reading that varies before a
+// clear (`varied`: the probe's last reading of fed depth did) goes back to the copy at present,
+// once, and the probe looks again; withheld there a second time, the copy before the clears stays
+// until the guide moves to another buffer (SettleGuide). A copy before a clear that reads no better
+// is withheld as before, not swapped back. True on either switch, for the caller to re-probe.
+template <class Guide, class LogFn>
+bool FallBackToPreClear(Guide& guide, bool withheld, bool varied, LogFn Log) {
+    if (guide.external || guide.chosen == nullptr)
+        return false;
+    if (guide.preClear && varied && !guide.presentRetried) {
+        guide.preClear = guide.snapFresh = false;
+        guide.presentRetried = true;
+        guide.logged = false;  // PrepareGuide says the copy at present is in use again
+        Log("guide depth: reads right as copied just before the game clears it, so copied at "
+            "present again, once, as that is this frame's if the game clears at the start of one, "
+            "and probed again.");
+        return true;
+    }
+    if (!withheld || guide.preClear)
+        return false;
+    guide.preClear = true;
+    guide.logged = false;  // PrepareGuide says when the first copy before a clear is in use
+    Log("guide depth: withheld as copied at present, so it is copied just before the game clears "
+        "it%s, and probed again.",
+        guide.presentRetried ? " until the guide takes another buffer" : "");
+    return true;
+}
+
+// Just before the game clears a depth-stencil (the 64-bit route's OnDepthCleared, the 32-bit
+// bridge's own clear event): once FallBackToPreClear switched the guide, copy its buffer while the
+// frame's depth is still in it, on the clearing context, deferred or not, so the copy lands ahead
+// of the clear. The last clear before a present wins. ponytail: a game that clears the scene depth
+// again for its HUD and draws into it hands over the HUD's, which the probe withholds as before.
+template <class Guide>
+void SnapshotDepthBeforeClear(reshade::api::command_list* cmd, reshade::api::resource_view dsv,
+                              ID3D11Device* game, Guide& guide) {
+    // A snapshot of another size or format than the buffer is PrepareGuide's to rebuild first.
+    if (!guide.preClear || guide.external || guide.failed || guide.snap == nullptr ||
+        guide.snapW != guide.width || guide.snapH != guide.height ||
+        guide.snapFmt != guide.format || cmd == nullptr || dsv.handle == 0 || game == nullptr)
+        return;
+    reshade::api::device* dev = cmd->get_device();
+    if (dev == nullptr || reinterpret_cast<ID3D11Device*>(dev->get_native()) != game ||
+        reinterpret_cast<ID3D11Resource*>(dev->get_resource_from_view(dsv).handle) !=
+            guide.chosen.Get())
+        return;
+    reinterpret_cast<ID3D11DeviceContext*>(cmd->get_native())
+        ->CopyResource(guide.snap.Get(), guide.chosen.Get());
+    guide.snapFresh = true;
 }
 
 } // namespace d3d11guides

@@ -14,7 +14,7 @@ struct Header { uint32_t magic=Magic,version=Version;Kind kind=Kind::Hello;uint3
 struct Hello { uint32_t pid=0,luidLow=0;int32_t luidHigh=0;uint32_t reserved=0; };
 struct Texture { uint32_t valid=0,width=0,height=0,format=0;uint64_t handle=0; };
 struct Build { uint64_t generation=0;Texture colour,output,depth,motion; };
-// guideTaken (bit 0 depth, bit 1 motion: the frontend took another buffer for it; bit 2: one took the
+// guideTaken (bit 0 depth, bit 1 motion: the frontend took another buffer, or copy, for it; bit 2: one took the
 // place of a buffer in use, which drops history) was a reserved zero in v3 and came without a version
 // bump, so the header catches no mismatch: a helper from before bit 2 refuses 5-7 as a malformed FRAME,
 // the first time a guide in use is replaced, and the bridge faults. Frontend and helper ship as a pair.
@@ -39,7 +39,7 @@ struct WireStatus {
     uint32_t connected=0,engineReady=0,unavailable=0,failed=0,transportOnly=0;
     // loadedPasses: how many passes the helper's loaded runtime copies can run (PassesAvailable).
     uint32_t outWidth=0,outHeight=0,netWidth=0,netHeight=0,loadedPasses=0,activePasses=0;
-    // depthActive: 1 the game's depth is fed, 2 it is there but the guide probe withheld it.
+    // depthActive: 1 the game's depth is fed, 3 fed and the probe's last reading varied, 2 withheld.
     uint32_t depthActive=0,motionActive=0,probeValid=0;
     float depthMin=0,depthMax=0,motionMean=0,motionMax=0;
     int32_t stillPct=-1,stage=0,events=0;

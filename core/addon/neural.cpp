@@ -521,9 +521,9 @@ struct Bridge
 // go without depth. Frostbite writes both every frame, at screen resolution, and leaves them
 // readable at present time. Three of the Packet's four slots become real instead of one.
 //
-// One copy per frame, taken at present. The copy is what makes it safe to read: the game keeps
-// binding and clearing its own buffer, and a view kept on the live resource reads whatever the
-// next pass left there.
+// One copy per frame, taken at present (or, once the probe withheld that, just before the game's
+// last clear: d3d11_guides.h). The copy is what makes it safe to read: the game keeps binding and
+// clearing its own buffer, and a view kept on the live resource reads what the next pass left.
 struct Guide
 {
     const char *name = "";
@@ -557,9 +557,8 @@ struct Guide
 
     Bridge bridge;
     ComPtr<ID3D12Resource> local;  // our own copy, so SRV reads never lean on state promotion
-    bool ready = false;
-    bool logged = false;
-    bool failed = false;
+    bool ready = false, logged = false, failed = false;
+    bool preClear = false, snapFresh = false, presentRetried = false;  // d3d11_guides.h
 };
 
 // The guide selection -- Tallied, SettleGuide, the size floor, what counts as motion or as
@@ -982,15 +981,16 @@ struct State
     std::atomic<float> probeDepthMin { 0.0f }, probeDepthMax { 0.0f };
     std::atomic<float> probeMotionMean { 0.0f }, probeMotionMax { 0.0f };
     std::atomic<int> probeStillPct { -1 };
-    std::atomic<bool> guidesLookReal { false }, depthUsable { true };  // SetDepthUsable
+    std::atomic<bool> guidesLookReal { false }, depthUsable { true }, depthVaried { false };  // probes.inc
     // Depth debug view scale. The PS2 peaks near 0.002 so it needed x500; a modern engine fills
     // 0..1 and x500 is pure white, which reads as "the view is broken". The probe sets this from
     // the range it actually measured, so one view works on both.
     std::atomic<float> depthDebugScale { 500.0f };
     std::atomic<float> depthScale { 1.0f };
-    ComPtr<ID3D12Resource> netDepth;
-    ComPtr<ID3D12Resource> depthSnapshot;
-    UINT64 depthClears = 0;
+    ComPtr<ID3D12Resource> netDepth, depthSnapshot;
+    ID3D12Resource *snapshotOf = nullptr;  // the depthBest it holds, taken at snapshotAt; else null
+    UINT64 depthClears = 0, snapshotAt = 0;
+    bool SnapshotFresh() const { return snapshotOf != nullptr && status.frame - snapshotAt <= 2; }
     bool loggedSnapshot = false;
 
     // The D3D11 guide path. Depth and motion straight from the game, for engines that render
@@ -2749,6 +2749,7 @@ void ReleaseSwapchainSized()
     // the same shape as the bug that broke this add-on's swapchain resize once already: the
     // game cannot finish releasing what we are still pointing at. The next bind re-finds it.
     g.depthBest.Reset();
+    g.snapshotOf = nullptr;  // nor is the snapshot of the pick any more
     g.depthWidth = g.depthHeight = 0;
     g.depthFormat = DXGI_FORMAT_UNKNOWN;
     g.depthBinds = g.depthBestBinds = 0;
@@ -3037,12 +3038,11 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
 
     bool haveDepth = false;
     // Two ways depth can arrive, in descending order of how much it is worth. From the game over
-    // the bridge: a real, full-range depth buffer an engine wrote and left alone -- this is the
-    // one that matches what RenoDX gets handed on NVIDIA. From the pre-clear snapshot: what PCSX2
-    // allows, valid but only for the instant before the emulator wipes it. The live D3D12 buffer
-    // is not read at all: it measured uniformly zero.
+    // the bridge: a real, full-range depth buffer an engine wrote and left alone, as RenoDX gets on
+    // NVIDIA. From the D3D12 pre-clear snapshot, what PCSX2 allows: only one of the buffer the pick
+    // holds, taken at most two presents ago, else none. The live D3D12 buffer is never read: zeros.
     const bool fromGame = g.gameDepthActive && g.guideDepth.local != nullptr;
-    if (g.settings.useDepth.load() && (fromGame || g.depthSnapshot != nullptr))
+    if (g.settings.useDepth.load() && (fromGame || g.SnapshotFresh()))
     {
         ID3D12Resource *depthSource = fromGame ? g.guideDepth.local.Get() : g.depthSnapshot.Get();
         const auto dd = depthSource->GetDesc();
@@ -3509,10 +3509,10 @@ void SettleD3D12Depth()
     // The snapshot is deliberately NOT released here. A dispatch recorded into the game's command
     // list still reads it, and D3D12 does not keep a resource alive because an in-flight list
     // references it -- the rule EnsureResources spells out, and it waits for the queue before it
-    // drops anything. This runs at the top of present with no such wait, and the whole reason the
-    // job bookkeeping exists is that a job routinely spans several presents. Nothing needs to be
-    // freed anyway: the next clear of the new buffer copies over it, and OnClearDepth rebuilds it
-    // when the size or format actually changes.
+    // drops anything. This runs at the top of present with no such wait, and a job routinely spans
+    // several presents. It is only no longer read: the next clear of the new buffer copies over it
+    // (rebuilt if the size or format changed), and until then the network gets no depth.
+    g.snapshotOf = nullptr;
     Log("depth (D3D12): taking %ux%u format %d, bound %u times a present and cleared %u",
         best->width, best->height, static_cast<int>(best->format), best->binds, best->clears);
     g_d12DepthTally.clear();
@@ -3663,7 +3663,7 @@ PanelStatus ReadPanelStatus()
     st.netHeight = g.netHeight;
     st.scaleCap = g.scaleCap.load();
     st.passesAvailable = PassesAvailable();
-    st.depthSource = !g.gameDepthActive && !g.depthSnapshot      ? GuideSource::None
+    st.depthSource = !g.gameDepthActive && !g.SnapshotFresh()    ? GuideSource::None
                      : !g.depthUsable.load()                     ? GuideSource::Unusable
                      : g.gameDepthActive && g.guideDepth.external ? GuideSource::Effect
                      : g.gameDepthActive ? GuideSource::Game       : GuideSource::Snapshot;

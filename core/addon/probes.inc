@@ -181,6 +181,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                     SetDepthUsable(false, "FLAT in two readings of a moving scene");
                 else if (g.probedDepth && depthReal)
                     SetDepthUsable(true, "it varies");
+                g.depthVaried.store(g.probedDepth && depthReal);  // FallBackToPreClear's cue
                 // Once a real scene has been seen there is nothing left to answer; until then
                 // keep looking, because the first few hundred frames are menus and loading -- and
                 // because junk must never end the search. It used to: the first probe fired on

@@ -52,7 +52,6 @@ struct Bridge {
 struct Guide
 {
     const char *name = "";
-
     ComPtr<ID3D11Resource> chosen;
     UINT chosenBinds = 0;
 
@@ -71,10 +70,8 @@ struct Guide
     ID3D11Texture2D *uavOf = nullptr;
 
     Bridge bridge;
-  
-    bool ready = false;
-    bool logged = false;
-    bool failed = false;
+    bool ready = false, logged = false, failed = false;
+    bool preClear = false, snapFresh = false, presentRetried = false;  // copy before a clear: d3d11_guides.h
     // Set when the companion effect supplies this guide instead of the game. Mirrored from
     // upstream's Guide so SettleGuide stays an executable copy rather than a lookalike.
     bool external = false;
@@ -617,7 +614,7 @@ bool StateRequest(x86bridge::Kind kind,const void* body=nullptr,uint32_t bytes=0
     if(!x86bridge::Request(g.pipe.value,g.process.value,kind,body,bytes,ack)||
        !x86bridge::Receive(g.pipe.value,g.process.value,&snapshot,sizeof(snapshot)))return false;
     if(ack.result!=x86bridge::Result::Ready)return false;
-    controls.status=snapshot.status;
+    controls.status=snapshot.status;if(d3d11guides::FallBackToPreClear(g.guideDepth,controls.status.depthActive==2,controls.status.depthActive==3,Log))g.guideTaken|=1;  // withheld, or varied
     if(replace){controls.shadow=snapshot.settings;controls.sentRevision=snapshot.settings.settings_revision;controls.synced=true;OperationalSettings();}
     return true;
 }
@@ -692,7 +689,7 @@ void SetAsync(bool async){
 void ClearGuide(Guide& v){
     v.chosen.Reset();v.snap.Reset();v.srv.Reset();v.uav.Reset();v.bridge.Destroy();
     v.challenger=nullptr;v.challengerFrames=0;v.coldFrames=0;v.chosenBinds=0;v.width=v.height=v.snapW=v.snapH=0;
-    v.srvOf=nullptr;v.uavOf=nullptr;v.snapFmt=v.format=DXGI_FORMAT_UNKNOWN;v.ready=v.failed=v.logged=false;
+    v.srvOf=nullptr;v.uavOf=nullptr;v.snapFmt=v.format=DXGI_FORMAT_UNKNOWN;v.ready=v.failed=v.logged=v.preClear=v.snapFresh=v.presentRetried=false;
 }
 // Collect the answer to a frame posted by an earlier present.
 //
@@ -735,6 +732,9 @@ void OnBind(command_list* cmd,uint32_t count,const resource_view* targets,resour
 }
 bool OnDraw(command_list*,uint32_t,uint32_t,uint32_t,uint32_t){return false;}
 bool OnDrawIndexed(command_list*,uint32_t,uint32_t,uint32_t,int32_t,uint32_t){return false;}
+// The depth copy before a clear, once the helper's probe withheld the one taken at present (d3d11_guides.h).
+bool OnClear(command_list* cmd,resource_view dsv,const float*,const uint8_t*,uint32_t,const rect*){if(!cmd||g.inEffects)return false;auto* dev=cmd->get_device();if(!dev||dev->get_api()!=device_api::d3d11)return false;std::lock_guard lock(g.lock);
+    if(g.enabled&&!g.failed&&!g.hidden&&controls.shadow.useGameGuides&&controls.shadow.useDepth)d3d11guides::SnapshotDepthBeforeClear(cmd,dsv,g.game11.Get(),g.guideDepth);return false;}
 // Released after g.lock is let go: the D3D9 route's private D3D11 device re-enters OnDestroyDevice on
 // its last release, which takes g.lock again; std::mutex throws, and D3D9 games went down on exit.
 struct Retired{ComPtr<ID3D11ComputeShader> cs;ComPtr<ID3D11Device> d11;ComPtr<ID3D11DeviceContext> ctx;ComPtr<IDirect3DDevice9> d9;};void Retire(Retired& r){r.cs.Swap(g.guideDepthCs);r.d11.Swap(g.game11);r.ctx.Swap(g.game11ctx);r.d9.Swap(g.game9);}
@@ -1015,9 +1015,9 @@ void ApplyOperational(){OperationalSettings();}
 std::vector<std::string> GuideCandidates(){
     std::vector<std::string> lines;char line[128];
     for(const Guide* v:{&g.guideDepth,&g.guideMotion}){
-        std::snprintf(line,sizeof(line),"%s candidate=%d %ux%u format=%u last_capture_valid=%d",
+        std::snprintf(line,sizeof(line),"%s candidate=%d %ux%u format=%u last_capture_valid=%d before_clear=%d",
                       v==&g.guideDepth?"Depth":"Motion",v->chosen.Get()!=nullptr,v->width,v->height,
-                      static_cast<unsigned>(v->format),v->ready);
+                      static_cast<unsigned>(v->format),v->ready,v->preClear);
         lines.push_back(line);
     }
     return lines;
@@ -1032,7 +1032,7 @@ BOOL APIENTRY DllMain(HMODULE module,DWORD reason,LPVOID){
         reshade::register_event<reshade::addon_event::reshade_begin_effects>(OnBeginEffects);
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(OnFinishEffects);
         reshade::register_event<reshade::addon_event::draw>(OnDraw);
-        reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
+        reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);reshade::register_event<reshade::addon_event::clear_depth_stencil_view>(OnClear);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroy);
         reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
         reshade::register_event<reshade::addon_event::present>(OnPresent);

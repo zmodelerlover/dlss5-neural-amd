@@ -160,6 +160,8 @@ bool SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
     guide.ready = false;
     guide.logged = false;
     guide.failed = false;
+    // A new buffer is copied at present until the probe withholds that copy (d3d11_guides.h).
+    guide.preClear = guide.snapFresh = guide.presentRetried = false;
     // Whatever the companion effect had here, the game has just outbid it with a buffer it
     // renders itself. That is not a guess at motion, so it wins.
     guide.external = false;
