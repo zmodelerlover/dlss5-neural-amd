@@ -15,6 +15,19 @@ float HalfToFloat(uint16_t h)
     return (h & 0x8000) ? -v : v;
 }
 
+// A guide went to another buffer -- the game's pick (SettleGuide, the D3D12 depth settle, the 32-bit
+// bridge's FRAME) or the companion effect's feed: the last reading was of a buffer no longer read,
+// so look again once it has settled. The junk count starts over too, or five readings latched on
+// the old buffer would end the new search after one. ponytail: takes that keep coming (the D3D12
+// depth pick has no streak) keep the probe going, at most one per 120 presents, past the five-junk
+// cap; a count of re-arms since the last real reading would bound it.
+void RearmGuideProbe()
+{
+    g.probeGuides.store(true);
+    g.nextGuideProbe = g.status.frame + 120;
+    g.junkProbes = 0;
+}
+
 void DemoteMotion(double meanPx);  // core/temporal/motion_feed.inc
 void DrainReadbacks(UINT nw, UINT nh)
 {
@@ -71,14 +84,21 @@ void DrainReadbacks(UINT nw, UINT nh)
                 // a flat buffer cannot latch a scale, and on hi < 0.5 so a game whose depth
                 // already fills the range is left exactly as it was. Clamped because a max that
                 // measures near zero would otherwise turn rounding noise into the whole signal.
-                if (depthReal && hi < 0.5)
+                // The copy is of netDepth, already multiplied by the scale in force, so the
+                // buffer's own top is hi over that scale; taking hi itself, a re-probe after a
+                // take would set 1/old of the right scale. ponytail: a reading the old scale
+                // saturated (a small range's x500 on a buffer that fills 0..1) still keeps that
+                // scale; telling it from a right scale's own top at 1.0 needs a raw copy.
+                const double top =
+                    hi / (g.settings.depthNormalise.load() ? g.depthScale.load() : 1.0f);
+                if (depthReal && top < 0.5)
                 {
-                    const float s = std::clamp(static_cast<float>(1.0 / hi), 1.0f, 4096.0f);
+                    const float s = std::clamp(static_cast<float>(1.0 / top), 1.0f, 4096.0f);
                     g.depthScale.store(s);
                     Log("guide depth: range tops out at %.6f, so the buffer fills %.2f%% of 0..1 "
                         "-- scaling the guide by %.1fx to give the network the range it was "
                         "trained on. DepthNormalise=0 turns this off.",
-                        hi, 100.0 * hi, static_cast<double>(s));
+                        top, 100.0 * top, static_cast<double>(s));
                 }
                 Log("guide probe, depth %ux%u: min %.6f max %.6f mean %.6f, %.1f%% in 0..1%s", nw,
                     nh, lo, hi, inRange == 0 ? 0.0 : sum / static_cast<double>(inRange), inPct,
@@ -131,7 +151,8 @@ void DrainReadbacks(UINT nw, UINT nh)
                 {
                     g.guidesLookReal.store(true);
                     g.probeGuides.store(false);
-                    Log("guide probe: both guides carry real data. Not probing again.");
+                    Log("guide probe: both guides carry real data. Not probing again until a "
+                        "guide moves to another buffer.");
                 }
                 else if (++g.junkProbes >= 5)
                 {
@@ -142,8 +163,8 @@ void DrainReadbacks(UINT nw, UINT nh)
                     // and loading screens; past that the answer is not going to change.
                     g.probeGuides.store(false);
                     Log("guide probe: five readings and the guides still do not carry usable "
-                        "data. Not probing again -- the lines above say what was wrong with "
-                        "each one.");
+                        "data. Not probing again until a guide moves to another buffer -- the "
+                        "lines above say what was wrong with each one.");
                 }
                 g.guideReadDepth->Unmap(0, nullptr);
                 g.guideReadMotion->Unmap(0, nullptr);

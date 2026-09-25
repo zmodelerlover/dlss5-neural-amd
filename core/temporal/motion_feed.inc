@@ -29,8 +29,11 @@ cbuffer C : register(b0) { uint w; uint h; float k; float maxPx; };
 ComPtr<ID3D12PipelineState> &g_motionFeed = *new ComPtr<ID3D12PipelineState>;
 
 // The probe saw a field longer than the raster. The feed has already zeroed it; this gives the
-// motion back to the estimator. ponytail: it stays demoted until the game's pick changes (D3D11
-// resets it there) or, on the x86 bridge, for the session.
+// motion back to the estimator. ponytail: it lasts until a motion buffer is taken again, on every
+// route (the x86 bridge hears of it in FRAME) -- another one, or this one after a resize. The take
+// re-probes, so a buffer that is still not velocity is demoted again ~120 presents later, the feed
+// zeroing it meanwhile. Nothing remembers which buffer it was: a raw pointer can be the game's next
+// allocation, and a reference would hold its buffer across its own resize.
 void DemoteMotion(double meanPx)
 {
     if (g.guideMotion.failed)

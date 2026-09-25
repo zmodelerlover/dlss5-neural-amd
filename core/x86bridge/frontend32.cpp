@@ -98,7 +98,7 @@ struct Front {
     std::atomic<bool> inEffects{false}; // ReShade is drawing its own effect chain; see OnBind
     x86bridge::Handle process,pipe,job;DWORD hostPid=0;LUID luid{};
     swapchain* active=nullptr;bool settings=false,enabled=false,failed=false,built=false,reset=true,hidden=false,keyDown=false,transport=false;
-    int toggleKey=VK_END,toggleMods=1;bool disableAltTab=false;uint64_t generation=0,frame=0;
+    int toggleKey=VK_END,toggleMods=1;bool disableAltTab=false;uint64_t generation=0,frame=0;uint32_t guideTaken=0;
     // Pipelined presentation, off unless the ini asks. When on, a frame is posted at the end of one
     // present and its answer collected at the start of the next, so the helper works while the game
     // builds its next frame instead of while the game waits. pendingFrame is what the outstanding
@@ -935,14 +935,14 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
         if(FAILED(uploadHr)){if(DeferD3D9Failure("input copy",uploadHr))return;FaultHresult("D3D9 input copy did not complete",uploadHr);return;}
     }else g.game11ctx->CopyResource(g.stageIn11.Get(),bb.Get());
     g.game11ctx->CopyResource(g.colour.on11.Get(),g.stageIn11.Get());
-    settled=true;SettleGuide(g.guideDepth,g_depthTally,Log);SettleGuide(g.guideMotion,g_motionTally,Log);
+    settled=true;if(SettleGuide(g.guideDepth,g_depthTally,Log))g.guideTaken|=1;if(SettleGuide(g.guideMotion,g_motionTally,Log))g.guideTaken|=2;
     g.guideDepth.ready=g.guideMotion.ready=false;
     PrepareGuide(g.guideDepth,true);PrepareGuide(g.guideMotion,false);
     if(g.failed)return;
     if(!FlushAndWait11()){Fault("input D3D11 queue not drained");return;}
     if(!BuildRemote()){Fault("resource export/BUILD failed");return;}
     x86bridge::Frame f;f.generation=g.generation;f.id=++g.frame;f.resetHistory=g.reset;
-    f.depthValid=g.guideDepth.ready;f.motionValid=g.guideMotion.ready;
+    f.depthValid=g.guideDepth.ready;f.motionValid=g.guideMotion.ready;f.guideTaken=g.guideTaken;g.guideTaken=0;
     const double inputMs=probe.Split();
     // Same-frame mode asks and waits right here, so the answer belongs to the frame just captured.
     // Pipelined mode collected the previous present's answer before SyncControls and posts this

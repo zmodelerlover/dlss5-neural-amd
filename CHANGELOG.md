@@ -142,6 +142,15 @@ notice:
   network on a frame stretched to the old shape. A new size is now followed once it has lasted 120
   presents and is more than 2% off; a game that keeps changing size (Xenosaga 2, PCSX2) still keeps
   one raster. Following it starts history again, as a Scale change does.
+- The guide probe looks again, 120 presents later, whenever the game's depth or motion moves to
+  another buffer or is taken back after a resize, on D3D11, D3D12 and the 32-bit bridge. It used to
+  stop for the session after one good reading or five bad ones, so the depth range the guide is
+  scaled by, and the check that motion really is velocity, only ever covered the first buffer (with
+  DepthNormalise on, a move from a small range to a buffer that already fills 0..1 still keeps the
+  small range's scale). On a 32-bit game a motion buffer given up on as not velocity no longer
+  costs the game's motion for the rest of the session: the next buffer the game moves to is used,
+  and probed in turn. The same buffer taken back after a resize is used again for about 2 s, until
+  the probe gives up on it again.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

@@ -14,7 +14,9 @@ struct Header { uint32_t magic=Magic,version=Version;Kind kind=Kind::Hello;uint3
 struct Hello { uint32_t pid=0,luidLow=0;int32_t luidHigh=0;uint32_t reserved=0; };
 struct Texture { uint32_t valid=0,width=0,height=0,format=0;uint64_t handle=0; };
 struct Build { uint64_t generation=0;Texture colour,output,depth,motion; };
-struct Frame { uint64_t generation=0,id=0;uint32_t depthValid=0,motionValid=0,resetHistory=0,reserved=0; };
+// guideTaken (bit 0 depth, bit 1 motion: the frontend took another buffer for it) was a reserved zero
+// in v3, so it came without a version bump: an older peer reads it as no take.
+struct Frame { uint64_t generation=0,id=0;uint32_t depthValid=0,motionValid=0,resetHistory=0,guideTaken=0; };
 struct Ack { Header header;Result result=Result::Error;uint32_t error=0;uint64_t generation=0,frame=0;uint32_t luidLow=0;int32_t luidHigh=0; };
 
 // These control messages are orthogonal to the unchanged FRAME/Ack contract.
@@ -50,7 +52,7 @@ static_assert(sizeof(Header)==16 && offsetof(Header,bytes)==12);
 static_assert(sizeof(Hello)==16 && offsetof(Hello,luidHigh)==8);
 static_assert(sizeof(Texture)==24 && offsetof(Texture,handle)==16);
 static_assert(sizeof(Build)==104 && offsetof(Build,motion)==80);
-static_assert(sizeof(Frame)==32 && offsetof(Frame,resetHistory)==24);
+static_assert(sizeof(Frame)==32 && offsetof(Frame,resetHistory)==24 && offsetof(Frame,guideTaken)==28);
 static_assert(sizeof(Ack)==48 && offsetof(Ack,generation)==24 && offsetof(Ack,luidHigh)==44);
 static_assert(std::is_trivially_copyable_v<Build> && std::is_standard_layout_v<Frame>);
 static_assert(sizeof(WireSettings)==224 && offsetof(WireSettings,passOverride)==176);

@@ -149,7 +149,7 @@ assert h.index('    Result Neural()')<h.index('JobGate()')<h.index('RecordNetwor
 # The guide selection is one header both routes include, so the two cannot pick differently.
 for src in (u,f):
  assert 'guide_choice.h"' in src
- for fn in ['DXGI_FORMAT GuideDepthSrvFormat(','bool LooksLikeMotion(','void SettleGuide(','struct Tallied']:
+ for fn in ['DXGI_FORMAT GuideDepthSrvFormat(','bool LooksLikeMotion(','SettleGuide(Guide','struct Tallied']:
   assert fn not in src,fn
 # The D3D11 guide copy, staging and drain are one header both routes include. The 32-bit copy had
 # drifted -- no depth size floor, no GameGuides or effect-chain gate -- and picked different guides.
@@ -167,7 +167,7 @@ assert 'g.inEffects' in bind and 'controls.shadow.useGameGuides' in bind and 're
 # Without the finish half, inEffects latches after the first effect pass and OnBind stops observing.
 assert 'reshade_finish_effects>(OnFinishEffects)' in f and '{g.inEffects=false;}' in f
 # SettleGuide keeps the tallies standing over a cold start, so a present that ran it must not clear them.
-assert 'if(!settled){g_depthTally.clear()' in present and 'settled=true;SettleGuide(' in present
+assert 'if(!settled){g_depthTally.clear()' in present and 'settled=true;if(SettleGuide(' in present
 
 transport=h[h.index('    Result CopyOnly()'):h.index('    Result Neural()')]
 for call in ['InitHip(','InitEngine(','BringUpEngines(','RecordNetwork(','LoadLibrary','RuntimeHashMatches(']:assert call not in transport

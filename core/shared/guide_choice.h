@@ -79,12 +79,13 @@ inline bool LooksLikeMotion(const D3D11_TEXTURE2D_DESC &d, UINT screenW, UINT sc
 
 // Takes the frame's tallies and settles which resource each guide reads from. A guide that
 // changes resource mid-run drops its snapshot and views, which Ensure rebuilds -- the same
-// orphaned-view trap the depth path already paid for once.
+// orphaned-view trap the depth path already paid for once. True when it took a buffer, which the
+// caller hands to RearmGuideProbe: the probe's last reading was of another one.
 //
 // A template because the two routes' Guide structs are different types -- the add-on's also holds
 // the D3D12 copy -- that share every member this reads and writes; and each route has its own log.
 template <class Guide, class LogFn>
-void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn Log)
+bool SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn Log)
 {
     const Tallied *best = nullptr;
     for (const auto &entry : tally)
@@ -93,7 +94,7 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
     if (best == nullptr)
     {
         tally.clear();
-        return;
+        return false;
     }
     if (guide.chosen.Get() == best->res.Get())
     {
@@ -101,7 +102,7 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
         guide.challenger = nullptr;
         guide.challengerFrames = 0;
         tally.clear();
-        return;
+        return false;
     }
 
     // Nothing chosen yet: add three presents up, then take the leader.
@@ -122,7 +123,7 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
     if (cold)
     {
         if (++guide.coldFrames < 3)
-            return;  // deliberately NOT cleared -- leaving it standing is what accumulates
+            return false;  // deliberately NOT cleared -- leaving it standing is what accumulates
         guide.coldFrames = 0;
     }
     // A challenger has to win more than one frame.
@@ -142,12 +143,12 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
         guide.challenger = best->res.Get();
         guide.challengerFrames = 1;
         tally.clear();
-        return;
+        return false;
     }
     else if (++guide.challengerFrames < 3)
     {
         tally.clear();
-        return;
+        return false;
     }
     guide.challenger = nullptr;
     guide.challengerFrames = 0;
@@ -166,6 +167,7 @@ void SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
         best->height, static_cast<unsigned>(best->format), best->binds,
         cold ? "over the first three presents" : "a frame for three frames running");
     tally.clear();
+    return true;
 }
 
 } // namespace guides

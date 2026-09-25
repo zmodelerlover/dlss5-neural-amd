@@ -1821,10 +1821,7 @@ void AdoptFeedEffect()
     // than once. Not on the first call: the probe is already armed then, and re-arming would
     // only push the reading further out.
     if (!first)
-    {
-        g.probeGuides.store(true);
-        g.nextGuideProbe = g.status.frame + 120;
-    }
+        RearmGuideProbe();
     std::snprintf(g.feedStatus, sizeof(g.feedStatus),
                   "AMD_Neural_Feed.fx: %s; motion %s, depth %s",
                   g.effects == nullptr      ? "no effect runtime yet"
@@ -3502,6 +3499,7 @@ void SettleD3D12Depth()
     g.depthHeight = best->height;
     g.depthFormat = best->format;
     g.depthBinds = g.depthBestBinds = best->binds;
+    RearmGuideProbe();
     // The snapshot is deliberately NOT released here. A dispatch recorded into the game's command
     // list still reads it, and D3D12 does not keep a resource alive because an in-flight list
     // references it -- the rule EnsureResources spells out, and it waits for the queue before it

@@ -249,10 +249,12 @@ struct Host {
         return fresh?Result::Neural:Result::Original;
     }
     Result FrameWork(const Frame& f){
-        Require(built&&f.generation==generation&&f.id>lastFrame&&f.depthValid<=1&&f.motionValid<=1&&f.resetHistory<=1,"invalid frame/generation");
+        Require(built&&f.generation==generation&&f.id>lastFrame&&f.depthValid<=1&&f.motionValid<=1&&f.resetHistory<=1&&f.guideTaken<=3,"invalid frame/generation");
         Require((!f.depthValid||spec.depth.valid)&&(!f.motionValid||spec.motion.valid),"unbuilt guide requested");
         lastFrame=f.id;
         if(f.resetHistory){g.historyValid.store(false);g.jobRunning=false;}  // a reset follows a pause, and a pause is no network job
+        // The frontend's SettleGuide took another buffer: as on the 64-bit route, the probe looks again and a new motion buffer is no longer demoted.
+        if(f.guideTaken){if(f.guideTaken&2)g.guideMotion.failed=false;RearmGuideProbe();}
         g.guideDepth.ready=f.depthValid&&g.settings.useGameGuides.load()&&g.settings.useDepth.load();
         g.guideMotion.ready=f.motionValid&&g.settings.useGameGuides.load()&&g.settings.useMotion.load()&&!g.guideMotion.failed;
         const auto result=transport?CopyOnly():Neural();

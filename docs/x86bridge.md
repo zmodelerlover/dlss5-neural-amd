@@ -71,6 +71,8 @@ Packed fixed-width little-endian Windows wire data; uint32_t booleans. No COM po
 
 Existing kinds 1..5 remain HELLO/BUILD/FRAME/DROP/QUIT. New kinds 6..11: GET_STATE, SET_STATE, SAVE_SETTINGS, RELOAD_SETTINGS, COMMAND, STATUS. SET_STATE body=204; COMMAND body=16; other controls have no request body. Every control response is the existing 48-byte Ack followed by a fixed 312-byte StateSnapshot, including rejected controls; FRAME replies remain exactly the original Ack. Status uses enum/flags/numbers, not strings. Protocol 1 rejects explicitly through header validation; no accidental compatibility.
 
+FRAME's last word, reserved and zero until then, is `guideTaken`: bit 0 when the frontend's guide selection took another depth buffer since the last FRAME, bit 1 another motion buffer. The helper then probes the guides again 120 frames later, as the 64-bit route does after its own take, and a motion buffer taken anew is read even when the one before it was given up on as not velocity. A value above 3 is refused like any other malformed FRAME.
+
 Revision starts at 1 per helper session. SET_STATE must have a strictly greater revision; stale/equal/malformed updates are rejected without engine mutation. Reload increments the host revision. Measurement IDs must strictly increase in the session and cannot replay. Pending one-shots are cleared on host loss. No retry can replay a command implicitly.
 
 Only OnPresent calls SyncControls: GET_STATE after HELLO, SET_STATE for dirty revision, pending Save/Reload/Measure, periodic STATUS (250 ms), then the existing frame path. This all runs under the existing frontend lock. Existing DROP/QUIT remain serialized lifecycle operations under that same lock. No worker thread or second launch path is introduced.
