@@ -89,7 +89,7 @@ struct OpticalFlow
     UINT width = 0, height = 0;
     ComPtr<ID3D12Resource> input, sparse, scd, dense;
     ComPtr<ID3D12PipelineState> prepare, densify;
-} g_flow;
+} &g_flow = *new OpticalFlow;  // never destroyed, as State g is: see neural.cpp
 
 void DestroyOpticalFlow()
 {

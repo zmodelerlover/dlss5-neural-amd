@@ -378,10 +378,10 @@ void Barrier(ID3D12GraphicsCommandList *c, ID3D12Resource *r, D3D12_RESOURCE_STA
 // inline block, 0xa158 across the job block and 0xa160 across the option struct, because
 // v0.3.0 inserts new globals between them. Older builds are refused by hash rather than
 // written into with the wrong addresses.
-constexpr unsigned char kRuntimeSha256[32] = { 0x70, 0xaf, 0x3f, 0xb7, 0x57, 0xf8, 0x3f, 0x71,
-                                               0xec, 0x94, 0x7c, 0xe4, 0x61, 0x97, 0x0f, 0xde,
-                                               0xcc, 0x96, 0x36, 0x86, 0x4b, 0xc0, 0x1d, 0x95,
-                                               0x2a, 0xbf, 0xfb, 0x36, 0xae, 0x31, 0x0b, 0xe6 };
+constexpr unsigned char kRuntimeSha256[32] = { 0xd6, 0x20, 0xe4, 0x69, 0x94, 0x51, 0xc8, 0xe1,
+                                               0x3f, 0xb7, 0x76, 0x98, 0x1e, 0x91, 0x2e, 0xcc,
+                                               0x4b, 0xdf, 0x02, 0x9b, 0x2b, 0xfc, 0x8f, 0xec,
+                                               0xc1, 0x44, 0x87, 0xbd, 0x9d, 0xfd, 0xa9, 0xaa };
 constexpr size_t kRuntimeSize = 7290880;
 
 template <class T> T &At(HMODULE h, size_t rva)
@@ -573,9 +573,9 @@ struct Guide
 };
 
 // The guide selection -- Tallied, SettleGuide, the size floor, what counts as motion or as
-// readable depth -- is guide_choice.h, shared with the 32-bit bridge.
+// readable depth -- is guide_choice.h, shared with the 32-bit bridge. Never destroyed, as g is.
 using namespace guides;
-std::unordered_map<void *, Tallied> g_depthTally, g_motionTally;
+auto &g_depthTally = *new d3d11guides::TallyMap, &g_motionTally = *new d3d11guides::TallyMap;
 
 // The same idea for D3D12 depth, which had none: it picked by size alone. Separate because these
 // are ID3D12Resource and because depth here is decided on clears as well as binds -- the buffer
@@ -587,7 +587,7 @@ struct D12Depth
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 };
-std::unordered_map<void *, D12Depth> g_d12DepthTally;
+auto &g_d12DepthTally = *new std::unordered_map<void *, D12Depth>;  // never destroyed, as g is
 UINT g_d12DepthCold = 0;
 
 // One candidate's entry, created on first sight. Binds and clears both come through here, because
@@ -1032,10 +1032,9 @@ struct State
     // D3D12 device is created, 3 (the default) is the whole bridge. Tells "the library arriving"
     // apart from "a second device existing" apart from "the bridge running".
     std::atomic<int> stage { 3 };
-    // Which ReShade events to subscribe to, as a bitmask: 1 bind-render-targets, 2 draw and
-    // draw-indexed, 4 clear-depth-stencil, 8 destroy-swapchain, 16 the overlay. Subscribing is
-    // not free -- ReShade only turns on the tracking an event needs when something asks for it --
-    // so this exists to tell which subscription costs what. Default is everything.
+    // ReShade events to subscribe to, as a bitmask: 1 bind-render-targets, 2 draw and draw-indexed,
+    // 4 clear-depth-stencil, 16 the overlay; 8 is ignored, destroy-swapchain is the resize drain
+    // and always on. Subscribing turns on ReShade's tracking for it, so this bisects the cost.
     int events = 31;
     // Which swapchain is mid-teardown, if any. ResizeBuffers runs on its own thread -- measured,
     // thread 35300 while the render thread was elsewhere -- so without a gate the render thread
@@ -1091,7 +1090,10 @@ struct State
     std::atomic<UINT64> depthEvents { 0 };
 };
 
-State g;
+// ponytail: never destroyed, like every global holding COM objects: a destructor would release
+// them under the loader lock, after the runtime, HIP and the driver detached. Ceiling: an unload
+// keeps its refs on the game's device and context; release those at destroy_device if it matters.
+State &g = *new State;
 
 // Defined further down, beside the raster code they belong to; used from both present paths,
 // which come first.
@@ -2452,6 +2454,7 @@ std::filesystem::path RuntimeCopyUsingPrivateD3D12(const std::filesystem::path &
 // the runtime made the call, as an offset from the module base -- and that is a line in IDA.
 //
 // First-chance and read-only: this returns CONTINUE_SEARCH always, so it changes no behaviour.
+PVOID g_probe = nullptr;  // removed at DETACH: an unload mid-process must not leave it dangling
 LONG CALLBACK NullJumpProbe(EXCEPTION_POINTERS *e)
 {
     static LONG reported = 0;
@@ -2606,12 +2609,8 @@ bool InitEngine()
     // Armed once, before the first raw write into the runtime. Everything below this line is a
     // hardcoded offset into someone else's binary, and the failure mode of getting one wrong is a
     // jump into nothing -- see NullJumpProbe.
-    static bool probeUp = false;
-    if (!probeUp)
-    {
-        AddVectoredExceptionHandler(1, NullJumpProbe);
-        probeUp = true;
-    }
+    if (g_probe == nullptr)
+        g_probe = AddVectoredExceptionHandler(1, NullJumpProbe);
     Log("input contract: encoding %d, tonemap requested %d -> runtime %d; FP16 is transport, "
         "not a colour-space declaration. Restart after changing encoding or tonemap.",
         g.settings.encoding.load(), g.settings.tonemap.load(), RuntimeTonemap());
@@ -4672,8 +4671,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         }
         if (g.events & 4)
             reshade::register_event<reshade::addon_event::clear_depth_stencil_view>(OnClearDepth);
-        if (g.events & 8)
-            reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+        reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
         reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
         reshade::register_event<reshade::addon_event::init_effect_runtime>(OnInitEffects);
         reshade::register_event<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffects);
@@ -4682,7 +4680,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         reshade::register_event<reshade::addon_event::present>(OnPresent);
         if (g.events & 16)
             reshade::register_overlay("AMD Neural Rendering", OnOverlay);
-        Log("events subscribed: mask %d", g.events);
+        Log("events subscribed: mask %d (destroy_swapchain always on)", g.events);
         for (FrameTransport *transport : AllTransports())
             transport->OnAddonLoad();
         break;
@@ -4690,6 +4688,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         // reserved is non-null when the process is exiting rather than unloading us.
         for (FrameTransport *transport : AllTransports())
             transport->OnAddonUnload(reserved != nullptr);
+        if (g_probe != nullptr)
+            RemoveVectoredExceptionHandler(g_probe);
         if (g.events & 16)
             reshade::unregister_overlay("AMD Neural Rendering", OnOverlay);
         reshade::unregister_addon(module);

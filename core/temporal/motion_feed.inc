@@ -25,7 +25,8 @@ cbuffer C : register(b0) { uint w; uint h; float k; float maxPx; };
  mv[p.xy] = v;
 })";
 
-ComPtr<ID3D12PipelineState> g_motionFeed;
+// Never destroyed, as State g is: see neural.cpp.
+ComPtr<ID3D12PipelineState> &g_motionFeed = *new ComPtr<ID3D12PipelineState>;
 
 // The probe saw a field longer than the raster. The feed has already zeroed it; this gives the
 // motion back to the estimator. ponytail: it stays demoted until the game's pick changes (D3D11

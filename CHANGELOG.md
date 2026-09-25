@@ -7,8 +7,17 @@ panel. The output was checked against v0.6.6 byte for byte in 26 settings that m
 with the temporal path (motion, history, depth) switched off for that check. Fixes a player would
 notice:
 
+- **Replace `dlssnr_amd_pass1.dll`: the runtime must be the new build.** It is still v0.3.0 with
+  a fourth byte patch, and the old file is refused by hash (the log says so by name). The runtime's
+  own exit-time destructor aborted the game (`0xC0000409`) whenever the network had run same-frame,
+  because its watchdog thread was never joined. `tools/SHA256SUMS.txt` has the new hash.
 - **A 32-bit D3D9 game no longer crashes on exit** (`0xC0000409`) with the effect on. Present in
   v0.6.6.
+- An add-on unloaded mid-game (NFS unloads it when the device goes) no longer leaves its crash
+  probe or the OpenGL fault filter pointing into freed code, and nothing the add-on holds on the GPU
+  is released at exit after the runtime and the driver have gone.
+- `Events` without bit 8 no longer drops the drain a resize waits on: destroy-swapchain is always
+  subscribed.
 - **A resolution change in Async mode no longer switches the effect off for the rest of the
   session** when the runtime is still busy.
 - **A resize no longer clears the game's D3D11 state**, which left an emulator that caches its own

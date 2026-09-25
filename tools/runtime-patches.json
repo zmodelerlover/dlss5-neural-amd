@@ -20,6 +20,12 @@
       "before": "70726576696f757320726573696475616c2073686f776e",
       "after": "63757272656e7420696e707574206b6570742020202020",
       "reason": "report the timeout fallback accurately: with ToneChannels bit 4 set and bit 2 clear the shader shows nothing, not the previous residual"
+    },
+    {
+      "offset": "0x46f3",
+      "before": "0f85d0000000",
+      "after": "909090909090",
+      "reason": "the runtime's atexit destructor (RVA 0x52ec) calls std::terminate, which is abort(), while the inline watchdog std::thread at 0x97970 is still joinable, because its DllMain detaches only the worker. At process exit the kernel has already ended that thread, so leave the handle to the exit instead of aborting"
     }
   ],
   "dropped": [

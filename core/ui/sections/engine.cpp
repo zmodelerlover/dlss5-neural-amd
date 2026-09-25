@@ -155,23 +155,23 @@ void RestartOnly(const PanelStatus &status)
     if (status.helperProcess)
         Help("Diagnostics that decide what the helper builds at startup, so they cannot be "
              "changed live -- set them in amd-nr.ini. Stage=1 stops before D3D12 loads, 2 before "
-             "the engine, 3 is everything. Events is a bitmask: 1 bind, 2 draw, 4 clear, 8 "
-             "destroy_swapchain, 16 overlay.",
+             "the engine, 3 is everything. Events is a bitmask: 1 bind, 2 draw, 4 clear, 16 "
+             "overlay; 8 is ignored, destroy_swapchain is the resize drain and always on.",
 
              "Diagnósticos que decidem o que o ajudante constrói na inicialização, então não "
              "mudam ao vivo -- ajuste no amd-nr.ini. Stage=1 para antes da D3D12 carregar, 2 "
-             "antes do motor, 3 é tudo. Events é máscara de bits: 1 bind, 2 draw, 4 clear, 8 "
-             "destroy_swapchain, 16 overlay.");
+             "antes do motor, 3 é tudo. Events é máscara de bits: 1 bind, 2 draw, 4 clear, 16 "
+             "overlay; o 8 é ignorado, destroy_swapchain é o dreno do resize, sempre ligado.");
     else
         Help("Diagnostics that decide what gets built at startup, so they cannot be changed live "
              "-- set them in amd-nr.ini. Stage=1 stops before D3D12 loads, 2 before the engine, 3 "
-             "is everything. Events is a bitmask: 1 bind, 2 draw, 4 clear, 8 destroy_swapchain, "
-             "16 overlay.",
+             "is everything. Events is a bitmask: 1 bind, 2 draw, 4 clear, 16 overlay; 8 is "
+             "ignored, destroy_swapchain is the resize drain and always on.",
 
              "Diagnósticos que decidem o que é construído na inicialização, então não mudam ao "
              "vivo -- ajuste no amd-nr.ini. Stage=1 para antes da D3D12 carregar, 2 antes do "
-             "motor, 3 é tudo. Events é máscara de bits: 1 bind, 2 draw, 4 clear, 8 "
-             "destroy_swapchain, 16 overlay.");
+             "motor, 3 é tudo. Events é máscara de bits: 1 bind, 2 draw, 4 clear, 16 overlay; "
+             "o 8 é ignorado, destroy_swapchain é o dreno do resize e fica sempre ligado.");
 }
 
 } // namespace

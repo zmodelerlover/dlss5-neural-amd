@@ -83,7 +83,7 @@ struct Route
     }
 };
 
-Route g_route;
+Route &g_route = *new Route;  // never destroyed, as State g is: see neural.cpp
 
 // Where did it die? This route drives a driver that has already been seen to fault inside its own
 // ICD, from its own thread, in a call unrelated to the one that caused it (see glprobe). A crash
@@ -91,6 +91,7 @@ Route g_route;
 // filter names the module and the offset and then lets the previous handler run, so nothing else
 // changes about how the process dies.
 LPTOP_LEVEL_EXCEPTION_FILTER g_previousFilter = nullptr;
+bool filterInstalled = false;  // only then does an unload have a filter to put back
 
 LONG WINAPI ReportFault(EXCEPTION_POINTERS *info)
 {

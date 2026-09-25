@@ -3,14 +3,17 @@
 The installer that ships with DLSS-NR-on-AMD does not patch anything: the `version.dll` it drops
 is byte for byte the payload appended to `dlssnr_on_amd_setup.exe`, which
 `tools/extract_runtime.py` lifts out without running it. Every change here is ours, and there are
-three, all in place and all the same length, so no RVA moves and the offsets the add-on writes
+four, all in place and all the same length, so no RVA moves and the offsets the add-on writes
 into stay valid:
 
   * two calls neutralised, because the DLL was built to install its own hooks and to announce a
     submission it did not make. Driving it from an add-on means doing both ourselves.
   * one log string, so a timed-out frame does not report a fallback that no longer happens.
+  * one jump removed at 0x46f3, because the runtime's exit-time destructor aborts the process when
+    the inline watchdog thread was never joined. By then the thread is gone; the handle is left to
+    the exit.
 
-The three offsets are file offsets into one exact build, and they moved for v0.3.0: the setup
+The offsets are file offsets into one exact build, and the first three moved for v0.3.0: the setup
 thread's `call CreateThread` is at 0x60a6 rather than 0x6006, the doubled ExecuteCommandLists call
 at 0x8873 rather than 0x8583, and the log string at 0x76c0e rather than 0x6e3db. The script
 refuses a file whose hash is not `original_sha256`, so a stale pairing cannot be applied silently.

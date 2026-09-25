@@ -316,7 +316,7 @@ particular. The game is deliberately kept **outside** the repository.
 python tools\extract_runtime.py <dlssnr_on_amd_setup.exe v0.3.0> version.dll
 #   -> 8321cae728d28cb7632d0d58d3d913e91132bf7645c126505698fbe4cd5a0138 (original_sha256)
 python tools\patch_runtime.py version.dll tools\runtime-patches.json dlssnr_amd_pass1.dll
-#   -> 70af3fb757f83f71ec947ce461970fdecc9636864bc01d952abffb36ae310be6 (SHA256SUMS.txt)
+#   -> d620e4699451c8e13fb776981e912ecc4bdf029b2bfc8fecc14487bd9dfda9aa (SHA256SUMS.txt)
 
 # 4. beside the game's exe: amd-nr.addon64, dlssnr_amd_pass1.dll,
 #    dlssnr_on_amd_weights.bin (6bf8dc93...), and a amd-nr.ini

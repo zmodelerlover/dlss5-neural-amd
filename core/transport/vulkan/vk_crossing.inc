@@ -77,7 +77,7 @@ struct Route
     }
 };
 
-Route g_route;
+Route &g_route = *new Route;  // never destroyed, as State g is: see neural.cpp
 
 // ReShade's stock Vulkan manifest uses the _1 kill switch. DOOM Eternal's launcher sets that
 // exact variable, so the compatible global manifest on this machine uses _2. Preserve both while

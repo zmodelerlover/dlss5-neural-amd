@@ -72,7 +72,7 @@ struct HistoryFilters
     ComPtr<ID3D12PipelineState> warp, guard, smooth;
     ComPtr<ID3D12Resource> warped[State::kMaxPasses];
     bool failed = false;
-} g_filters;
+} &g_filters = *new HistoryFilters;  // never destroyed, as State g is: see neural.cpp
 
 bool FiltersReady()
 {

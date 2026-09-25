@@ -116,7 +116,6 @@ void Present(command_queue *queue, swapchain *sc)
     if (r.failed)
         return;
 
-    static bool filterInstalled = false;
     if (!filterInstalled)
     {
         filterInstalled = true;
