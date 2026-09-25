@@ -640,6 +640,7 @@ struct State
     struct StatusState
     {
         bool unavailable = false, loggedWrongApi = false, failed = false;
+        bool loggedOtherSwapchain = false;  // said again when the first one takes the latch back
         const char *reason = "";
         uint64_t frame = 0, skipped = 0;
         // The last present went to a window nobody can see: alt-tab, in practice, and the state
@@ -1034,6 +1035,11 @@ struct State
     // for good and the add-on stopped presenting entirely -- stuck at "5 processed", with the
     // game still rendering. Keyed on identity, a stale teardown can only ever gate its own.
     std::atomic<void *> goneSwapchain { nullptr };
+    // The one swapchain the pipeline runs for (PrimaryRoute). Atomic because a teardown reads it
+    // before the lock, to leave goneSwapchain alone for another window's swapchain. The one a
+    // destroy let go is remembered, because its init can bring it back (lifecycle.inc).
+    std::atomic<void *> primarySwapchain { nullptr };
+    void *releasedPrimary = nullptr;
     bool gameMotionActive = false, gameDepthActive = false;
 
     UINT depthWidth = 0, depthHeight = 0;
@@ -3508,19 +3514,9 @@ void SettleD3D12Depth()
     g_d12DepthTally.clear();
 }
 
-// The companion effect's textures are ReShade's, and only ReShade knows where they live. It
-// hands over the runtime here; the guides are taken from it at present, once the whole effect
-// chain has run, so what crosses is this frame's field rather than last frame's.
-void OnInitEffects(effect_runtime *runtime)
-{
-    std::lock_guard guard(g.lock);
-    g.effects = runtime;
-    g.feedSignature = -1;
-}
-
 // No lock and no work: this runs twice per frame on the render thread, and all it does is mark
 // the window in which a render-target bind belongs to ReShade rather than to the game. The
-// runtime pointer is taken in OnInitEffects, where the lock is already held.
+// runtime pointer is taken in OnInitEffects (lifecycle.inc), where the lock is already held.
 void OnBeginEffects(effect_runtime *, command_list *, resource_view, resource_view)
 {
     g.inEffects.store(true);
@@ -3531,29 +3527,16 @@ void OnFinishEffects(effect_runtime *, command_list *, resource_view, resource_v
     g.inEffects.store(false);
 }
 
-void OnDestroyEffects(effect_runtime *runtime)
-{
-    std::lock_guard guard(g.lock);
-    if (g.effects != runtime)
-        return;
-    g.effects = nullptr;
-    g.feedSignature = -1;
-    // The guides point into textures that runtime owned. Letting them stand would copy from
-    // freed memory on the next present.
-    for (Guide *guide : { &g.guideMotion, &g.guideDepth })
-        if (guide->external)
-        {
-            guide->external = false;
-            guide->chosen.Reset();
-            guide->ready = false;
-        }
-}
-
 void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, uint32_t,
                const rect *)
 {
     const Profile &profile = ProfileForThisProcess();
     std::lock_guard guard(g.lock);
+    // First, before anything shared: every other swapchain's present leaves as the game drew it.
+    device *dev = sc != nullptr ? sc->get_device() : nullptr;
+    FrameTransport *transport = PrimaryRoute(dev, queue, sc);
+    if (transport == nullptr)
+        return;
     // Which buffer is the scene depth is decided here, once a present, on a whole frame's worth
     // of binds and clears. On D3D11 the equivalent is SettleGuide, a few lines into the bridge.
     SettleD3D12Depth();
@@ -3593,9 +3576,6 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         Log("tier %c, scale %.2f", 'A' + static_cast<int>(profile.tier),
             static_cast<double>(profile.scale));
     }
-    device *dev = sc != nullptr ? sc->get_device() : nullptr;
-    if (dev == nullptr || queue == nullptr)
-        return;
 
     // Alt-tab, and the whole class of bugs behind it.
     //
@@ -3653,18 +3633,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
             "is carried into the new frame.");
     }
 
-    if (FrameTransport *transport = TransportFor(dev->get_api()))
-    {
-        transport->Present(dev, queue, sc);
-        return;
-    }
-    if (!g.status.loggedWrongApi)
-    {
-        g.status.loggedWrongApi = true;
-        Log("unsupported graphics API %u; transports compiled into this build: Vulkan %d, "
-            "OpenGL %d", static_cast<unsigned>(dev->get_api()), AMDNR_WITH_VULKAN,
-            AMDNR_WITH_OPENGL);
-    }
+    transport->Present(dev, queue, sc);
 }
 
 // The Export logs button: this run's log, the runtime's, ReShade's and the ini, all beside the

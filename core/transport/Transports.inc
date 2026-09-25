@@ -21,8 +21,9 @@ void DeviceGone(const char* reason) {
     Log("off: %s", reason);
 }
 
-// A present from a device, or on a queue, other than the one a route latched: a second swapchain,
-// most likely. Nothing built on the first serves it, so it goes out as the game drew it and the
+// A present from a device, or on a queue, other than the one a route latched: a swapchain made after
+// the first was destroyed (PrimaryRoute sends a second window's out before it gets here), on another
+// device or queue. Nothing built on the first serves it, so it goes out as the game drew it and the
 // route carries on with its own; standing down would switch the played window off as well.
 bool Foreign(bool foreign, const char* what) {
     static bool said = false;
@@ -32,6 +33,34 @@ bool Foreign(bool foreign, const char* what) {
             "it, as does every later one there. Said once.", what);
     }
     return foreign;
+}
+
+// The route for this present, or nullptr when it is not ours to touch. One swapchain drives the
+// pipeline: the first one a route gets, until the game destroys it for good (lifecycle.inc: a DXGI
+// resize keeps it, and a Vulkan rebuild or an OpenGL restore takes it back). The alt-tab and
+// minimised tests, the history drops and everything sized to the output are shared, and another
+// window's presents run through them switched the effect off from the background, reset history on
+// every frame, or rebuilt everything at that window's size.
+FrameTransport* PrimaryRoute(device* dev, command_queue* queue, swapchain* sc) {
+    FrameTransport* const transport = dev != nullptr ? TransportFor(dev->get_api()) : nullptr;
+    if (dev != nullptr && transport == nullptr && !g.status.loggedWrongApi) {
+        g.status.loggedWrongApi = true;
+        Log("unsupported graphics API %u; transports compiled into this build: Vulkan %d, "
+            "OpenGL %d", static_cast<unsigned>(dev->get_api()), AMDNR_WITH_VULKAN,
+            AMDNR_WITH_OPENGL);
+    }
+    if (transport == nullptr || queue == nullptr)
+        return nullptr;
+    if (g.primarySwapchain.load() == nullptr)
+        g.primarySwapchain.store(sc);
+    if (sc == g.primarySwapchain.load())
+        return transport;
+    if (!g.status.loggedOtherSwapchain) {
+        g.status.loggedOtherSwapchain = true;
+        Log("a present on a second swapchain goes out as the game drew it: the add-on stays on "
+            "the first one until the game destroys it. Said once.");
+    }
+    return nullptr;
 }
 
 #include "d3d12/D3D12Guides.inc"

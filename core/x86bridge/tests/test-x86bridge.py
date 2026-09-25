@@ -129,9 +129,10 @@ assert present.index('BuildRemote()')<present.index('g.pendingFrame.generation==
 # The present-period sample is what the pipelining estimate needs, so it has to keep measuring
 # while the effect is off: it sits before the early-outs rather than beside the stage splits, and
 # it is read once per present. A window that spans a toggle is thrown away, because averaging the
-# effect's frames together with the game's own would answer neither question.
+# effect's frames together with the game's own would answer neither question. A second window's
+# presents are not the game's frames, so they leave before it.
 assert present.count('probe.Present(g.enabled,g.async)')==1
-assert present.index('probe.Present(g.enabled,g.async)')<present.index('if(g.active&&g.active!=sc)return;')
+assert present.index('else if(g.active!=sc)')<present.index('probe.Present(g.enabled,g.async)')<present.index('IsIconic(hwnd)')
 assert present.index('probe.Present(g.enabled,g.async)')<present.index('probe.Begin()')
 assert 'effectOn==periodEffect' in sp and 'periodFrames=0;periodEffect=effectOn;' in sp
 assert 'kPeriodOutlierMs' in sp

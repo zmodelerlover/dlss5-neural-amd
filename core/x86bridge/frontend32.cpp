@@ -829,6 +829,8 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     if(!sc)return;auto* dev=sc->get_device();const auto api=dev->get_api();
     if(api!=device_api::d3d11&&api!=device_api::d3d9)return;
     std::lock_guard lock(g.lock);Settings();
+    // One active swapchain per process, never mix resource owners. Another window's presents leave before anything shared: the period probe, the tallies, the alt-tab and minimised tests.
+    if(!g.active){g.active=sc;g.reset=true;}else if(g.active!=sc){static bool said=false;if(!said)Log("x86bridge: a present on a second swapchain goes out as the game drew it, until the first is destroyed; said once");said=true;return;}
     probe.Present(g.enabled,g.async);
     if(probe.PeriodDue()){
         const double avg=probe.period/static_cast<double>(probe.periodFrames);
@@ -840,8 +842,6 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     // A present that settled the guides leaves the tallies to SettleGuide, which keeps them standing over
     // a cold start's three presents; clearing them here too left the third present alone to decide.
     bool settled=false;struct ClearFrameTallies{bool& settled;~ClearFrameTallies(){if(!settled){g_depthTally.clear();g_motionTally.clear();}}} clearFrameTallies{settled};
-    if(g.active&&g.active!=sc)return; // one active swapchain per process, never mix resource owners
-    if(!g.active){g.active=sc;g.reset=true;}
     HWND hwnd=static_cast<HWND>(sc->get_hwnd());
     const bool foreground=!hwnd||GetForegroundWindow()==hwnd;
     const int mods=((GetAsyncKeyState(VK_CONTROL)&0x8000)?1:0)|((GetAsyncKeyState(VK_MENU)&0x8000)?2:0)|((GetAsyncKeyState(VK_SHIFT)&0x8000)?4:0);

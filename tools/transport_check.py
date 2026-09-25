@@ -32,7 +32,12 @@ never submits through ReShade, so its InfoQueue sees none of it:
     compares what it latched (the D3D12 device and queue, the D3D11 and Vulkan devices) and lets a
     stranger's present go raw; D3D11 checks the game's device for removal; the D3D12 pre-clear copy
     is taken on our device only; destroy_device is subscribed unconditionally and those three routes
-    stand down on it.
+    stand down on it;
+  - one swapchain drives the pipeline (PrimaryRoute; frontend32's g.active): another window's present
+    goes out raw before the depth settle, the alt-tab and minimised tests and the history, its init
+    or teardown leaves the primary's gate, size and resources alone, and its effect runtime is not
+    taken; a resize keeps the latch, and the init of a primary a destroy let go (a Vulkan rebuild, an
+    OpenGL restore) takes it back, dropping what was built for a window taken meanwhile.
 
     python tools/transport_check.py
 """
@@ -154,6 +159,32 @@ if not all(s in heap for s in ("reader = g.completion;", "GetCompletedValue() >=
 present = body(neural, "OnPresent")
 if "DeviceLost()" not in present[:present.find("transport->Present(")]:
     bad.append("OnPresent: a removed device is not checked before the route runs")
+# One swapchain drives the pipeline; another window's present leaves before anything shared, and its
+# arrival or teardown leaves the primary's gate, size and resources alone. The 32-bit frontend too.
+shared = ("SettleD3D12Depth()", "ToggleRequested()", "disableOnAltTab", "IsIconic(", "historyValid")
+if not 0 <= present.find("PrimaryRoute(dev, queue, sc)") < min(present.find(s) for s in shared):
+    bad.append("OnPresent: another swapchain's present reaches shared state before PrimaryRoute")
+primary = body(FACTORY.read_text(encoding="utf-8"), "PrimaryRoute")
+if not all(s in primary for s in ("g.primarySwapchain.store(sc)", "sc == g.primarySwapchain.load()")):
+    bad.append("PrimaryRoute: the first swapchain a route gets is not latched and compared")
+life = (ROOT / "core/addon/lifecycle.inc").read_text(encoding="utf-8")
+gone, init = body(life, "OnDestroySwapchain"), body(life, "OnInitSwapchain")
+if not (0 <= gone.find("OtherSwapchain(sc)") < gone.find("g.goneSwapchain.store(sc)") < gone.find("DrainAndRelease()")
+        and "!resize && g.primarySwapchain.load() == sc" in gone
+        and 0 <= init.rfind("OtherSwapchain(sc)") < init.find("g.outWidth = g.outHeight = 0")):
+    bad.append("lifecycle.inc: another swapchain's teardown or init touches the primary's, or a resize lets it go")
+retake = init[init.find("if (sc == g.releasedPrimary)"):init.rfind("OtherSwapchain(sc)")]
+if not ("g.releasedPrimary = sc;" in gone[gone.find("!resize && g.primarySwapchain"):gone.find("Log(")]
+        and all(s in retake for s in ("DrainAndRelease()", "g.status.loggedOtherSwapchain = false", "g.primarySwapchain.store(sc)"))
+        and "ReleaseSwapchainSized()" in body(life, "DrainAndRelease")):
+    bad.append("lifecycle.inc: the primary's init after its destroy (Vulkan rebuild, GL restore) does not take the latch back")
+adopt = body(life, "OnInitEffects")
+if not 0 <= adopt.find("primary->get_hwnd() != runtime->get_hwnd()") < adopt.find("g.effects = runtime"):
+    bad.append("OnInitEffects: another window's effect runtime is taken for the primary's frame")
+f32 = body((ROOT / "core/x86bridge/frontend32.cpp").read_text(encoding="utf-8"), "OnPresent")
+shared = ("probe.Present(", "ClearFrameTallies", "g.disableAltTab", "IsIconic(")
+if not 0 <= f32.find("else if(g.active!=sc)") < min(f32.find(s) for s in shared):
+    bad.append("frontend32 OnPresent: another swapchain's present reaches shared state before it leaves")
 start = host.find("Result Neural()")
 if not start < host.find("DeviceLost()", start) < host.find("JobGate()", start):
     bad.append("host64 Neural: a removed device is not checked before JobGate")
@@ -177,4 +208,4 @@ if bad:
     print("FAIL")
     print("\n".join(bad))
     sys.exit(1)
-print(f"PASS only the transport factory reads device_api; D3D12 states and lifetimes, and every route's device identity, hold ({len(files)} files)")
+print(f"PASS only the transport factory reads device_api; D3D12 states and lifetimes, and every route's device and swapchain identity, hold ({len(files)} files)")

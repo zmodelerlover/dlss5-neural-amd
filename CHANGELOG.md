@@ -117,6 +117,15 @@ notice:
   stood the route down at the first import. If the add-on loaded after the game made its device,
   the first is still taken and the log says why. A resize or fullscreen switch no longer waits for
   every queue of the game's Vulkan device, only for the add-on's own work.
+- **A second window no longer switches the effect off, resets it or rebuilds it at its own size.**
+  Only the first swapchain the add-on takes is processed, until the game destroys it for good: a
+  resize keeps it, and a Vulkan swapchain rebuilt or an OpenGL window restored from minimised takes
+  it back even if another window presented meanwhile. Another window's frames go out as the game
+  drew them, said once in the log, and its ReShade effects no longer run into the played window's
+  frame or feed it their depth and motion. Before, with Disable On Alt-Tab on, a second window in
+  the background switched the effect off; one minimised dropped the history on every frame, and one
+  of another size rebuilt everything on every frame. The 32-bit route already kept to one swapchain;
+  the other one's frames no longer count in its frame timing or clear its depth and motion tallies.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 
