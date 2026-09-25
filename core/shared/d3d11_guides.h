@@ -25,6 +25,45 @@ namespace d3d11guides {
 using Microsoft::WRL::ComPtr;
 using TallyMap = std::unordered_map<void*, guides::Tallied>;
 
+// Poll an event query until it lands, for 2 s at most: hanging here would be a black screen
+// instead of an error. The query lands only once all the game's queued GPU work has, so a GPU-bound
+// game waits here for several ms every frame. It yields for the first millisecond, then waits a
+// millisecond at a time on a high-resolution timer. A Sleep(0) spin kept a core busy for the whole
+// wait, one the game's own threads want, and Sleep(1) rounds up to the system timer tick, 15.6 ms
+// unless the game asked for finer; it is only the fallback where that timer cannot be made (before
+// Windows 10 1803). `poll` returns S_FALSE while the query is pending. The 32-bit bridge's D3D9
+// drain polls through this too.
+template <class Poll>
+HRESULT PollQuery(Poll poll) {
+    LARGE_INTEGER hz{}, start{}, now{}, due{};
+    QueryPerformanceFrequency(&hz);
+    QueryPerformanceCounter(&start);
+    const ULONGLONG deadline = GetTickCount64() + 2000;
+    due.QuadPart = -10000;  // 1 ms after it is set, in 100 ns units
+    HANDLE timer = nullptr;
+    HRESULT hr;
+    while ((hr = poll()) == S_FALSE) {
+        if (GetTickCount64() > deadline) {
+            hr = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+            break;
+        }
+        QueryPerformanceCounter(&now);
+        if (now.QuadPart - start.QuadPart < hz.QuadPart / 1000) {
+            Sleep(0);
+            continue;
+        }
+        if (timer == nullptr)
+            timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                           TIMER_ALL_ACCESS);
+        if (timer == nullptr || !SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) ||
+            WaitForSingleObject(timer, 100) != WAIT_OBJECT_0)
+            Sleep(1);
+    }
+    if (timer != nullptr)
+        CloseHandle(timer);
+    return hr;
+}
+
 // Submit everything recorded on the game's context and wait, on the CPU, for the GPU to finish
 // it. An event query does not report until every command submitted before it has completed.
 //
@@ -36,9 +75,8 @@ using TallyMap = std::unordered_map<void*, guides::Tallied>;
 // touching the back buffer at all from this add-on, which is what ruled the copies out and left
 // the queued wait as the only candidate.
 //
-// Bounded: hanging here would be a black screen instead of an error. The network takes about
-// 16 ms, so this normally returns at once. A removed device never completes the query, so it is
-// not waited out either.
+// Bounded by PollQuery. The network takes about 16 ms, so this normally returns at once. A
+// removed device never completes the query, so it is not waited out either.
 inline bool FlushAndWait11(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     if (dev == nullptr || ctx == nullptr)
         return false;
@@ -51,13 +89,10 @@ inline bool FlushAndWait11(ID3D11Device* dev, ID3D11DeviceContext* ctx) {
     }
     ctx->End(done.Get());
     ctx->Flush();
-    const ULONGLONG deadline = GetTickCount64() + 2000;
-    HRESULT hr;
-    while ((hr = ctx->GetData(done.Get(), nullptr, 0, 0)) == S_FALSE) {
-        if (FAILED(dev->GetDeviceRemovedReason()) || GetTickCount64() > deadline)
-            return false;
-        Sleep(0);
-    }
+    const HRESULT hr = PollQuery([&] {
+        const HRESULT got = ctx->GetData(done.Get(), nullptr, 0, 0);
+        return got == S_FALSE && FAILED(dev->GetDeviceRemovedReason()) ? E_FAIL : got;
+    });
     return SUCCEEDED(hr) && SUCCEEDED(dev->GetDeviceRemovedReason());
 }
 

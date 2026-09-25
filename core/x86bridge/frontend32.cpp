@@ -104,7 +104,8 @@ struct Front {
     // builds its next frame instead of while the game waits. pendingFrame is what the outstanding
     // answer belongs to, and the raster it was captured at, because an answer that outlived a resize
     // describes a back buffer that no longer exists and must be dropped rather than composed.
-    bool async=false,pending=false;x86bridge::Frame pendingFrame{};UINT pendingWidth=0,pendingHeight=0;
+    // late: a same-frame answer that missed the IPC timeout and was left pending, once (see OnPresent).
+    bool async=false,pending=false,late=false;x86bridge::Frame pendingFrame{};UINT pendingWidth=0,pendingHeight=0;
 } g;
 // Opt-in per-stage measurement, off unless AMDNR_X86BRIDGE_TIMING=1.
 //
@@ -194,7 +195,7 @@ void StopHost(){
     }
     // The pipe is gone, so the outstanding answer is gone with it. Clearing this here is what
     // makes every Fault path safe without each one remembering to.
-    g.pending=false;
+    g.pending=false;g.late=false;
     g.job.reset();g.process.reset();g.built=false;g.reset=true;
 }
 void Fault(const char* reason){Log("x86bridge ORIGINAL: %s (win32=%lu)",reason,GetLastError());g.failed=true;StopHost();}
@@ -527,15 +528,7 @@ HRESULT FlushAndWait9()
         return E_UNEXPECTED;
     if (FAILED(hr = query->Issue(D3DISSUE_END)))
         return hr;
-    const ULONGLONG end = GetTickCount64() + 2000;
-    hr = S_FALSE;
-    while ((hr = query->GetData(nullptr, 0, D3DGETDATA_FLUSH)) == S_FALSE)
-    {
-        if (GetTickCount64() > end)
-            return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
-        Sleep(0);
-    }
-    return hr;
+    return d3d11guides::PollQuery([&] { return query->GetData(nullptr, 0, D3DGETDATA_FLUSH); });
 }
 
 void Settings(){
@@ -909,9 +902,9 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     }
     if(g.nativeD3D9!=(api==device_api::d3d9)){Fault("graphics API changed for active bridge");return;}
     if(!StartHost()){Fault("helper missing, launch failed, or host died");return;}
-    // Before SyncControls, which uses the same pipe. In same-frame mode nothing is ever pending and
-    // this is a no-op; the split is measured either way so a log says how much of the helper's work
-    // the game's own frame managed to cover.
+    // Before SyncControls, which uses the same pipe. In same-frame mode only a late answer is ever
+    // pending; the split is measured either way so a log says how much of the helper's work the
+    // game's own frame managed to cover.
     probe.Begin();
     x86bridge::Ack pendingAck{};bool havePending=false;
     if(!CollectPending(pendingAck,havePending)){Fault("pipelined frame reply failed or mismatched");return;}
@@ -971,8 +964,13 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
             static_cast<unsigned long long>(g.pendingFrame.generation),static_cast<unsigned long long>(g.generation),
             g.pendingWidth,g.pendingHeight,width,height);
     }else{
-        if(!x86bridge::Request(g.pipe.value,g.process.value,x86bridge::Kind::Frame,&f,sizeof(f),a)||a.generation!=f.generation||a.frame!=f.id){Fault("frame reply failed/mismatched");return;}
-        answeredFrame=f;answered=true;
+        // A helper still working at the timeout is slow, not dead: once, its answer is left pending for
+        // the next present to collect and this frame goes out as drawn. A second late one in a row faults.
+        SetLastError(0);const bool got=x86bridge::Request(g.pipe.value,g.process.value,x86bridge::Kind::Frame,&f,sizeof(f),a);
+        if(!got&&GetLastError()==ERROR_TIMEOUT&&!g.late){Log("x86bridge frame %llu answered late; shown as drawn",static_cast<unsigned long long>(f.id));
+            g.late=g.pending=g.reset=true;g.pendingFrame=f;g.pendingWidth=width;g.pendingHeight=height;return;}
+        if(!got||a.generation!=f.generation||a.frame!=f.id){Fault("frame reply failed/mismatched");return;}
+        g.late=false;answeredFrame=f;answered=true;
     }
     const double requestMs=probe.Split();
     g.reset=false;

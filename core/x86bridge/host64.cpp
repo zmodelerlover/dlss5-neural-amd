@@ -19,6 +19,14 @@ struct Host {
         if(!g.settings.inlineMode.load())Log("x86bridge forced same-frame: Inline=0 is unsupported on this route");
         g.settings.inlineMode.store(true);
     }
+    // The fence waits end before the frontend's IpcTimeoutMs, or the frontend kills this process
+    // mid-wait with our work still on the GPU: FenceWaitCapMs is held to 4 s, 0 (for ever) included.
+    // A wait that gives up stands the helper down (WaitFence) and the frame is answered Original.
+    // Not bounded yet: the 5 s RuntimeBusy drains (EnsureResources, FinishSubmittedPass) and the
+    // engine bring-up on the first Frame can outlast it; they live on the frontend letting one late
+    // answer pass, and a second in a row still faults the bridge.
+    void BoundWaits(){const int cap=g.settings.fenceWaitCapMs.load(),most=static_cast<int>(IpcTimeoutMs)-1000;
+        g.settings.fenceWaitCapMs.store(cap==0||cap>most?most:cap);}
     WireSettings ExportSettings(){
         WireSettings s;s.settings_revision=settingsRevision;
 #define X(type,name,low,high) s.name=static_cast<type>(g.settings.name.load());
@@ -87,7 +95,7 @@ struct Host {
     }
     void Init(const Hello& h){
         Require(h.pid==GetProcessId(parent.value),"parent PID mismatch");
-        CaptureFactoryDefaults();EnsureX86Ini();LoadSettings();ForceInline();Require(LoadGraphicsApi(),"graphics API load failed");
+        CaptureFactoryDefaults();EnsureX86Ini();LoadSettings();ForceInline();BoundWaits();Require(LoadGraphicsApi(),"graphics API load failed");
         ComPtr<IDXGIFactory4> factory;Check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)),"DXGI factory");
         LUID luid{h.luidLow,h.luidHigh};ComPtr<IDXGIAdapter1> adapter;
         Check(factory->EnumAdapterByLuid(luid,IID_PPV_ARGS(&adapter)),"exact LUID adapter unavailable");
@@ -232,7 +240,9 @@ struct Host {
     g.completion = ++g.serial;
     Check(g.bridge.workQueue->Signal(g.fence.Get(), g.completion), "completion signal");
 
-        ++g.bridge.backValue;WaitForWorkQueue(g.completion);
+        // A wait that gave up (BoundWaits) stood the helper down: this frame is dropped, answered
+        // Original, and its readbacks and textures stay where the GPU may still be using them.
+        ++g.bridge.backValue;if(!WaitForWorkQueue(g.completion)&&!DeviceLost())return Result::Original;
         Require(!DeviceLost()&&g.fence->GetCompletedValue()!=UINT64_MAX&&g.fence->GetCompletedValue()>=g.completion,"output completion failed");
         const bool fresh=ok&&CompositionIsFresh(runNetwork)&&runNetwork&&g.activePasses!=0&&!g.noBackBuffer.load();
         DrainReadbacks(g.netWidth,g.netHeight);
@@ -274,7 +284,7 @@ struct Host {
                 if(applied&&g.settings.scale.load()!=wanted){g.scaleCap.store(0.0f);g.longJobs=0;}
                 Snapshot(h.kind,applied?Result::Ready:Result::Error);break;}
             case Kind::SaveSettings:SaveSettings();Snapshot(h.kind);break;
-            case Kind::ReloadSettings:{const bool history=g.settings.useHistory.load();LoadSettings();ForceInline();if(history!=g.settings.useHistory.load())g.historyValid.store(false);++settingsRevision;Snapshot(h.kind);break;}
+            case Kind::ReloadSettings:{const bool history=g.settings.useHistory.load();LoadSettings();ForceInline();BoundWaits();if(history!=g.settings.useHistory.load())g.historyValid.store(false);++settingsRevision;Snapshot(h.kind);break;}
             case Kind::Command:{WireCommand c;Require(Receive(pipe.value,parent.value,&c,sizeof(c)),"COMMAND body");
                 const bool accepted=NewCommand(c,lastCommand)&&(c.code==CommandCode::FactoryDefaults||!transport);
                 if(accepted){lastCommand=c.id;if(c.code==CommandCode::FactoryDefaults)RestoreFactoryDefaults();

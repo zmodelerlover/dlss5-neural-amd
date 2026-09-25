@@ -19,6 +19,10 @@ What it proves, in the order of how much each would have caught:
     byte, decoded out of the instruction stream rather than assumed.
   * Its refusal at four jobs in flight subtracts kJobCounter from kJobId, the same two fields the
     add-on's own busy test (runtimes.inc, Outstanding) reads.
+  * The watchdog, where it lets a job go, writes kWatchdogJobA and then counts into kWatchdogFires,
+    the count NoteWatchdog steps the scale down on, and at the lowest stands the add-on down on;
+    and the ini reader takes InlineWaitMs with a default of 200, clamps it to 50..5000 and stores
+    it first to kWaitBudgetMax, the value InitEngine logs as the budget in force.
   * Every data offset lands in `.data` and every entry point in `.text`. `.rdata` is where a stale
     data offset goes to fault, so this is not a formality.
   * The file is the build `kRuntimeSha256` names, and it has been through `patch_runtime.py`.
@@ -187,6 +191,35 @@ def main(argv):
                           ("kJobId", rip_target(raw, delta, record + load[0], 7, 0))):
             check(data_off.get(want) == rva, f"in-flight test reads {rva:#x}, which the header calls "
                                              f"{want} ({data_off.get(want, 0):#x})")
+
+    # -- The watchdog's count, and the budget it counts against ----------------------------------
+    # Its release stores the job id to kWatchdogJobA (`mov [rip+..], r13d`, 0x1b281) and bumps the
+    # counter a few instructions on (`inc dword [rip+..]`, 0x1b297). A wrong kWatchdogFires would
+    # read a field that never moves, and the stand-down on a run of fires would never come.
+    text = raw[text_raw:text_raw + text_vsize]
+    fires = [rip_target(raw, delta, text_va + inc, 6, 0)
+             for m in re.finditer(rb"\x44\x89\x2d", text)
+             if rip_target(raw, delta, text_va + m.start(), 7, 0) == data_off.get("kWatchdogJobA")
+             for inc in [text.find(b"\xff\x05", m.start(), m.start() + 0x20)] if inc >= 0]
+    check(fires == [data_off.get("kWatchdogFires")],
+          f"watchdog release counts into {', '.join(f'{v:#x}' for v in fires) or 'nothing found'}, "
+          f"which the header calls kWatchdogFires ({data_off.get('kWatchdogFires', 0):#x})")
+    # The ini reader: `lea rdx, "InlineWaitMs"`, `mov r8d, 200`, the call, the clamp to 50 and 5000
+    # (`mov ecx, 50` / `mov eax, 5000`), and the first `mov [rip+..], eax` is the budget's ceiling.
+    rdata_va, _, rdata_raw = secs[".rdata"]
+    key = raw.find(b"InlineWaitMs\0")
+    key_rva = key - rdata_raw + rdata_va if key >= 0 else -1
+    reader = [m.start() for m in re.finditer(rb"\x48\x8d\x15", text)
+              if rip_target(raw, delta, text_va + m.start(), 7, 0) == key_rva]
+    window = text[reader[0]:reader[0] + 0x40] if len(reader) == 1 else b""
+    default = window.find(b"\x41\xb8")
+    store = window.find(b"\x89\x05")
+    budget = rip_target(raw, delta, text_va + reader[0] + store, 6, 0) if window and store >= 0 else -1
+    check(default >= 0 and window[default + 2:default + 6] == struct.pack("<I", 200)
+          and b"\xb9\x32\x00\x00\x00" in window and b"\xb8\x88\x13\x00\x00" in window
+          and budget == data_off.get("kWaitBudgetMax"),
+          f"InlineWaitMs is read with a default of 200, clamped to 50..5000 and stored to {budget:#x}, "
+          f"which the header calls kWaitBudgetMax ({data_off.get('kWaitBudgetMax', 0):#x})")
 
     # -- And the DLL went through patch_runtime.py -----------------------------------------------
     spec = ROOT / "tools/runtime-patches.json"

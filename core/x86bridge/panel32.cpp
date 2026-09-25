@@ -19,7 +19,9 @@ ui::PanelStatus BridgeStatus(){
     const auto& w=controls.status;
     ui::PanelStatus s;
     s.run=!w.connected?ui::RunState::NoHelper:w.failed?ui::RunState::Error:w.transportOnly?ui::RunState::TransportOnly
-         :!w.engineReady?ui::RunState::EngineNotReady:ui::RunState::Ready;
+         :w.unavailable?ui::RunState::Unavailable:!w.engineReady?ui::RunState::EngineNotReady:ui::RunState::Ready;
+    // A stand-down, as the 64-bit panel shows one. WireStatus carries no reason yet; the helper's log does.
+    if(w.unavailable)s.reason="the helper stood down; amd-nr-x86-host.log says why";
     s.processed=w.processed;s.skipped=w.skipped;
     // Where the 64-bit panel prints the profile it picked for this game. This frontend has no
     // profile table and is not getting one -- what it can say instead is which of the two things it

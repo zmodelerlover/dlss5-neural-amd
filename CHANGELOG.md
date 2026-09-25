@@ -96,6 +96,22 @@ notice:
   off, the panel says to restart the game, and whatever the GPU may still be reading is kept
   instead of freed. Later resizes and the exit do not wait the whole cap out again. On
   Vulkan and OpenGL a depth bind no longer waits on the add-on's lock, except the eight it logs.
+- **A network that keeps outlasting `InlineWaitMs` lowers the Scale, and at the lowest switches the
+  effect off**, on every route. When the runtime's watchdog has had to stop 8 evaluations in a row
+  (`WatchdogStandDown`, new, ini only; `0` turns this off), the scale is held a step lower, as three
+  jobs over 250 ms already did; a network between `InlineWaitMs` and 250 ms used to hold the game's
+  queue that long on every frame. Only at the lowest scale does it switch the effect off, and the panel
+  says to restart the game; three jobs over 250 ms there do the same, which used to be only a log
+  line, but only ones the watchdog stopped too, so a loading screen never counts. The log names the
+  `InlineWaitMs` the runtime is using and warns when it is over its own 200 ms default; the add-on
+  never changes it.
+- **32-bit games: a slow frame no longer takes the helper down.** Its waits on the GPU now end after
+  4 s, before the 5 s the game waits for an answer, and that frame goes out as the game drew it with
+  the helper switched off, instead of the helper being killed mid-wait. With same-frame presentation
+  a frame whose answer misses the 5 s goes out as the game drew it and the late answer is collected
+  on the next frame; only a second one in a row stops the bridge. The D3D11 drain, on the 64-bit
+  route too, and the D3D9 one no longer keep a CPU core spinning while they wait: past the first
+  millisecond they wait a millisecond at a time on a high-resolution timer.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

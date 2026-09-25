@@ -1,7 +1,7 @@
 // The runtime modules' job control: which module a pass records through, whether any still has a
 // job in flight, the frame-notify, the waits on our own queue, the run/skip gate every route goes
-// through, whether a list still reads the descriptor heap, and how many modules the pass count
-// runs on. Part of the core's unity build, included by neural.cpp.
+// through and the watchdog run it keeps, whether a list still reads the descriptor heap, and how
+// many modules the pass count runs on. Part of the core's unity build, included by neural.cpp.
 
 // The module pass `slot` records through. Without a copy of its own a pass shares the first
 // module, which is how every pass ran before the copies existed.
@@ -195,6 +195,71 @@ void WaitForPreviousJob()
         SwitchToThread();
 }
 
+// One step down the scale for a network this card cannot carry at this one, logged after `why`.
+// The person's Scale is untouched: the cap is separate, and the overlay says it is in force. At
+// the lowest there is no step left, so the add-on stands down for the session with `reason`, the
+// same on every route, rather than risk the driver. NoteJobCost counts again from here, and
+// NoteWatchdog's streak starts again on the new scale.
+void StepScaleDown(const char *why, const char *reason)
+{
+    const float now = EffectiveScale();
+    const float next = std::max(0.25f, now - 0.25f);
+    g.longJobs = 0;
+    if (next >= now)
+    {
+        g.status.unavailable = true;
+        g.status.reason = reason;
+        Log("%s at scale %.2f, the lowest. Standing down: %s", why, static_cast<double>(now),
+            reason);
+        return;
+    }
+    g.scaleCap.store(next);
+    Log("%s at scale %.2f, so the scale is held at %.2f. Your own Scale setting is untouched; "
+        "raise the cap by setting Scale again in the overlay.", why, static_cast<double>(now),
+        static_cast<double>(next));
+}
+
+// The runtime's watchdog lets the game's queue go when a job outlasts InlineWaitMs, and counts each
+// time it does (kWatchdogFires, one count per module). One is a hitch. Every job tripping it holds
+// the game's queue for the whole budget on every evaluation: a network too slow for this scale
+// (between InlineWaitMs and 250 ms NoteJobCost never counts it), or a GPU that faults every time.
+// So WatchdogStandDown retired evaluations in a row that each tripped it (8; 0 never) take the
+// scale down a step, and at the lowest stand the add-on down. A streak is one scale on one raster:
+// a step, the person's Scale or a resize starts it again. A count that went down is a module that
+// recreated its staging and zeroed it: only what it counted since then is a fire. Returns whether
+// this evaluation tripped it.
+bool NoteWatchdog()
+{
+    static UINT seen[State::kMaxPasses] {};
+    static int streak = 0;
+    static float atScale = 0.0f;
+    static UINT atWidth = 0, atHeight = 0;
+    bool fired = false;
+    for (UINT m = 0; m < State::kMaxPasses; ++m)
+    {
+        const HMODULE r = g.runtimes[m];
+        const UINT now = r != nullptr ? At<volatile UINT>(r, rt::kWatchdogFires) : 0;
+        fired |= now != seen[m] && now != 0;
+        seen[m] = now;
+    }
+    const float scale = EffectiveScale();
+    if (scale != atScale || g.netWidth != atWidth || g.netHeight != atHeight)
+        streak = 0;
+    atScale = scale;
+    atWidth = g.netWidth;
+    atHeight = g.netHeight;
+    streak = fired ? streak + 1 : 0;
+    const int limit = g.settings.watchdogStandDown.load();
+    if (limit == 0 || streak < limit)
+        return fired;
+    char why[128];
+    std::snprintf(why, sizeof(why), "the network outlasted InlineWaitMs on %d evaluations in a row "
+                  "(WatchdogStandDown=%d; 0 turns this off)", streak, limit);
+    StepScaleDown(why, "the network kept outlasting InlineWaitMs at the lowest scale; restart the "
+                       "game to re-enable");
+    return fired;
+}
+
 // Whether this frame runs the network: the one run/skip decision, taken once a present by every
 // route before it records. A job still pending skips the network, and the frame goes out as the
 // game drew it, for as long as the runtime has not retired it. No timer lets it go: this once gave
@@ -213,10 +278,11 @@ bool JobGate()
     if (!pending && g.jobRunning)
     {
         g.jobRunning = false;
-        NoteJobCost(GetTickCount64() - g.lastJobAt);
+        const bool fired = NoteWatchdog();
+        NoteJobCost(GetTickCount64() - g.lastJobAt, fired);
     }
     if (!pending)
-        return true;
+        return !g.status.unavailable;  // either note may have just stood the add-on down
     DeviceLost();
     if (++g.status.skipped % 120 == 1)
         Log("network skipped: previous evaluation still pending (%llu skipped, %llu done). "

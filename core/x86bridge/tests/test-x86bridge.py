@@ -177,6 +177,24 @@ neural=h[h.index('    Result Neural()'):h.index('    Result FrameWork(')]
 assert neural.index('RecordNetwork(')<neural.index('CompositionIsFresh(')<neural.index('cmd->Close()')<neural.index('ExecuteCommandLists(')<neural.index('NotifyRuntimes(')<neural.index('WaitForWorkQueue(g.completion)')<neural.index('return fresh?')
 assert 'rt::kNotifyFn' not in neural  # every module that recorded is told, not only g.runtime
 assert 'runNetwork&&g.activePasses!=0' in neural and 'g.fence->GetCompletedValue()>=g.completion' in neural
+# A same-frame answer still out at the timeout is a slow helper, not a dead one: left pending once,
+# the frame goes out as drawn, and the next present collects it before anything else uses the pipe.
+same=present[present.index('SetLastError(0);const bool got=x86bridge::Request('):present.index('answeredFrame=f;answered=true;')]
+assert 'GetLastError()==ERROR_TIMEOUT&&!g.late' in same and 'g.late=g.pending=g.reset=true;g.pendingFrame=f;' in same
+assert same.index('!g.late')<same.index('return;}')<same.index('Fault("frame reply failed/mismatched")')
+assert 'g.late=false;' in f[f.index('void StopHost()'):f.index('void Fault(')]
+assert 'if(GetOverlappedResult(pipe,&ov,&n,TRUE)&&n&&n<=size){at+=n;size-=n;continue;}' in io
+# No Sleep(0) spin left in either drain: one shared poll yields for a millisecond, then waits on a
+# high-resolution timer (Sleep(1) only where there is none), not on the 15.6 ms system tick.
+poll=dg[dg.index('HRESULT PollQuery('):dg.index('inline bool FlushAndWait11(')]
+assert poll.index('hz.QuadPart / 1000) {')<poll.index('Sleep(0);')<poll.index('continue;')<poll.index('SetWaitableTimer(')
+assert 'CREATE_WAITABLE_TIMER_HIGH_RESOLUTION' in poll and poll.index('SetWaitableTimer(')<poll.index('Sleep(1);')<poll.index('CloseHandle(timer);')
+assert 'PollQuery(' in dg[dg.index('inline bool FlushAndWait11('):] and 'd3d11guides::PollQuery(' in f[f.index('HRESULT FlushAndWait9()'+chr(10)):]
+assert 'Sleep(0);' not in f and dg.count('Sleep(0);')==1
+# The helper's GPU waits end before the frontend's IPC timeout, and a frame whose wait gave up is
+# answered Original rather than taking the helper down.
+assert h.count('LoadSettings();ForceInline();BoundWaits();')==2 and 'IpcTimeoutMs)-1000' in h
+assert 'if(!WaitForWorkQueue(g.completion)&&!DeviceLost())return Result::Original;' in neural
 assert h.count('++g.status.frame')==1 and 'Idle();ReleaseSwapchainSized();built=false;g.historyValid.store(false);' in h
 for path in [new/'frontend32.cpp',new/'host64.cpp']:
  text=read(path)
@@ -203,12 +221,12 @@ struct OVERLAPPED{HANDLE hEvent;};
 inline int mode=0,calls=0,cancelled=0,retired=0,closed=0,waited=0;inline DWORD amount=0,lastError=ERROR_IO_PENDING;inline void* target=nullptr;
 inline BOOL CloseHandle(HANDLE){++closed;return 1;}
 inline HANDLE CreateEventW(void*,BOOL,BOOL,void*){return reinterpret_cast<HANDLE>(1);}
-inline BOOL ReadFile(HANDLE,void* b,DWORD n,DWORD* done,OVERLAPPED*){++calls;amount=std::min(n,DWORD(3));target=b;if(mode==1||mode==2||mode==5){lastError=ERROR_IO_PENDING;return 0;}*done=mode==3?0:amount;memset(b,42,*done);return 1;}
+inline BOOL ReadFile(HANDLE,void* b,DWORD n,DWORD* done,OVERLAPPED*){++calls;amount=std::min(n,DWORD(3));target=b;if(mode==1||mode==2||mode==5||mode==6){lastError=ERROR_IO_PENDING;return 0;}*done=mode==3?0:amount;memset(b,42,*done);return 1;}
 inline BOOL WriteFile(HANDLE h,void* b,DWORD n,DWORD* done,OVERLAPPED* ov){return ReadFile(h,b,n,done,ov);}
 inline DWORD GetLastError(){return mode==4?5:lastError;}inline void SetLastError(DWORD e){lastError=e;}
-inline DWORD WaitForMultipleObjects(DWORD n,HANDLE*,BOOL,DWORD timeout){assert(n==2&&timeout==5000);++waited;return mode==2?1:mode==5?WAIT_TIMEOUT:0;}
+inline DWORD WaitForMultipleObjects(DWORD n,HANDLE*,BOOL,DWORD timeout){assert(n==2&&timeout==5000);++waited;return mode==2?1:mode==5||mode==6?WAIT_TIMEOUT:0;}
 inline BOOL CancelIoEx(HANDLE,OVERLAPPED*){++cancelled;return 1;}
-inline BOOL GetOverlappedResult(HANDLE,OVERLAPPED*,DWORD* n,BOOL wait){if(wait){++retired;return 0;}*n=amount;memset(target,42,amount);return 1;}
+inline BOOL GetOverlappedResult(HANDLE,OVERLAPPED*,DWORD* n,BOOL wait){if(wait){++retired;if(mode!=6)return 0;}*n=amount;memset(target,42,amount);return 1;}
 ''',encoding='utf-8')
  (p/'io.cpp').write_text(r'''
 #include "bridge_io.h"
@@ -218,8 +236,10 @@ int main(){char b[19]{};HANDLE pipe=reinterpret_cast<HANDLE>(2),peer=reinterpret
  mode=1;calls=0;assert(x86bridge::Receive(pipe,peer,b,sizeof(b)));assert(calls==7&&waited==7);
  mode=2;assert(!x86bridge::Receive(pipe,peer,b,sizeof(b)));assert(cancelled==1&&retired==1&&lastError==ERROR_BROKEN_PIPE);
  mode=5;assert(!x86bridge::Receive(pipe,peer,b,sizeof(b)));assert(cancelled==2&&retired==2&&lastError==ERROR_TIMEOUT);
+ // Each read times out and completes in the race with its cancel: the bytes are kept, not lost.
+ mode=6;memset(b,0,sizeof(b));assert(x86bridge::Receive(pipe,peer,b,sizeof(b)));assert(cancelled==9&&retired==9&&b[18]==42);
  mode=3;assert(!x86bridge::Receive(pipe,peer,b,sizeof(b)));
- printf("PASS IPC helper: partial I/O, bounded timeout, peer death, cancellation retirement and zero-byte rejection. Win32/GPU UNVALIDATED.\n");
+ printf("PASS IPC helper: partial I/O, bounded timeout, peer death, cancellation retirement, a read completed in the cancel race kept, and zero-byte rejection. Win32/GPU UNVALIDATED.\n");
 }
 ''',encoding='utf-8')
  subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-I'+str(p),'-I'+str(new),str(p/'io.cpp'),'-o',str(p/'io')],check=True)

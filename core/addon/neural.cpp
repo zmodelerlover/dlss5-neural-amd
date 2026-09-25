@@ -838,6 +838,7 @@ struct State
         // the two on one machine and the first thing to try if a GL host misbehaves.
         std::atomic<bool> glSemaphores { true };
         std::atomic<int> fenceWaitCapMs { 10000 };  // ini-only as well: see WaitFence
+        std::atomic<int> watchdogStandDown { 8 };   // ini-only as well: see NoteWatchdog
     } settings;
     UINT loadedPasses = 0;
 
@@ -1083,7 +1084,7 @@ State &g = *new State;
 // Defined further down, beside the raster code they belong to; used from both present paths,
 // which come first.
 float EffectiveScale();
-void NoteJobCost(UINT64 ms);
+void NoteJobCost(UINT64 ms, bool fired);
 
 // Whether this frame's composition carries something the network produced for THIS frame.
 //
@@ -1377,6 +1378,7 @@ void LoadSettings()
     g.settings.glSemaphores.store(flag(L"GlSemaphores", g.settings.glSemaphores.load()));
     const int capMs = static_cast<int>(num(L"FenceWaitCapMs", 10000.0f));  // under 1 s, one slow frame stands it down
     g.settings.fenceWaitCapMs.store(capMs <= 0 ? 0 : std::max(capMs, 1000));
+    g.settings.watchdogStandDown.store(std::max(0, static_cast<int>(num(L"WatchdogStandDown", 8.0f))));
     g.stage.store(static_cast<int>(num(L"Stage", 3.0f)));
     g.events = static_cast<int>(num(L"Events", 31.0f));
     // Diagnostic, in the same family as Stage / Events / NoBridge: read at load, never written
@@ -1891,11 +1893,10 @@ bool InitHip()
     return true;
 }
 
-// The engine reads dlssnr_on_amd.ini from DllMain, so it has to exist before LoadLibrary.
-// Its built-in default host watchdog budget is 600 ms: long enough for one stalled job to trip
-// Windows TDR, which removes the D3D12 device and takes the game with it. That surfaces as the
-// game dying on DXGI_ERROR_DEVICE_REMOVED (887A0005), with nothing pointing back here. Writing
-// the file when it is missing is cheaper than explaining the crash.
+// The engine reads dlssnr_on_amd.ini from DllMain, so it has to exist before LoadLibrary. A fresh
+// one halves the engine's own watchdog budget (200 ms in v0.3.0): a stuck job holds the game's
+// queue that long every frame. One that exists is the person's and is never rewritten; InitEngine
+// logs the InlineWaitMs it set, and says so when it is over 200.
 void EnsureEngineIni(const std::filesystem::path &dir)
 {
     const auto ini = dir / L"dlssnr_on_amd.ini";
@@ -1916,10 +1917,9 @@ void EnsureEngineIni(const std::filesystem::path &dir)
     f << "[DlssNrOnAmd]\r\n"
          "Enabled=1\r\n"
          "Async=0\r\n"
-         "; Host watchdog budget, milliseconds. The network takes about 16 ms at 0.50 scale, so\r\n"
-         "; 100 is a wide margin; past it the frame is shown without the effect instead of\r\n"
-         "; freezing. Do not raise this much: the engine's own default is 600 ms, and a stall\r\n"
-         "; that long trips Windows TDR, which removes the D3D12 device and kills the game.\r\n"
+         "; Host watchdog budget, ms (the engine's own default is 200). The network takes about\r\n"
+         "; 16 ms at 0.50 scale, so 100 is a wide margin; past it the frame goes out without the\r\n"
+         "; effect. Keep it far under 2000: a stall that long is a Windows driver reset (TDR).\r\n"
          "InlineWaitMs=100\r\n"
          "Interop=1\r\n"
          "UseFsrInputs=1\r\n"
@@ -2216,6 +2216,9 @@ bool InitEngine()
     g.runtimeFile = loadFrom;
     g.engineReady = true;
     Log("engine ready.");
+    const int budget = At<int>(h, rt::kWaitBudgetMax);  // read only: the ini is the person's
+    Log("engine watchdog budget %d ms (InlineWaitMs)%s", budget, budget > 200 ? ". WARNING: over the "
+        "engine's own 200 ms, a stuck job holds the game's queue that long every frame" : "");
 
     // Structure / Skin / Tone are written to three offsets that were found by matching strings in
     // the binary. That the runtime *contains* the names does not prove it reads these words, and
@@ -2517,8 +2520,8 @@ float EffectiveScale()
 
 // One finished evaluation, timed from this side rather than read out of the engine's log. Three
 // dangerous jobs and the scale comes down a step: one is a shader compile or an alt-tab, three is
-// this card at this resolution.
-void NoteJobCost(UINT64 ms)
+// this card at this resolution. `fired`: the runtime's watchdog stopped this one (NoteWatchdog).
+void NoteJobCost(UINT64 ms, bool fired)
 {
     constexpr UINT64 kDanger = 250;  // an order of magnitude past a frame, far short of TDR
     // A reading this large is not a job. The GPU cannot hold one for half a minute -- Windows
@@ -2535,24 +2538,16 @@ void NoteJobCost(UINT64 ms)
             g.longJobs = 0;  // comfortably back inside budget: the streak was a hitch
         return;
     }
-    if (++g.longJobs < 3)
+    // At the lowest scale the next step is off for the session, and a present gap (a loading
+    // screen) reads as long too: there only a job the watchdog also stopped counts, as any real
+    // one past 250 ms does under the engine's 200 ms default.
+    if ((!fired && EffectiveScale() <= 0.25f) || ++g.longJobs < 3)
         return;
-    g.longJobs = 0;
-
-    const float now = EffectiveScale();
-    const float next = std::max(0.25f, now - 0.25f);
-    if (next >= now)
-    {
-        Log("the network took %llu ms at scale %.2f, which is already the lowest. This card "
-            "cannot carry this resolution; turn the effect off rather than risk the driver.",
-            static_cast<unsigned long long>(ms), static_cast<double>(now));
-        return;
-    }
-    g.scaleCap.store(next);
-    Log("the network took %llu ms three times at scale %.2f. A dispatch that long resets the "
-        "display driver and takes the game with it, so the scale is held at %.2f. Your own Scale "
-        "setting is untouched; raise the cap by setting Scale again in the overlay.",
-        static_cast<unsigned long long>(ms), static_cast<double>(now), static_cast<double>(next));
+    char why[64];  // a dispatch that long resets the display driver and takes the game with it
+    std::snprintf(why, sizeof(why), "the network took %llu ms three times",
+                  static_cast<unsigned long long>(ms));
+    StepScaleDown(why, "the network took over 250 ms three times at the lowest scale; restart the "
+                       "game to re-enable");
 }
 
 // True on a thread while this add-on is issuing commands into the host's API on its own account.
@@ -3246,14 +3241,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         }
         g.lastJob = jobAfter;
         g.recordedMask |= 1u << (r == g.runtime ? 0 : slot);
-        // v0.3.0: 0x97950 and 0x97954 are two watchdog job counters, NOT a
-        // host pointer to an abort word. Its watchdog (0x1b27a/0x1b281) writes
-        // a job id to each DWORD when a timeout occurs. Interpreting the pair
-        // as a pointer then writing through it crashes on the next recording
-        // (reproduced at frame 28 in framecheck, against the v0.2.17 pair at
-        // 0x8d808/0x8d80c). The runtime owns resetting the real GPU abort flag
-        // -- v0.2.17 did it with hipMemcpyAsync, v0.3.0 stores straight through
-        // its own host pointer; either way, leave it to do so.
+        // The watchdog's GPU abort flag is the runtime's to reset. kWatchdogJobA/B are job ids, not
+        // a pointer to it: written through, they crashed the next recording (framecheck, frame 28).
         ++accepted;
         if (handed)
             SmoothOutput(cmd, slot);

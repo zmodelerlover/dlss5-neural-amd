@@ -40,5 +40,12 @@ int main()
     assert(timeoutError == ERROR_TIMEOUT);
     assert(GetTickCount64() - started < 2000);
 
-    std::puts("PASS native named-pipe transfer and bounded timeout");
+    // The conversation survives the timeout: what arrives late is the next thing read. The
+    // frontend's late frame answer, collected on the next present, depends on it.
+    received = 0;
+    assert(x86bridge::Send(client.value, self.value, &sent, sizeof(sent), 1000));
+    assert(x86bridge::Receive(server.value, self.value, &received, sizeof(received), 1000));
+    assert(received == sent);
+
+    std::puts("PASS native named-pipe transfer, bounded timeout and a late answer read after it");
 }

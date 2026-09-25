@@ -27,7 +27,9 @@ inline bool Transfer(HANDLE pipe,HANDLE peer,void* data,uint32_t size,bool write
             if(rc!=WAIT_OBJECT_0){
                 const DWORD error=rc==WAIT_TIMEOUT?ERROR_TIMEOUT:
                     rc==WAIT_OBJECT_0+1?ERROR_BROKEN_PIPE:GetLastError();
-                CancelIoEx(pipe,&ov);GetOverlappedResult(pipe,&ov,&n,TRUE);
+                // What completed in the race with the cancel is off the pipe: count it, or a caller
+                // that collects the late answer later (frontend32's late frame) reads out of step.
+                CancelIoEx(pipe,&ov);if(GetOverlappedResult(pipe,&ov,&n,TRUE)&&n&&n<=size){at+=n;size-=n;continue;}
                 ev.reset();SetLastError(error);return false;
             }
             if(!GetOverlappedResult(pipe,&ov,&n,FALSE)){

@@ -10,9 +10,10 @@
 // middle of an unrelated function, so it would have been called rather than faulted.
 //
 // Nothing here is a guess. `tools/runtime_offsets_check.py` reads this file, checks every address
-// against the sections of the runtime it belongs to, decodes the record entry's first three tests
-// and its in-flight test out of the instruction stream to prove they are the fields named below,
-// and fails if any source file has gone back to writing a literal.
+// against the sections of the runtime it belongs to, decodes the record entry's first three tests,
+// its in-flight test, the watchdog's counter and the InlineWaitMs store out of the instruction
+// stream to prove they are the fields named below, and fails if any source file has gone back to
+// writing a literal.
 //
 // When the runtime moves again: re-derive, edit only this file, and run the checker.
 
@@ -55,8 +56,15 @@ constexpr size_t kJobCounter = 0x977d4;      // interlocked; how far the engine 
                                              // both < 0. Not 0x97a58 (last finished): the async
                                              // "readback map failed" drop (0x18ab0) skips it.
 
+constexpr size_t kWaitBudgetMax = 0x978d0;   // int, InlineWaitMs as the engine took it: 200 when its
+                                             // ini has none, clamped to 50..5000 (0x7eb0). Read only:
+                                             // the ini is the person's. 0x978d4 is the budget the
+                                             // worker lowers from it after timeouts
 constexpr size_t kWatchdogJobA = 0x97950;    // a pair of job ids its watchdog writes on a timeout --
 constexpr size_t kWatchdogJobB = 0x97954;    // NOT a pointer, and writing through it crashes
+constexpr size_t kWatchdogFires = 0x97980;   // int, +1 each time that watchdog lets a job past the
+                                             // budget go (0x1b297, same-frame only); zeroed when the
+                                             // module recreates its staging (0x164ca)
 
 constexpr size_t kInterop = 0x97984;
 constexpr size_t kListMarker = 0x97a60;      // ID3D12CommandList *, the list it accepted
