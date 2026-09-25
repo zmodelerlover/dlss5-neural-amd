@@ -58,7 +58,7 @@ struct Route
     // route using them, which is a different claim.
     GLuint semToGl = 0, semToD3D = 0;
     bool semaphores = false;
-    bool semaphoresProven = false;   // the first frame completed with them in the loop
+    bool semaphoresProven = false;   // GL's first signal was seen landing, on the CPU
     bool loggedSemaphores = false;
     UINT64 toD3DValue = 0, toGlValue = 0;
 

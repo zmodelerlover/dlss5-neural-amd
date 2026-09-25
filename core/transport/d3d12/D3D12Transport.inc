@@ -6,32 +6,7 @@ namespace d3d12route {
 // Same frame means the game waits for the network. The runtime only makes the GPU queue wait -- a
 // spin in the game's own list -- and this route never held the CPU, so with DXGI's three frames of
 // latency every present recorded during that spin found the job pending below and went out raw
-// (Rollout Inline: 13325 of 17285). The other routes hold once a frame (WaitForWorkQueue); this is
-// that hold, at the start of the next present, so the game's CPU work has already overlapped the
-// network. Keyed on the engine's latched mode, not the menu's: in engine-async kJobCounter never
-// moves, and this would stall every present. Bounded by the skip window below, so a stuck job still
-// ends in its ResetJobs, never in a hang.
-void WaitForPreviousJob() {
-    if (g.runtime == nullptr || At<uint8_t>(g.runtime, rt::kInlineActive) != 1)
-        return;
-    // Not g.completionEvent: a timed-out SetEventOnCompletion signals late and would end a later
-    // WaitFence early. A stale signal here only costs one more trip round the loop.
-    static const HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    const UINT64 deadline = g.lastJobAt + 500;
-    for (UINT64 now = GetTickCount64();
-         ev != nullptr && now < deadline && g.fence->GetCompletedValue() < g.completion;
-         now = GetTickCount64())
-        if (FAILED(g.fence->SetEventOnCompletion(g.completion, ev)) ||
-            WaitForSingleObject(ev, static_cast<DWORD>(deadline - now)) == WAIT_FAILED)
-            break;
-    // ponytail: kJobCounter lands ~0.1 ms after the flag releases the spin. A spin the watchdog cut
-    // short leaves it behind for the rest of the network: 2 ms, then that frame goes raw as before.
-    LARGE_INTEGER hz {}, t0 {}, t {};
-    QueryPerformanceFrequency(&hz);
-    QueryPerformanceCounter(&t0);
-    while (RuntimeBusy() && QueryPerformanceCounter(&t) && t.QuadPart - t0.QuadPart < hz.QuadPart / 500)
-        SwitchToThread();
-}
+// (Rollout Inline: 13325 of 17285). WaitForPreviousJob (runtimes.inc) is the hold that fixed it.
 
 struct Transport final : FrameTransport {
     const char* Name() const override { return "D3D12"; }

@@ -14,7 +14,12 @@ never submits through ReShade, so its InfoQueue sees none of it:
     except the `cmd_list == nullptr` exit, which a graphics queue never takes;
   - a readback is mapped only once its fence has landed, and parked, not freed, when it has not;
   - the live D3D12 depth buffer is never read (it measured zeros), and the pre-clear snapshot is
-    rebuilt on a format change and parked rather than released under an in-flight list.
+    rebuilt on a format change and parked rather than released under an in-flight list;
+  - a fence event is registered only by WaitFence, which reads the value again after every wake,
+    and WaitForPreviousJob, whose event is its own: a timed wait on a shared auto-reset event
+    leaves a registration behind that ends the next wait on it early;
+  - on OpenGL the CPU sees GL's first signal land before the queue waits on it, the queue waits
+    once, before any list runs, and a rebuild drains our queue and forgets the old context's names.
 
     python tools/transport_check.py
 """
@@ -24,10 +29,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FACTORY = ROOT / "core/transport/Transports.inc"
-SCOPE = [ROOT / "core/addon", ROOT / "core/transport", ROOT / "core/diagnostics/framecheck", ROOT / "core/x86bridge/host64.cpp"]
+# Everything neural.cpp's unity build pulls in, plus framecheck and the 64-bit host.
+SCOPE = [ROOT / "core" / d for d in ("addon", "transport", "temporal", "shared", "ui", "diagnostics/framecheck", "x86bridge/host64.cpp")]
 NEURAL = ROOT / "core/addon/neural.cpp"
 D3D12 = ROOT / "core/transport/d3d12/D3D12Transport.inc"
 GUIDES = ROOT / "core/transport/d3d12/D3D12Guides.inc"
+RUNTIMES = ROOT / "core/addon/runtimes.inc"
 
 
 def body(text, name):
@@ -36,6 +43,14 @@ def body(text, name):
     return text[start:text.index("\n}\n", start)]
 
 
+def lines_of(text, name):
+    b = body(text, name)
+    first = text[:text.index(b)].count("\n") + 1
+    return range(first, first + b.count("\n") + 1)
+
+
+runtimes = RUNTIMES.read_text(encoding="utf-8")
+waits = [lines_of(runtimes, n) for n in ("WaitFence", "WaitForPreviousJob")]
 bad = []
 files = []
 for base in SCOPE:
@@ -53,6 +68,9 @@ for f in files:
         if "CopyResource(" in line and "g.composed.Get())" in line and not (
                 "g.composed.Get(), D3D12_RESOURCE_STATE_" in before and "D3D12_RESOURCE_STATE_COPY_SOURCE)" in before):
             bad.append("copy out of composed without its barrier into COPY_SOURCE: " + where(n))
+        if "SetEventOnCompletion(" in line and "diagnostics" not in f.parts and not (
+                f == RUNTIMES and any(n in w for w in waits)):
+            bad.append("fence event registered outside WaitFence and WaitForPreviousJob: " + where(n))
 
 route = D3D12.read_text(encoding="utf-8").splitlines()
 first = next(n for n, line in enumerate(route) if "RecordNetwork(" in line)
@@ -71,6 +89,21 @@ if "depthBest" in body(neural, "RecordNetwork"):
 snapshot = body(GUIDES.read_text(encoding="utf-8"), "SnapshotBeforeClear")
 if "Format != DepthAliasFormat(" not in snapshot or "depthSnapshot.Reset()" in snapshot:
     bad.append("SnapshotBeforeClear: the snapshot must be rebuilt on a format change and parked, not reset")
+
+gl = "\n".join(p.read_text(encoding="utf-8") for p in sorted((ROOT / "core/transport/opengl").glob("*.inc")))
+present, ensure = body(gl, "Present"), body(gl, "Ensure")
+steps = ("BlitIn(r)", "backFence->GetCompletedValue()", "workQueue->Wait(", "RecordNetwork(", "ExecuteCommandLists(")
+at = [present.find(s) for s in steps]
+if -1 in at or at != sorted(at) or gl.count("workQueue->Wait(") != 1:
+    bad.append("OpenGL Present: " + " < ".join(steps) + ", with exactly one queue Wait")
+if len(re.findall(r"WaitForWorkQueue\(", present)) != len(re.findall(r"if \(!r\.semaphores\)\s*WaitForWorkQueue\(", present)):
+    bad.append("OpenGL Present: the queue is waited for on the CPU only without the fences")
+if not 0 <= ensure.find("WaitForWorkQueue(g.completion)") < ensure.find("BuildCrossing(r, r.in"):
+    bad.append("OpenGL Ensure: the crossing is rebuilt without draining our queue first")
+if not all(s in ensure for s in ("r.resolveFbo = ", "r.semaphoresProven = ", "r.haveResult = false")):
+    bad.append("OpenGL Ensure: a new context keeps the old one's resolve names, fences or result")
+if body(gl, "ImportFences").count("std::max(r.to") != 2:
+    bad.append("OpenGL ImportFences: a new context's fence values may step below the old one's")
 
 if bad:
     print("FAIL")

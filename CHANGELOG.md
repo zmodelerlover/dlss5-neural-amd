@@ -28,6 +28,13 @@ notice:
   of being freed while the GPU may still use it.
 - **Removed: reading the D3D12 depth buffer live** when there is no pre-clear copy. It measured all
   zeros; the network now gets no depth there, which is what the panel already showed (None).
+- **OpenGL: imported fences that do not work no longer hang the game on the first frame.** GL's
+  first signal is now seen on the CPU before the work queue waits on it, so the fall-back to the
+  CPU stall can no longer wait for ever. With `Passes` above 1 the first pass no longer reads the
+  frame before GL has finished writing it, and a new GL context gets its fences imported and
+  proven again, and our queue drained, before anything is rebuilt.
+- On Vulkan and OpenGL a work slot is no longer reused while the GPU still runs it after a 2 s wait
+  ran out (alt-tab), and no fence wait ends early on a wake another wait left behind.
 - **A resize no longer clears the game's D3D11 state**, which left an emulator that caches its own
   state (PCSX2) drawing with nothing bound. On both the 64-bit and the 32-bit route.
 - **The 32-bit route picks the game's depth and motion buffers the way the 64-bit one does.** Both

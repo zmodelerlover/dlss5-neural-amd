@@ -167,20 +167,23 @@ Decisions worth writing down:
   consumes the game's pending errors as a side effect — a real if small cost of being here.
 - **Everything is keyed on `wglGetCurrentContext()`.** When the context changes, the GL objects
   belonged to a context that may already be gone: the route forgets them rather than deleting them,
-  keeps the handles, and rebuilds. `ReleaseSwapchainSized` can be called on a thread with no context
-  at all and checks before touching anything.
+  keeps the handles, imports the fences again and proves them again, and rebuilds once our queue has
+  drained. `ReleaseSwapchainSized` can be called on a thread with no context at all and checks
+  before touching anything.
 - **Synchronisation is the imported fences, and falls back to the CPU stall.** `crossHandle` and
   `backHandle` -- the two shared D3D12 fences the project already creates -- are imported as GL
   semaphores, the same pair the Vulkan route imports. GL signals after the blit in, the work queue
   waits on that value before executing, the queue signals when the network is done, and GL waits
   on that before the blit out. No thread blocks.
 
-  It is not taken on trust. The first frame is still confirmed on the CPU with a two-second
-  bounded wait, and only then is the stall dropped; if that wait times out, the route falls back
-  to stalling for the rest of the session and says so in the log. A fence wait that never
-  completes is a hung queue and a game that has to be killed, which is not a failure mode to
-  discover in someone else's session. `GlSemaphores=0` in the ini forces the stall, which is how
-  the two were compared below and the first thing to try if a GL host misbehaves.
+  It is not taken on trust. GL's first signal is confirmed on the CPU, polled for up to two
+  seconds, before the work queue is ever made to wait on it, and only then is the stall dropped;
+  if it does not land, the route calls `glFinish`, falls back to stalling until the host replaces
+  its GL context and says so in the log. A queue wait that never completes is a hung queue that nothing
+  can release and a game that has to be killed, which is not a failure mode to discover in someone
+  else's session. The other direction, GL waiting on D3D12, is not confirmed at run time; glprobe
+  is its proof. `GlSemaphores=0` in the ini forces the stall, which is how the two were compared
+  below and the first thing to try if a GL host misbehaves.
 - **Every frame that reaches the screen has been through the network.** When the previous
   evaluation has not finished, the route waits for it rather than letting the frame through
   uncorrected. That pacing is the default and it is not only about correctness of the picture: a

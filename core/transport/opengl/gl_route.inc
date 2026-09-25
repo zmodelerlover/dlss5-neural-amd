@@ -119,9 +119,9 @@ void ReleaseSwapchainSized()
 // crossHandle is D3D12 signalling the host, backHandle is the host signalling D3D12.
 //
 // These replace two CPU stalls a frame -- a glFinish and a fence wait -- with two queue-side
-// waits. The route does not trust them on the strength of the specification: the first frame
-// still confirms on the CPU that the pipeline completed, and if it does not, the route falls back
-// to stalling and says so. A wait that never completes is a hung GPU and a game that has to be
+// waits. The route does not trust them on the strength of the specification: GL's first signal is
+// seen on the CPU before the queue is made to wait on it, and if it does not land, the route falls
+// back to stalling and says so. A wait that never completes is a hung GPU and a game that has to be
 // killed, which is not a failure mode to discover in someone else's session.
 bool ImportFences(Route &r)
 {
@@ -150,10 +150,10 @@ bool ImportFences(Route &r)
     }
     r.semToGl = pair[0];
     r.semToD3D = pair[1];
-    // The fences already carry whatever the D3D11 route left on them in another life; start above
-    // their current values so every wait below is for a value that has not been reached yet.
-    r.toGlValue = g.bridge.crossFence->GetCompletedValue();
-    r.toD3DValue = g.bridge.backFence->GetCompletedValue();
+    // The fences carry what the D3D11 route or an old context signalled, some maybe in flight;
+    // never step below either, so every wait below is for a value that has not been reached yet.
+    r.toGlValue = std::max(r.toGlValue, g.bridge.crossFence->GetCompletedValue());
+    r.toD3DValue = std::max(r.toD3DValue, g.bridge.backFence->GetCompletedValue());
     return true;
 }
 
@@ -248,20 +248,12 @@ bool Ensure(Route &r, UINT w, UINT h)
             Log("opengl: the host replaced its GL context. Rebuilding the crossing against the "
                 "new one; the old objects died with it.");
         }
+        // The D3D12 halves and the handles are left to BuildCrossing, after our queue is drained.
         r.in.ReleaseGl(r.api, false);
         r.out.ReleaseGl(r.api, false);
-        if (r.in.handle != nullptr)
-        {
-            r.keptHandles.push_back(r.in.handle);
-            r.in.handle = nullptr;
-        }
-        if (r.out.handle != nullptr)
-        {
-            r.keptHandles.push_back(r.out.handle);
-            r.out.handle = nullptr;
-        }
-        r.in.on12.Reset();
-        r.out.on12.Reset();
+        r.resolveFbo = r.resolveTexture = r.semToGl = r.semToD3D = 0;  // never delete these here
+        // The fences are imported into this context again and proven again before a queue waits.
+        r.semaphores = r.semaphoresProven = r.loggedSemaphores = false;
         r.context = current;
         r.ready = false;
         r.width = 0;
@@ -331,8 +323,8 @@ bool Ensure(Route &r, UINT w, UINT h)
         Log("opengl: imported fences %s. %s", r.semaphores ? "in use"
                                                  : g.settings.glSemaphores.load() ? "unavailable"
                                                                          : "off by GlSemaphores=0",
-            r.semaphores ? "The hand-over between the two APIs runs on the GPU; the first frame "
-                           "is still confirmed on the CPU before the stall is dropped."
+            r.semaphores ? "The hand-over between the two APIs runs on the GPU; GL's first "
+                           "signal is still confirmed on the CPU before the stall is dropped."
                          : "Falling back to the CPU stall -- glFinish and a fence wait -- which "
                            "is what the D3D11 route has always used.");
     }
@@ -346,6 +338,10 @@ bool Ensure(Route &r, UINT w, UINT h)
         Log("opengl: the route was ready but a resource is gone; rebuilding it.");
 
     r.ready = false;
+    // Nothing below may be released while our queue can still be reading it, and with the fences
+    // in use no present waits for the queue. A new result texture also holds no result yet.
+    WaitForWorkQueue(g.completion);
+    r.haveResult = false;
     {
         SelfIssued selfIssued;
         ReadDefaultSamples(r);

@@ -292,11 +292,9 @@ void Present(command_queue *queue, swapchain *sc)
 
     // --- 2. our device does the work ------------------------------------------------------
     const UINT slot = static_cast<UINT>(g.serial % State::kRing);
-    if (g.ringValue[slot] != 0 && g.ringFence->GetCompletedValue() < g.ringValue[slot])
-    {
-        g.ringFence->SetEventOnCompletion(g.ringValue[slot], g.ringEvent);
-        WaitForSingleObject(g.ringEvent, 2000);
-    }
+    if (g.ringValue[slot] != 0 &&
+        !WaitFence(g.ringFence.Get(), g.ringValue[slot], g.ringEvent, "the ring slot to come free"))
+        return;
     const HRESULT allocatorHr = g.alloc[slot]->Reset();
     const HRESULT listHr = SUCCEEDED(allocatorHr)
                                ? g.list[slot]->Reset(g.alloc[slot].Get(), nullptr)

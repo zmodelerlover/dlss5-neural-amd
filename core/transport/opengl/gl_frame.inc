@@ -212,11 +212,7 @@ void Present(command_queue *queue, swapchain *sc)
         // outstanding job, as the D3D11 and Vulkan routes do: that paces the game to the network,
         // so every frame counter -- the game's, the overlay's, the driver's -- counts frames the
         // player can actually see, instead of duplicates of the last result.
-        if (g.fence->GetCompletedValue() < g.completion)
-        {
-            g.fence->SetEventOnCompletion(g.completion, g.completionEvent);
-            WaitForSingleObject(g.completionEvent, 500);
-        }
+        WaitForPreviousJob();
         runNetwork = !jobPending();
     }
 
@@ -227,13 +223,35 @@ void Present(command_queue *queue, swapchain *sc)
         return;
     }
 
+    // With the fences in play the queue waits for GL's signal that the frame has landed in the
+    // shared texture; without them BlitIn already called glFinish. The first signal is seen on
+    // the CPU before any queue waits on it: a queue wait that is never satisfied cannot be
+    // released from here, and the first pass's list and every CPU wait on the queue would hang
+    // behind it. Polled, so no registration outlives the timeout on an event another wait uses.
+    if (r.semaphores && !r.semaphoresProven)
+    {
+        const UINT64 until = GetTickCount64() + 2000;
+        while (g.bridge.backFence->GetCompletedValue() < r.toD3DValue && GetTickCount64() < until)
+            Sleep(1);
+        r.semaphores = r.semaphoresProven = g.bridge.backFence->GetCompletedValue() >= r.toD3DValue;
+        if (!r.semaphores)
+        {
+            SelfIssued selfIssued;
+            r.api.finish();
+        }
+        Log("opengl: GL's first signal on the imported fence %s", r.semaphores
+                ? "reached D3D12; the CPU stall is dropped from here on."
+                : "did not reach D3D12 within 2 s, so the fences are not driving this queue. "
+                  "Falling back to the CPU stall until the host replaces its GL context.");
+    }
+    if (r.semaphores)
+        g.bridge.workQueue->Wait(g.bridge.backFence.Get(), r.toD3DValue);
+
     // --- 2. our device does the work ----------------------------------------------------------
     const UINT slot = static_cast<UINT>(g.serial % State::kRing);
-    if (g.ringValue[slot] != 0 && g.ringFence->GetCompletedValue() < g.ringValue[slot])
-    {
-        g.ringFence->SetEventOnCompletion(g.ringValue[slot], g.ringEvent);
-        WaitForSingleObject(g.ringEvent, 2000);
-    }
+    if (g.ringValue[slot] != 0 &&
+        !WaitFence(g.ringFence.Get(), g.ringValue[slot], g.ringEvent, "the ring slot to come free"))
+        return;
     const HRESULT allocatorHr = g.alloc[slot]->Reset();
     const HRESULT listHr = SUCCEEDED(allocatorHr)
                                ? g.list[slot]->Reset(g.alloc[slot].Get(), nullptr)
@@ -300,11 +318,6 @@ void Present(command_queue *queue, swapchain *sc)
         return;
     }
     ID3D12CommandList *lists[] { cmd12 };
-    // With the fences in play the queue waits for the GL signal that the frame has landed in the
-    // shared texture. Without them BlitIn already called glFinish and there is nothing to wait
-    // for.
-    if (r.semaphores)
-        g.bridge.workQueue->Wait(g.bridge.backFence.Get(), r.toD3DValue);
     g.bridge.workQueue->ExecuteCommandLists(1, lists);
     if (!transportOnly && g.activePasses != 0)
         NotifyRuntimes(g.bridge.workQueue.Get(), 1, lists);
@@ -320,34 +333,9 @@ void Present(command_queue *queue, swapchain *sc)
         g.bridge.workQueue->Signal(g.bridge.crossFence.Get(), r.toGlValue);
     }
 
-    // The first frame is confirmed on the CPU even with the fences in use, and only then is the
-    // stall dropped. If the round trip does not complete, the GPU-side hand-over is not working
-    // and continuing with it means a hung queue and a game that has to be killed -- so the route
-    // steps back to stalling, which is known to work, and says so once.
+    // Without the fences the CPU waits here; with them GL waits in BlitOut.
     if (!r.semaphores)
-    {
         WaitForWorkQueue(g.completion);
-    }
-    else if (!r.semaphoresProven)
-    {
-        g.fence->SetEventOnCompletion(g.completion, g.completionEvent);
-        if (WaitForSingleObject(g.completionEvent, 2000) == WAIT_OBJECT_0)
-        {
-            r.semaphoresProven = true;
-            Log("opengl: the imported fences carried the first frame; the CPU stall is dropped "
-                "from here on.");
-        }
-        else
-        {
-            r.semaphores = false;
-            r.toD3DValue = 0;
-            r.toGlValue = 0;
-            Log("opengl: the first frame did not complete within 2 s with the imported fences in "
-                "the loop, so they are not driving this queue. Falling back to the CPU stall for "
-                "the rest of the session.");
-            WaitForWorkQueue(g.completion);
-        }
-    }
 
     // --- 3. and the finished image goes back over the host's ----------------------------------
     //

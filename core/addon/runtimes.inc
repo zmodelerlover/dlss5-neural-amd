@@ -86,9 +86,11 @@ bool WaitFence(ID3D12Fence *fence, UINT64 value, HANDLE ev, const char *what)
         return true;
     if (ev == nullptr || FAILED(fence->SetEventOnCompletion(value, ev)))
         return false;
+    // The value is read again after every wake. These events are auto-reset and shared, so a wake
+    // can be a registration some other wait left behind; ours is still pending and is waited for.
     for (UINT waited = 0;; waited += 2)
     {
-        if (WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0)
+        if (WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0 && fence->GetCompletedValue() >= value)
         {
             if (waited != 0)
                 Log("bridge: %s took %u s -- the process was most likely in the background.",
@@ -110,6 +112,35 @@ bool WaitFence(ID3D12Fence *fence, UINT64 value, HANDLE ev, const char *what)
 void WaitForWorkQueue(UINT64 value)
 {
     WaitFence(g.fence.Get(), value, g.completionEvent, "the network to finish");
+}
+
+// Same frame means the game waits for the network, and the runtime only makes the GPU queue wait.
+// A route that does not hold the CPU once a frame (D3D12, and OpenGL once its fences are proven)
+// holds here instead, at the start of the next present, so the game's CPU work has already
+// overlapped the network. Keyed on the engine's latched mode, not the menu's: in engine-async
+// kJobCounter never moves, and this would stall every present. Bounded by the skip window, so a
+// stuck job still ends in its ResetJobs, never in a hang.
+void WaitForPreviousJob()
+{
+    if (g.runtime == nullptr || At<uint8_t>(g.runtime, rt::kInlineActive) != 1)
+        return;
+    // Not g.completionEvent: a timed-out SetEventOnCompletion signals late and would end a later
+    // WaitFence early. A stale signal here only costs one more trip round the loop.
+    static const HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    const UINT64 deadline = g.lastJobAt + 500;
+    for (UINT64 now = GetTickCount64();
+         ev != nullptr && now < deadline && g.fence->GetCompletedValue() < g.completion;
+         now = GetTickCount64())
+        if (FAILED(g.fence->SetEventOnCompletion(g.completion, ev)) ||
+            WaitForSingleObject(ev, static_cast<DWORD>(deadline - now)) == WAIT_FAILED)
+            break;
+    // ponytail: kJobCounter lands ~0.1 ms after the flag releases the spin. A spin the watchdog cut
+    // short leaves it behind for the rest of the network: 2 ms, then that frame goes raw as before.
+    LARGE_INTEGER hz {}, t0 {}, t {};
+    QueryPerformanceFrequency(&hz);
+    QueryPerformanceCounter(&t0);
+    while (RuntimeBusy() && QueryPerformanceCounter(&t) && t.QuadPart - t0.QuadPart < hz.QuadPart / 500)
+        SwitchToThread();
 }
 
 // Both sides must finish before the next pass changes the module's tuning.
