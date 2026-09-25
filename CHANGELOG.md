@@ -13,6 +13,11 @@ notice:
   session** when the runtime is still busy.
 - **A resize no longer clears the game's D3D11 state**, which left an emulator that caches its own
   state (PCSX2) drawing with nothing bound. On both the 64-bit and the 32-bit route.
+- **The 32-bit route picks the game's depth and motion buffers the way the 64-bit one does.** Both
+  now run one copy of the D3D11 guide code, and the 32-bit bridge gains what it was missing: a depth
+  buffer under 256 pixels is no longer a candidate, ReShade's own effect targets are never taken for
+  the game's, `GameGuides=0` stops it looking at all, and the first guide is taken over three
+  presents instead of being decided by the third alone.
 - The 32-bit helper lifts its scale cap when the slider is let go unchanged.
 - **Factory Defaults** is on the 64-bit panel too, as it was on the 32-bit one. It keeps the
   language, the hotkey and which controls are shown, and sets Scale back to the 1.0 a fresh

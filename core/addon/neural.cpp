@@ -17,8 +17,8 @@
 #include "../shared/ini_text.h"
 #include "../shared/log_export.h"
 #include "../shared/guide_choice.h"
+#include "../shared/d3d11_guides.h"
 #include "../ui/panel.h"
-#include "../shaders/guide_depth.h"
 #include "../shaders/motion.h"
 #include "../shaders/compose.h"
 #include "../shaders/input.h"
@@ -3181,26 +3181,8 @@ void OnDestroySwapchain(swapchain *sc, bool resize)
         // submitted: DXGI refuses ResizeBuffers while a pending command references a back buffer,
         // and the game quits over it. Flush does not drain it; an event query does, because it
         // does not report until everything submitted before it has completed.
-        D3D11_QUERY_DESC qd {};
-        qd.Query = D3D11_QUERY_EVENT;
-        ComPtr<ID3D11Query> done;
-        if (SUCCEEDED(g.bridge.game11->CreateQuery(&qd, &done)))
-        {
-            g.bridge.game11ctx->End(done.Get());
-            g.bridge.game11ctx->Flush();
-            // Bounded: hanging here would be a black screen instead of an error, which is not an
-            // improvement. The network takes about 16 ms, so this normally returns at once.
-            const ULONGLONG deadline = GetTickCount64() + 2000;
-            while (g.bridge.game11ctx->GetData(done.Get(), nullptr, 0, 0) == S_FALSE)
-            {
-                if (GetTickCount64() > deadline)
-                {
-                    Log("resize: gave up waiting for the bridge to drain after 2 s.");
-                    break;
-                }
-                Sleep(0);
-            }
-        }
+        if (!d3d11guides::FlushAndWait11(g.bridge.game11.Get(), g.bridge.game11ctx.Get()))
+            Log("resize: the bridge did not drain (query failed, 2 s timeout, or device removed).");
         // No ClearState: nothing of ours is bound, it only emptied the game's cached pipeline (PCSX2
         // lost its device 57 ms later, DRIVER_INTERNAL_ERROR; gone without it on the bench).
         g.bridge.game11ctx->Flush();

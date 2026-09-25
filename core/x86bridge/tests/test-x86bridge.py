@@ -152,9 +152,23 @@ for src in (u,f):
  assert 'guide_choice.h"' in src
  for fn in ['DXGI_FORMAT GuideDepthSrvFormat(','bool LooksLikeMotion(','void SettleGuide(','struct Tallied']:
   assert fn not in src,fn
-# The guide-depth shader is one header both routes include, so they cannot compile different ones.
-for src in (u,f):
- assert '#include "../shaders/guide_depth.h"' in src and 'constexpr char kGuideDepthCs' not in src
+# The D3D11 guide copy, staging and drain are one header both routes include. The 32-bit copy had
+# drifted -- no depth size floor, no GameGuides or effect-chain gate -- and picked different guides.
+dg=read(root/'core/shared/d3d11_guides.h');gi=read(root/'core/transport/d3d11/D3D11Guides.inc')
+for src in (u,f):assert '#include "../shared/d3d11_guides.h"' in src
+for src in (f,gi,t):
+ for body in ['CSSetShader(','D3D11_QUERY_EVENT','LooksLikeMotion(d','CreateTexture2D(&td']:assert body not in src,body
+assert 'D3D11_QUERY_EVENT' not in u
+for word in ['d3d12.h','ID3D12','ID3D11Device5','p_D3DCompile']:assert word not in dg,word
+# The guide-depth shader is compiled only in that header, so the routes cannot compile different ones.
+assert '#include "../shaders/guide_depth.h"' in dg
+for src in (u,f):assert 'kGuideDepthCs' not in src
+bind=f[f.index('void OnBind('):f.index('bool OnDraw(')]
+assert 'g.inEffects' in bind and 'controls.shadow.useGameGuides' in bind and 'reshade_begin_effects>(OnBeginEffects)' in f
+# Without the finish half, inEffects latches after the first effect pass and OnBind stops observing.
+assert 'reshade_finish_effects>(OnFinishEffects)' in f and '{g.inEffects=false;}' in f
+# SettleGuide keeps the tallies standing over a cold start, so a present that ran it must not clear them.
+assert 'if(!settled){g_depthTally.clear()' in present and 'settled=true;SettleGuide(' in present
 
 transport=h[h.index('    Result CopyOnly()'):h.index('    Result Neural()')]
 for call in ['InitHip(','InitEngine(','BringUpEngines(','RecordNetwork(','LoadLibrary','RuntimeHashMatches(']:assert call not in transport

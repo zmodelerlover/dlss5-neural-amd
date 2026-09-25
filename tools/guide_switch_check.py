@@ -63,7 +63,7 @@ class Guide:
         tally.clear()
 
 
-def run(frames):
+def run(frames, clear_each=False):
     """Each entry is one present's binds. The tally is the add-on's, and lives across presents."""
     g = Guide()
     tally = {}
@@ -71,6 +71,8 @@ def run(frames):
         for res, binds in present.items():
             tally[res] = tally.get(res, 0) + binds
         g.settle(tally)
+        if clear_each:
+            tally.clear()
     return g.chosen
 
 
@@ -110,4 +112,9 @@ assert run([{scene: 96440, "shadow": 900}, {scene: 96440, "shadow": 900}] * 5) =
 # 9. And a cold start is still not decided by one odd present on its own.
 assert run([{odd: 9}] + [{scene: 96440}] * 2) == scene
 
-print("guide switching: 9 properties hold")
+# 10. The tally has to stand across those three presents. The 32-bit bridge used to clear it at the
+#     end of every present, which left the third present alone to decide the cold start.
+assert run([{scene: 96440}] * 2 + [{odd: 9}]) == scene
+assert run([{scene: 96440}] * 2 + [{odd: 9}], clear_each=True) == odd
+
+print("guide switching: 10 properties hold")

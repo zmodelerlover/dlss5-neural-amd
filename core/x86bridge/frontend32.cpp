@@ -1,4 +1,4 @@
-// Native D3D9/D3D11 x86 frontend. Guide/staging algorithms adapted from upstream neural.cpp.
+// Native D3D9/D3D11 x86 frontend. The D3D11 guide/staging code is core/shared, as neural.cpp's is.
 // See the upstream LICENSE; no engine or private runtime ABI lives in this translation unit.
 #include <imgui.h>
 #include <reshade.hpp>
@@ -14,15 +14,16 @@
 #include <cstdio>
 #include <cstdarg>
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include "bridge_io.h"
 #include "control_state.h"
 #include "../shared/hotkey_capture.h"
 #include "../shared/ini_text.h"
 #include "frontend_port.h"
-#include "../shaders/guide_depth.h"
 #include "../shared/log_export.h"
 #include "../shared/guide_choice.h"
+#include "../shared/d3d11_guides.h"
 #include <cstring>
 using Microsoft::WRL::ComPtr;
 using namespace reshade::api;
@@ -94,6 +95,7 @@ struct Front {
     bool nativeD3D9=false,d3d9Shared=false;
     Guide guideDepth,guideMotion;Bridge colour,output;
     ComPtr<ID3D11ComputeShader> guideDepthCs;bool guideDepthCsFailed=false;
+    std::atomic<bool> inEffects{false}; // ReShade is drawing its own effect chain; see OnBind
     x86bridge::Handle process,pipe,job;DWORD hostPid=0;LUID luid{};
     swapchain* active=nullptr;bool settings=false,enabled=false,failed=false,built=false,reset=true,hidden=false,keyDown=false,transport=false;
     int toggleKey=VK_END,toggleMods=1;bool disableAltTab=false;uint64_t generation=0,frame=0;
@@ -218,210 +220,11 @@ bool DropRemote(){
     if(!x86bridge::Request(g.pipe.value,g.process.value,x86bridge::Kind::Drop,nullptr,0,a)||a.result!=x86bridge::Result::Ready||a.generation!=g.generation){Fault("DROP failed");return false;}
     g.built=false;g.reset=true;return true;
 }
-bool PrepareGuide(Guide &guide, bool isDepth)
-{
-    if (guide.failed || guide.chosen == nullptr || g.game11 == nullptr)
-        return false;
-    const UINT w = guide.width, h = guide.height;
-    if (w == 0 || h == 0)
-        return false;
-
-    if (!isDepth)
-    {
-        if (!guide.bridge.Ensure(g.game11.Get(), w, h, guide.format))
-        {
-            guide.failed = true;
-            Log("guide %s: format %u will not share between the devices; giving up on it.",
-                guide.name, static_cast<unsigned>(guide.format));
-            return false;
-        }
-        g.game11ctx->CopyResource(guide.bridge.on11.Get(), guide.chosen.Get());
-        guide.ready = true;
-        if (!guide.logged)
-        {
-            guide.logged = true;
-            Log("guide %s: %ux%u format %u crossing to the network device, one copy per frame.",
-                guide.name, w, h, static_cast<unsigned>(guide.format));
-        }
-        return true;
-    }
-
-    if (g.guideDepthCs == nullptr)
-    {
-        if (g.guideDepthCsFailed)
-            return false;
-        ComPtr<ID3DBlob> blob, err;
-        if (FAILED(D3DCompile(shaders::kGuideDepthCs, sizeof(shaders::kGuideDepthCs) - 1, "guide-depth", nullptr,
-                              nullptr, "main", "cs_5_0", 0, 0, &blob, &err)) ||
-            FAILED(g.game11->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(),
-                                                 nullptr, &g.guideDepthCs)))
-        {
-            g.guideDepthCsFailed = true;
-            Log("guide depth: compute shader failed: %s",
-                err != nullptr ? static_cast<const char *>(err->GetBufferPointer()) : "?");
-            return false;
-        }
-    }
-
-    if (guide.snap == nullptr || guide.snapW != w || guide.snapH != h || guide.snapFmt != guide.format)
-    {
-        guide.srv.Reset();
-        guide.srvOf = nullptr;
-        guide.snap.Reset();
-        D3D11_TEXTURE2D_DESC td {};
-        td.Width = w;
-        td.Height = h;
-        td.MipLevels = 1;
-        td.ArraySize = 1;
-        td.Format = guide.format;
-        td.SampleDesc.Count = 1;
-        td.Usage = D3D11_USAGE_DEFAULT;
-        // BIND_DEPTH_STENCIL for a depth format, so the CopyResource below is between two
-        // resources of the same kind. Same defect and same reasoning as the 64-bit path -- see
-        // the comment on this in neural.cpp's PrepareGuide -- and this route had been left with
-        // the broken half of it: a planar depth-stencil copied into a plain shader-resource
-        // texture comes back as garbage the network is then fed as depth.
-        const bool isDepth = GuideDepthSrvFormat(guide.format) != DXGI_FORMAT_UNKNOWN;
-        td.BindFlags = isDepth ? (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DEPTH_STENCIL)
-                               : D3D11_BIND_SHADER_RESOURCE;
-        HRESULT made = g.game11->CreateTexture2D(&td, nullptr, &guide.snap);
-        if (FAILED(made) && isDepth)
-        {
-            Log("guide depth: %ux%u format %u was refused as a depth-stencil copy (0x%08lX); "
-                "falling back to a plain shader-resource copy, which may not read correctly.",
-                w, h, static_cast<unsigned>(guide.format), static_cast<unsigned long>(made));
-            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            made = g.game11->CreateTexture2D(&td, nullptr, &guide.snap);
-        }
-        if (FAILED(made))
-        {
-            guide.failed = true;
-            Log("guide depth: private %ux%u copy of format %u could not be created.", w, h,
-                static_cast<unsigned>(guide.format));
-            return false;
-        }
-        guide.snapW = w;
-        guide.snapH = h;
-        guide.snapFmt = guide.format;
-    }
-    g.game11ctx->CopyResource(guide.snap.Get(), guide.chosen.Get());
-
-    if (!guide.bridge.Ensure(g.game11.Get(), w, h, DXGI_FORMAT_R32_FLOAT, true))
-    {
-        guide.failed = true;
-        return false;
-    }
-
-    if (guide.uavOf != guide.bridge.on11.Get())
-    {
-        guide.uav.Reset();
-        guide.uavOf = nullptr;
-    }
-    if (guide.uav == nullptr)
-    {
-        D3D11_UNORDERED_ACCESS_VIEW_DESC ud {};
-        ud.Format = DXGI_FORMAT_R32_FLOAT;
-        ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-        if (FAILED(g.game11->CreateUnorderedAccessView(guide.bridge.on11.Get(), &ud, &guide.uav)))
-        {
-            guide.failed = true;
-            Log("guide depth: UAV over the shared texture failed.");
-            return false;
-        }
-        guide.uavOf = guide.bridge.on11.Get();
-    }
-    if (guide.srvOf != guide.snap.Get())
-    {
-        guide.srv.Reset();
-        guide.srvOf = nullptr;
-    }
-    if (guide.srv == nullptr)
-    {
-        D3D11_SHADER_RESOURCE_VIEW_DESC sd {};
-        sd.Format = GuideDepthSrvFormat(guide.format);
-        sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        sd.Texture2D.MipLevels = 1;
-        if (FAILED(g.game11->CreateShaderResourceView(guide.snap.Get(), &sd, &guide.srv)))
-        {
-            guide.failed = true;
-            Log("guide depth: SRV over the snapshot failed (fmt %u read as %u).",
-                static_cast<unsigned>(guide.format), static_cast<unsigned>(sd.Format));
-            return false;
-        }
-        guide.srvOf = guide.snap.Get();
-    }
-
-    ID3D11ComputeShader *oldCs = nullptr;
-    ID3D11ShaderResourceView *oldSrv = nullptr;
-    ID3D11UnorderedAccessView *oldUav = nullptr;
-    g.game11ctx->CSGetShader(&oldCs, nullptr, nullptr);
-    g.game11ctx->CSGetShaderResources(0, 1, &oldSrv);
-    g.game11ctx->CSGetUnorderedAccessViews(0, 1, &oldUav);
-
-    UINT keep = static_cast<UINT>(-1);
-    ID3D11ShaderResourceView *srv = guide.srv.Get();
-    ID3D11UnorderedAccessView *uav = guide.uav.Get();
-    g.game11ctx->CSSetShader(g.guideDepthCs.Get(), nullptr, 0);
-    g.game11ctx->CSSetShaderResources(0, 1, &srv);
-    g.game11ctx->CSSetUnorderedAccessViews(0, 1, &uav, &keep);
-    g.game11ctx->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
-
-    ID3D11ShaderResourceView *nullSrv = nullptr;
-    ID3D11UnorderedAccessView *nullUav = nullptr;
-    g.game11ctx->CSSetUnorderedAccessViews(0, 1, &nullUav, &keep);
-    g.game11ctx->CSSetShaderResources(0, 1, &nullSrv);
-    g.game11ctx->CSSetShader(oldCs, nullptr, 0);
-    g.game11ctx->CSSetShaderResources(0, 1, &oldSrv);
-    g.game11ctx->CSSetUnorderedAccessViews(0, 1, &oldUav, &keep);
-    if (oldCs != nullptr)
-        oldCs->Release();
-    if (oldSrv != nullptr)
-        oldSrv->Release();
-    if (oldUav != nullptr)
-        oldUav->Release();
-
-    guide.ready = true;
-    if (!guide.logged)
-    {
-        guide.logged = true;
-        Log("guide depth: %ux%u format %u -> shared R32_FLOAT, one snapshot and one dispatch per "
-            "frame.",
-            w, h, static_cast<unsigned>(guide.format));
-    }
-    return true;
-}
-
-bool EnsureStage(UINT w, UINT h, DXGI_FORMAT fmt)
-{
-    if (g.stageIn11 != nullptr && g.stageW == w && g.stageH == h && g.stageFmt == fmt)
-        return true;
-    g.stageIn11.Reset();
-    g.stageOut11.Reset();
-    g.stageW = g.stageH = 0;
-    D3D11_TEXTURE2D_DESC td {};
-    td.Width = w;
-    td.Height = h;
-    td.MipLevels = 1;
-    td.ArraySize = 1;
-    td.Format = fmt;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(g.game11->CreateTexture2D(&td, nullptr, &g.stageIn11)) ||
-        FAILED(g.game11->CreateTexture2D(&td, nullptr, &g.stageOut11)))
-    {
-        Log("bridge: could not create the private staging textures %ux%u fmt %u.", w, h,
-            static_cast<unsigned>(fmt));
-        g.stageIn11.Reset();
-        g.stageOut11.Reset();
-        return false;
-    }
-    g.stageW = w;
-    g.stageH = h;
-    g.stageFmt = fmt;
-    Log("bridge: private staging %ux%u fmt %u, so the back buffer never meets a shared resource.",
-        w, h, static_cast<unsigned>(fmt));
-    return true;
+// The guide copy is d3d11_guides.h, the same code the 64-bit add-on runs. A guide's shared texture
+// here is one exported to the helper rather than opened on a device of our own.
+bool PrepareGuide(Guide& guide,bool isDepth){
+    return d3d11guides::PrepareGuide(g.game11.Get(),g.game11ctx.Get(),guide,isDepth,g.guideDepthCs,g.guideDepthCsFailed,D3DCompile,
+        [&](UINT w,UINT h,DXGI_FORMAT fmt,bool uav){return guide.bridge.Ensure(g.game11.Get(),w,h,fmt,uav);},Log);
 }
 
 void ReleaseD3D9Stage()
@@ -540,7 +343,7 @@ bool InitD3D9Bridge(device *reshadeDevice)
 }
 
 HRESULT FlushAndWait9();
-bool FlushAndWait11();
+bool FlushAndWait11(){return d3d11guides::FlushAndWait11(g.game11.Get(),g.game11ctx.Get());}
 
 bool EnsureD3D9Stage(UINT width, UINT height, D3DFORMAT format, DXGI_FORMAT &dxgiFormat)
 {
@@ -735,66 +538,6 @@ HRESULT FlushAndWait9()
     return hr;
 }
 
-void ObserveD3D11(device *dev, const resource_view *rtvs, uint32_t count, resource depthRes)
-{
-    const UINT screenW = g.outWidth, screenH = g.outHeight;
-    auto record = [](std::unordered_map<void *, Tallied> &tally, ID3D11Resource *native,
-                     const D3D11_TEXTURE2D_DESC &d) {
-        Tallied &slot = tally[native];
-        if (slot.res == nullptr)
-        {
-            slot.res = native;
-            slot.width = d.Width;
-            slot.height = d.Height;
-            slot.format = d.Format;
-        }
-        ++slot.binds;
-    };
-    if (depthRes.handle != 0)
-    {
-        auto *native = reinterpret_cast<ID3D11Resource *>(depthRes.handle);
-        ComPtr<ID3D11Texture2D> tex;
-        D3D11_TEXTURE2D_DESC d {};
-        if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&tex))))
-        {
-            tex->GetDesc(&d);
-            if (d.SampleDesc.Count == 1 && d.ArraySize == 1 &&
-                GuideDepthSrvFormat(d.Format) != DXGI_FORMAT_UNKNOWN &&
-                (screenW == 0 || (d.Width * 2 >= screenW && d.Height * 2 >= screenH)))
-                record(g_depthTally, native, d);
-        }
-    }
-    for (uint32_t i = 0; i < count; ++i)
-    {
-        if (rtvs[i].handle == 0)
-            continue;
-        const resource res = dev->get_resource_from_view(rtvs[i]);
-        if (res.handle == 0)
-            continue;
-        auto *native = reinterpret_cast<ID3D11Resource *>(res.handle);
-        ComPtr<ID3D11Texture2D> tex;
-        D3D11_TEXTURE2D_DESC d {};
-        if (FAILED(native->QueryInterface(IID_PPV_ARGS(&tex))))
-            continue;
-        tex->GetDesc(&d);
-        if (LooksLikeMotion(d, screenW, screenH))
-            record(g_motionTally, native, d);
-    }
-}
-
-bool FlushAndWait11(){
-    if(!g.game11||!g.game11ctx)return false;
-    D3D11_QUERY_DESC d{};d.Query=D3D11_QUERY_EVENT;ComPtr<ID3D11Query> q;
-    if(FAILED(g.game11->CreateQuery(&d,&q)))return false;
-    g.game11ctx->End(q.Get());g.game11ctx->Flush();
-    const ULONGLONG end=GetTickCount64()+2000;
-    HRESULT hr;
-    while((hr=g.game11ctx->GetData(q.Get(),nullptr,0,0))==S_FALSE){
-        if(FAILED(g.game11->GetDeviceRemovedReason())||GetTickCount64()>end)return false;
-        Sleep(0);
-    }
-    return SUCCEEDED(hr)&&SUCCEEDED(g.game11->GetDeviceRemovedReason());
-}
 void Settings(){
     if(g.settings)return;g.settings=true;
     const auto dir=Directory();logFile=_wfopen((dir/L"amd-nr-x86.log").c_str(),L"w");
@@ -955,7 +698,7 @@ void SetAsync(bool async){
 }
 void ClearGuide(Guide& v){
     v.chosen.Reset();v.snap.Reset();v.srv.Reset();v.uav.Reset();v.bridge.Destroy();
-    v.challenger=nullptr;v.challengerFrames=0;v.chosenBinds=0;v.width=v.height=v.snapW=v.snapH=0;
+    v.challenger=nullptr;v.challengerFrames=0;v.coldFrames=0;v.chosenBinds=0;v.width=v.height=v.snapW=v.snapH=0;
     v.srvOf=nullptr;v.uavOf=nullptr;v.snapFmt=v.format=DXGI_FORMAT_UNKNOWN;v.ready=v.failed=v.logged=false;
 }
 // Collect the answer to a frame posted by an earlier present.
@@ -985,12 +728,17 @@ void ReleaseLocal(){
     g.colour.Destroy();g.output.Destroy();g.stageIn11.Reset();g.stageOut11.Reset();g.stageW=g.stageH=0;
     g.stageFmt=DXGI_FORMAT_UNKNOWN;g.reset=true;
 }
+// The 64-bit route's two gates, so both routes pick the same guides: nothing with GameGuides off, and
+// nothing while ReShade draws its own effect chain, whose screen-sized two-channel intermediates look
+// exactly like a velocity buffer. No lock in the effect callbacks: they only mark that window.
+void OnBeginEffects(effect_runtime*,command_list*,resource_view,resource_view){g.inEffects=true;}
+void OnFinishEffects(effect_runtime*,command_list*,resource_view,resource_view){g.inEffects=false;}
 void OnBind(command_list* cmd,uint32_t count,const resource_view* targets,resource_view depth){
-    if(!cmd)return;auto* dev=cmd->get_device();if(!dev||dev->get_api()!=device_api::d3d11)return;
+    if(!cmd||g.inEffects)return;auto* dev=cmd->get_device();if(!dev||dev->get_api()!=device_api::d3d11)return;
     std::lock_guard lock(g.lock);
-    if(!g.game11||reinterpret_cast<ID3D11Device*>(dev->get_native())!=g.game11.Get())return;
+    if(!controls.shadow.useGameGuides||!g.game11||reinterpret_cast<ID3D11Device*>(dev->get_native())!=g.game11.Get())return;
     const auto resource=depth.handle?dev->get_resource_from_view(depth):reshade::api::resource{0};
-    ObserveD3D11(dev,targets,count,resource);
+    d3d11guides::ObserveD3D11(dev,targets,count,resource,g.outWidth,g.outHeight,g_depthTally,g_motionTally);
 }
 bool OnDraw(command_list*,uint32_t,uint32_t,uint32_t,uint32_t){return false;}
 bool OnDrawIndexed(command_list*,uint32_t,uint32_t,uint32_t,int32_t,uint32_t){return false;}
@@ -1096,7 +844,9 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
             probe.periodPipelined?"pipelined":"same-frame");
         probe.PeriodDrop();
     }
-    struct ClearFrameTallies {~ClearFrameTallies(){g_depthTally.clear();g_motionTally.clear();}} clearFrameTallies;
+    // A present that settled the guides leaves the tallies to SettleGuide, which keeps them standing over
+    // a cold start's three presents; clearing them here too left the third present alone to decide.
+    bool settled=false;struct ClearFrameTallies{bool& settled;~ClearFrameTallies(){if(!settled){g_depthTally.clear();g_motionTally.clear();}}} clearFrameTallies{settled};
     if(g.active&&g.active!=sc)return; // one active swapchain per process, never mix resource owners
     if(!g.active){g.active=sc;g.reset=true;}
     HWND hwnd=static_cast<HWND>(sc->get_hwnd());
@@ -1185,14 +935,14 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
         width=d.Width;height=d.Height;format=d.Format;
     }
     g.outWidth=width;g.outHeight=height;
-    if(!g.colour.Ensure(g.game11.Get(),width,height,format)||!g.output.Ensure(g.game11.Get(),width,height,format)||!EnsureStage(width,height,format)){Fault("colour/staging resources unavailable");return;}
+    if(!g.colour.Ensure(g.game11.Get(),width,height,format)||!g.output.Ensure(g.game11.Get(),width,height,format)||!d3d11guides::EnsureStage(g.game11.Get(),g,width,height,format,Log)){Fault("colour/staging resources unavailable");return;}
     probe.Begin();
     if(g.nativeD3D9){
         const HRESULT uploadHr=UploadD3D9Frame(bb9.Get());
         if(FAILED(uploadHr)){if(DeferD3D9Failure("input copy",uploadHr))return;FaultHresult("D3D9 input copy did not complete",uploadHr);return;}
     }else g.game11ctx->CopyResource(g.stageIn11.Get(),bb.Get());
     g.game11ctx->CopyResource(g.colour.on11.Get(),g.stageIn11.Get());
-    SettleGuide(g.guideDepth,g_depthTally,Log);SettleGuide(g.guideMotion,g_motionTally,Log);
+    settled=true;SettleGuide(g.guideDepth,g_depthTally,Log);SettleGuide(g.guideMotion,g_motionTally,Log);
     g.guideDepth.ready=g.guideMotion.ready=false;
     PrepareGuide(g.guideDepth,true);PrepareGuide(g.guideMotion,false);
     if(g.failed)return;
@@ -1286,6 +1036,8 @@ BOOL APIENTRY DllMain(HMODULE module,DWORD reason,LPVOID){
         addonModule=module;
         if(!reshade::register_addon(module))return FALSE;
         reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnBind);
+        reshade::register_event<reshade::addon_event::reshade_begin_effects>(OnBeginEffects);
+        reshade::register_event<reshade::addon_event::reshade_finish_effects>(OnFinishEffects);
         reshade::register_event<reshade::addon_event::draw>(OnDraw);
         reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
         reshade::register_event<reshade::addon_event::init_swapchain>(OnInit);

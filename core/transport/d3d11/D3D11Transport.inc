@@ -65,75 +65,19 @@ void BridgeStep1(device* dev) {
         "crosses back.");
 }
 
-// Submit everything recorded on the game's context and wait, on the CPU, for the GPU to finish
-// it. An event query does not report until every command submitted before it has completed.
-//
-// This replaces the cross-device fences the bridge used to synchronise with. Those queued a
-// GPU-side Wait on the game's immediate context, and everything the runtime submitted after it
-// -- including ReShade's own overlay pass, which draws into the back buffer -- then sat pending
-// behind it. DXGI refuses ResizeBuffers while a pending command references a back buffer, and
-// NFS reports that refusal as a DirectX error and quits. Measured: the failure survived not
-// touching the back buffer at all from this add-on, which is what ruled the copies out and left
-// the queued wait as the only candidate.
-//
-// The cost is real but already paid: the default mode is inline, where the game waits for the
-// network anyway.
-// The two private textures that keep the back buffer away from anything shared.
-bool EnsureStage(UINT w, UINT h, DXGI_FORMAT fmt) {
-    if (g.bridge.stageIn11 != nullptr && g.bridge.stageW == w && g.bridge.stageH == h &&
-        g.bridge.stageFmt == fmt)
-        return true;
-    g.bridge.stageIn11.Reset();
-    g.bridge.stageOut11.Reset();
-    g.bridge.stageW = g.bridge.stageH = 0;
-    D3D11_TEXTURE2D_DESC td{};
-    td.Width = w;
-    td.Height = h;
-    td.MipLevels = 1;
-    td.ArraySize = 1;
-    td.Format = fmt;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(g.bridge.game11->CreateTexture2D(&td, nullptr, &g.bridge.stageIn11)) ||
-        FAILED(g.bridge.game11->CreateTexture2D(&td, nullptr, &g.bridge.stageOut11))) {
-        Log("bridge: could not create the private staging textures %ux%u fmt %u.", w, h,
-            static_cast<unsigned>(fmt));
-        g.bridge.stageIn11.Reset();
-        g.bridge.stageOut11.Reset();
-        return false;
-    }
-    g.bridge.stageW = w;
-    g.bridge.stageH = h;
-    g.bridge.stageFmt = fmt;
-    Log("bridge: private staging %ux%u fmt %u, so the back buffer never meets a shared resource.",
-        w, h, static_cast<unsigned>(fmt));
-    return true;
-}
-
+// The CPU-side drain, and why it replaced the cross-device fences, is d3d11_guides.h. The cost is
+// real but already paid: the default mode is inline, where the game waits for the network anyway.
 bool FlushAndWait11() {
-    if (g.bridge.game11 == nullptr || g.bridge.game11ctx == nullptr)
-        return false;
-    D3D11_QUERY_DESC qd{};
-    qd.Query = D3D11_QUERY_EVENT;
-    ComPtr<ID3D11Query> done;
-    if (FAILED(g.bridge.game11->CreateQuery(&qd, &done))) {
-        g.bridge.game11ctx->Flush();
-        return false;
-    }
-    g.bridge.game11ctx->End(done.Get());
-    g.bridge.game11ctx->Flush();
-    const ULONGLONG deadline = GetTickCount64() + 2000;
-    while (g.bridge.game11ctx->GetData(done.Get(), nullptr, 0, 0) == S_FALSE) {
-        if (GetTickCount64() > deadline) {
-            Log("bridge: the game's queue did not drain within 2 s.");
-            return false;
-        }
-        Sleep(0);
-    }
-    return true;
+    if (d3d11guides::FlushAndWait11(g.bridge.game11.Get(), g.bridge.game11ctx.Get()))
+        return true;
+    Log("bridge: the game's queue did not drain (query failed, 2 s timeout, or device removed).");
+    return false;
 }
 
+// One frame across the bridge: the game's back buffer goes over, the network runs on our device,
+// the finished image comes back. Both crossings are plain CopyResource -- a shared resource
+// opened from another device sits in COMMON, which promotes to COPY_SOURCE and COPY_DEST on a
+// direct queue, so there is no barrier here to get wrong.
 void BridgePresent(device* dev, swapchain* sc) {
     if (DeviceLost())
         return;
@@ -205,7 +149,7 @@ void BridgePresent(device* dev, swapchain* sc) {
     // 1. the game's image goes over, and with it whatever guides the game actually renders.
     // This is the step that has no equivalent on PCSX2: there the only thing to send is colour.
     if (!g.noBackBuffer.load()) {
-        if (!EnsureStage(w, h, fmt)) {
+        if (!d3d11guides::EnsureStage(g.bridge.game11.Get(), g.bridge, w, h, fmt, Log)) {
             g.bridge.failed = true;
             return;
         }
