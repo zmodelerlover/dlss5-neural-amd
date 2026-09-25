@@ -56,15 +56,24 @@ cbuffer C : register(b0) { uint w; uint h; float dark; float bright; };
  if (max(max(v.x, v.y), v.z) < dark && max(max(b.x, b.y), b.z) > bright) hist[p.xy] = float4(b, v.w);
 })";
 
+// What it writes becomes the next frame's history, so a NaN or inf is never stored: a NaN in either
+// side survives the lerp even at weight 0, and would be warped into its neighbours every frame after.
+// The network's own pixel, else the warped previous one, else netBase, the chain's input: no
+// correction, where 0 would be a darkening kept in the history. The bit compare, not isnan, because
+// /O3 is free to fold isnan away.
 inline constexpr char kSmoothShader[] = R"(
 Texture2D<float4> warped : register(t0);
+Texture2D<float4> input : register(t1);
 RWTexture2D<float4> dst : register(u0);
 cbuffer C : register(b0) { uint w; uint h; float threshold; float strength; };
+bool bad(float3 c) { return any((asuint(c) & 0x7fffffff) >= 0x7f800000); }
 [numthreads(8,8,1)] void main(uint3 p : SV_DispatchThreadID) {
  if (p.x >= w || p.y >= h) return;
  float4 o = dst[p.xy]; float3 v = warped[p.xy].rgb;
  float3 a = abs(o.rgb - v); float d = max(max(a.x, a.y), a.z);
- dst[p.xy] = float4(lerp(o.rgb, v, strength * saturate(1.0 - d / threshold)), o.a);
+ float3 r = lerp(o.rgb, v, strength * saturate(1.0 - d / threshold));
+ if (bad(r)) r = !bad(o.rgb) ? o.rgb : !bad(v) ? v : input[p.xy].rgb;
+ dst[p.xy] = float4(r, o.a);
 })";
 
 struct HistoryFilters
@@ -146,6 +155,7 @@ void SmoothOutput(ID3D12GraphicsCommandList *cmd, UINT slot)
         return;
     const UINT w = g.netWidth, h = g.netHeight, base = FilterSlots(slot) + 4;
     ViewAt(base, g_filters.warped[slot].Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+    ViewAt(base + 1, g.netBase.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     ViewAt(base + 3, g.netColour.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, true);
     const float threshold = std::max(1e-3f, g.settings.outputSmoothLimit.load()) / 255.0f;
     UINT k[4] { w, h, 0, 0 };

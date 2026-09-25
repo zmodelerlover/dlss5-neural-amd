@@ -69,6 +69,12 @@ cbuffer Extent : register(b0) { uint dw; uint dh; uint sw; uint sh; float dscale
 // exactly zero. That is the whole of "turning Apply On Same Frame off makes the effect vanish".
 // Capture the difference into its own texture at a point where the pair is known to match, and
 // let compose read only that.
+//
+// A NaN or inf texel from the network becomes no correction here, the one place every route's
+// compose reads it from. Past this point a NaN slips through the limit (NaN > limit is false) and
+// darkens the pixel, and zeroing it after the upsample would blank the whole 4x4 footprint. The bit
+// compare, not isnan, because /O3 is free to fold isnan away. The clamp keeps a finite difference of
+// two fp16 values (65504 - -65504) from being stored as inf; after the test, as clamp(NaN) is not 0.
 inline constexpr char kResidualShader[] = R"(
 Texture2D<float4> nr   : register(t0);
 Texture2D<float4> base : register(t1);
@@ -76,7 +82,9 @@ RWTexture2D<float4> dst : register(u0);
 cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float extra; uint pad; };
 [numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
  if(p.x>=dw || p.y>=dh) return;
- dst[p.xy] = float4((nr.Load(int3(p.xy,0)) - base.Load(int3(p.xy,0))).rgb, 0);
+ float3 e = (nr.Load(int3(p.xy,0)) - base.Load(int3(p.xy,0))).rgb;
+ if (any((asuint(e) & 0x7fffffff) >= 0x7f800000)) e = 0;
+ dst[p.xy] = float4(clamp(e, -65504.0, 65504.0), 0);
 })";
 
 } // namespace shaders

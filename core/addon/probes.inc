@@ -272,7 +272,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                     else Log("capture pair could not be written to %ls", dir.c_str());
                 }
                 double sum = 0.0, peak = 0.0;
-                UINT64 n = 0;
+                UINT64 n = 0, nonFinite = 0;
                 for (UINT y = 0; y < nh; y += 4)
                 {
                     auto *pa = reinterpret_cast<const uint16_t *>(static_cast<const char *>(a) +
@@ -288,6 +288,9 @@ void DrainReadbacks(UINT nw, UINT nh)
                                              : std::ldexpf(1.0f + m / 1024.0f, e - 15);
                             return (h & 0x8000) ? -v : v;
                         };
+                        // An fp16 exponent of all ones is inf or NaN, which half() reads as 65536+.
+                        nonFinite += (pb[x] & 0x7c00) == 0x7c00 || (pb[x + 1] & 0x7c00) == 0x7c00 ||
+                                     (pb[x + 2] & 0x7c00) == 0x7c00;
                         const double d = std::abs(half(pa[x]) - half(pb[x]));
                         sum += d;
                         if (d > peak)
@@ -351,6 +354,15 @@ void DrainReadbacks(UINT nw, UINT nh)
                     const double meanRes = n ? sum / n : 0.0;
                     const bool first = !g.measured;
                     g.measured = true;
+                    // Whether the runtime emits them at all is unproven, and only OutputSmooth=0 says:
+                    // this reads netColour after the output smooth, which replaces them wherever it
+                    // runs, so with it on a 0 proves nothing. At most once in 1800 frames.
+                    if (first || nonFinite != 0)
+                        Log("measure, non-finite: %llu of %llu sampled pixels NaN or inf%s",
+                            static_cast<unsigned long long>(nonFinite), static_cast<unsigned long long>(n),
+                            g.settings.outputSmooth.load() > 0.0f
+                                ? ", read after the output smooth, which replaces them: only OutputSmooth=0 measures the runtime"
+                                : "; compose takes them as no correction");
                     if (first)
                     {
                         Log("measure, network input: mean absolute %.6f (%llu samples)",

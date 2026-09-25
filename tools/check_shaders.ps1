@@ -1,7 +1,7 @@
-# The compute shaders live as string literals in core\shaders\*.h and are compiled by D3DCompile at
-# runtime, so build.ps1 succeeding says nothing about them -- a syntax error only shows up as
-# "shader X failed to compile" in amd-nr.log, in a game, after a launch. Pull them out and
-# run fxc over them instead.
+# The compute shaders live as string literals in core\shaders\*.h and core\temporal\*.inc and are
+# compiled by D3DCompile at runtime, so build.ps1 succeeding says nothing about them -- a syntax
+# error only shows up as "shader X failed to compile" in amd-nr.log, in a game, after a launch.
+# Pull them out and run fxc over them instead.
 #
 #   powershell -File tools\check_shaders.ps1
 
@@ -23,8 +23,8 @@ if ($sdk -and (Test-Path (Join-Path $sdk 'bin'))) {
 if (-not $fxc) { throw 'fxc.exe not found. Install the Windows 10/11 SDK.' }
 
 # They moved out of neural.cpp into these headers, and a check still reading neural.cpp found none
-# and said every shader compiled.
-$src = (Get-ChildItem (Join-Path $root 'core\shaders') -Filter *.h | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
+# and said every shader compiled. The history filters' shaders sit in core\temporal.
+$src = (Get-ChildItem (Join-Path $root 'core\shaders\*.h'), (Join-Path $root 'core\temporal\*.inc') | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
 $tmp = Join-Path $env:TEMP ('amd-nr-shaders-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 

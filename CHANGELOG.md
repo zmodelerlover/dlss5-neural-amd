@@ -131,6 +131,12 @@ notice:
   the background switched the effect off; one minimised dropped the history on every frame, and one
   of another size rebuilt everything on every frame. The 32-bit route already kept to one swapchain;
   the other one's frames no longer count in its frame timing or clear its depth and motion tallies.
+- A NaN or inf the network returns for a pixel is taken as no correction, where it used to darken
+  that pixel (black with the additive composition). On a frame Output smoothing blends, the pixel
+  becomes the previous frame's, or the game's own where that one is bad too, so it is not stored in
+  the history the next frame is smoothed against. The log's residual measurement counts them
+  (`measure, non-finite`); with Output smoothing on it reads after the smooth, so only a run with
+  OutputSmooth=0 says whether the network returns any.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

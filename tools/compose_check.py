@@ -10,9 +10,14 @@ breaks a property the shader was written to have.
     python tools/compose_check.py
 
 Mirrors the `guard > 0` branch of kComposeShader exactly: CubeScale, the luminance floor, the
-two-sided guard, the chroma blend and the hue-preserving peak scale.
+two-sided guard, the chroma blend and the hue-preserving peak scale. Also the NaN/inf guards in
+kResidualShader and kSmoothShader, the two places a value from the network is stored.
 """
+import re
+import struct
+from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
 LUMA = (0.2126, 0.7152, 0.0722)
 FLOOR = 1.0 / 512.0
 
@@ -69,6 +74,26 @@ def edge_fade(E, uv, fade):
         return list(E)
     e = [min(c, 1.0 - c) / fade for c in uv]
     return [x * min(1.0, max(0.0, min(e))) for x in E]
+
+
+def non_finite(c):
+    """The shaders' bit compare: an exponent of all ones is inf or NaN."""
+    return any((struct.unpack("<I", struct.pack("<f", x))[0] & 0x7FFFFFFF) >= 0x7F800000 for x in c)
+
+
+def residual_guard(E):
+    """kResidualShader: a triple with a NaN or inf in it becomes no correction at all, and a finite
+    one is clamped to the fp16 range it is stored in, so the store cannot turn it into inf."""
+    return [0.0, 0.0, 0.0] if non_finite(E) else [min(65504.0, max(-65504.0, x)) for x in E]
+
+
+def smooth(o, v, base, strength, threshold):
+    """kSmoothShader, as fxc emits it (the lerp is o + w * (v - o), and saturate(NaN) is 0), then
+    the store: the blend, else the network's pixel, else the warped one, else the input (netBase)."""
+    d = max(abs(a - b) for a, b in zip(o, v))
+    w = strength * min(1.0, max(0.0, 1.0 - d / threshold))
+    r = [a + w * (b - a) for a, b in zip(o, v)]
+    return next((list(c) for c in (r, o, v) if not non_finite(c)), list(base))
 
 
 def chroma_direction(c):
@@ -197,10 +222,46 @@ def main():
     for a, b in zip(E, quarter):
         assert abs(a * (0.25 / 0.49) - b) < 1e-9, "0.49 must dim a quarter-in pixel by 0.51"
 
+    # 7. A NaN or inf from the network is no correction at all -- not the darkened pixel it made
+    #    through the ratio path, nor the black one through the additive -- and never lands in the
+    #    history the smooth writes, even where the blend weight is 0. Finite values pass as they were.
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        E = residual_guard([0.01, bad, -0.02])
+        for P in PIXELS:
+            assert close(compose_ratio(P, E, 1.0, 2.0), P), f"{bad} moved {P} on the ratio path"
+            assert close(compose_additive(P, E), P), f"{bad} moved {P} on the additive path"
+        o, v, P = [0.2, 0.3, 0.4], [0.21, 0.3, 0.4], [0.25, 0.35, 0.45]
+        assert smooth([0.2, bad, 0.4], v, P, 0.8, 10 / 255) == v, "a bad pixel takes the warped one"
+        assert smooth(o, [bad, 0.3, 0.4], P, 0.8, 10 / 255) == o, "a bad history keeps the network's"
+        assert smooth([bad] * 3, [0.3, bad, 0.3], P, 0.8, 10 / 255) == P, "else no correction, not 0"
+    for E in EDITS:
+        assert residual_guard(E) == E, "a finite correction must pass untouched"
+    assert residual_guard([65504.0 - -65504.0, 0.0, 0.0]) == [65504.0, 0.0, 0.0], \
+        "a finite difference past the fp16 range must not be stored as inf"
+    o, v = [0.2, 0.3, 0.4], [0.21, 0.3, 0.4]
+    assert close(smooth(o, v, o, 0.8, 10 / 255), [0.2 + 0.8 * (1 - 0.01 * 25.5) * 0.01, 0.3, 0.4]), \
+        "a finite blend must be the plain smooth"
+    # The guard statements themselves, in the order they run: a check that only looked for the
+    # constant still passed with a guard deleted or aimed at the wrong variable.
+    bad_fn = "bool bad(float3 c) { return any((asuint(c) & 0x7fffffff) >= 0x7f800000); }"
+    for path, name, guard in (
+            ("core/shaders/input.h", "kResidualShader",
+             ["if (any((asuint(e) & 0x7fffffff) >= 0x7f800000)) e = 0;",
+              "dst[p.xy] = float4(clamp(e, -65504.0, 65504.0), 0);"]),
+            ("core/temporal/smooth.inc", "kSmoothShader",
+             ["float3 r = lerp(o.rgb, v, strength * saturate(1.0 - d / threshold));",
+              "if (bad(r)) r = !bad(o.rgb) ? o.rgb : !bad(v) ? v : input[p.xy].rgb;",
+              "dst[p.xy] = float4(r, o.a);"])):
+        body = re.search(name + r'\[\] = R"\((.*?)\)";', (ROOT / path).read_text(encoding="utf-8"), re.S)
+        assert body and re.search(r"\s*".join(map(re.escape, guard)), body.group(1)), \
+            f"{name} lost its NaN/inf guard, or it no longer guards what it stores"
+        assert name != "kSmoothShader" or bad_fn in body.group(1), "kSmoothShader's bad() changed"
+
     print("compose: zero edit is a no-op, colour 0 holds hue, the guard bounds luminance,")
     print("         nothing leaves the cube, the additive hue rotation is gone, the residual")
     print("         limit scales the correction instead of clamping a channel, and edge fade")
-    print("         reaches zero at the border, bites hardest in a corner, and holds hue.")
+    print("         reaches zero at the border, bites hardest in a corner, and holds hue. A NaN or")
+    print("         inf from the network is no correction and never enters the smoothed history.")
 
 
 if __name__ == "__main__":
