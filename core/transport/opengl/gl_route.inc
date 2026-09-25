@@ -339,8 +339,10 @@ bool Ensure(Route &r, UINT w, UINT h)
 
     r.ready = false;
     // Nothing below may be released while our queue can still be reading it, and with the fences
-    // in use no present waits for the queue. A new result texture also holds no result yet.
-    WaitForWorkQueue(g.completion);
+    // in use no present waits for the queue. A new result texture also holds no result yet. A wait
+    // that gave up has stood the add-on down, and what the queue may read stays as it is.
+    if (!WaitForWorkQueue(g.completion))
+        return false;
     r.haveResult = false;
     {
         SelfIssued selfIssued;

@@ -837,6 +837,7 @@ struct State
         // to 0 puts it back on the CPU stall the other routes use, which is the only way to compare
         // the two on one machine and the first thing to try if a GL host misbehaves.
         std::atomic<bool> glSemaphores { true };
+        std::atomic<int> fenceWaitCapMs { 10000 };  // ini-only as well: see WaitFence
     } settings;
     UINT loadedPasses = 0;
 
@@ -1374,6 +1375,8 @@ void LoadSettings()
     g.noBackBuffer.store(flag(L"NoBackBuffer", g.noBackBuffer.load()));
     g.noBridge.store(flag(L"NoBridge", g.noBridge.load()));
     g.settings.glSemaphores.store(flag(L"GlSemaphores", g.settings.glSemaphores.load()));
+    const int capMs = static_cast<int>(num(L"FenceWaitCapMs", 10000.0f));  // under 1 s, one slow frame stands it down
+    g.settings.fenceWaitCapMs.store(capMs <= 0 ? 0 : std::max(capMs, 1000));
     g.stage.store(static_cast<int>(num(L"Stage", 3.0f)));
     g.events = static_cast<int>(num(L"Events", 31.0f));
     // Diagnostic, in the same family as Stage / Events / NoBridge: read at load, never written
@@ -2390,10 +2393,7 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
                                         "the old raster before changing resolution");
             CloseHandle(done);
             if (!idle)
-            {
-                g.status.reason = "the GPU did not release the old raster before its resolution changed";
-                return false;
-            }
+                return false;  // WaitFence stood the add-on down and set the reason
         }
         else return false;
     }
@@ -2642,18 +2642,14 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
         // depth to an add-on at all" can only be answered on the other API -- and answering it must
         // not require the D3D11 bridge to already exist. ReShade's own resource_desc reads on both;
         // the native reads do not, so they are each transport's own.
-        if (res.handle != 0)
+        static std::atomic<UINT> logged { 0 };
+        if (res.handle != 0 && logged < 8 && logged++ < 8)
         {
-            static UINT logged = 0;
-            std::lock_guard observe(g.lock);
-            if (logged < 8)
-            {
-                ++logged;
-                const resource_desc rd = dev->get_resource_desc(res);
-                Log("depth seen (%s): %ux%u format %u samples %u",
-                    transport != nullptr ? transport->Name() : "other API", rd.texture.width,
-                    rd.texture.height, static_cast<unsigned>(rd.texture.format), rd.texture.samples);
-            }
+            std::lock_guard observe(g.lock);  // for these eight lines, not on every bind the game makes
+            const resource_desc rd = dev->get_resource_desc(res);
+            Log("depth seen (%s): %ux%u format %u samples %u",
+                transport != nullptr ? transport->Name() : "other API", rd.texture.width,
+                rd.texture.height, static_cast<unsigned>(rd.texture.format), rd.texture.samples);
         }
     }
     if (transport != nullptr)
@@ -2697,7 +2693,9 @@ bool OnClearDepth(command_list *cmd_list, resource_view dsv, const float *, cons
 // Everything sized to the swapchain, dropped together. Ensure rebuilds each one on demand.
 void ReleaseSwapchainSized()
 {
-    WaitForWorkQueue(g.completion);
+    // A wait that gave up (FenceWaitCapMs) stood the add-on down: it all stays parked, bar on a dead device.
+    if (!WaitForWorkQueue(g.completion) && !DeviceLost())
+        return;
     for (FrameTransport *transport : AllTransports())
         transport->ReleaseSwapchainSized();
     // Closed command lists retain references to their recorded resources until Reset. Retire all

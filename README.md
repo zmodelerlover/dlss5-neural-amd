@@ -132,6 +132,7 @@ tests and their thresholds are in the effect's own settings.
 | `dlssnr_amd_pass1.dll is the right size but a different build … Refused.` (or `… bytes; this add-on is built against …`) | The wrong `dlssnr_amd_pass1.dll`. Compare with `tools/SHA256SUMS.txt`. |
 | `missing:` followed by a file path | That file is not where the add-on looks. Put it at exactly that path. |
 | The game crashes with `887A0005` | A Windows driver reset. Lower the Scale. |
+| `bridge: gave up on … (FenceWaitCapMs=10000 …)` in the log, and the status says to restart | The GPU did not finish the add-on's work in 10 s, so it switched off rather than free what the GPU may still read. Restart the game. `FenceWaitCapMs=0` in `amd-nr.ini` waits for ever instead, as older versions did. |
 | The colours change but textures look the same | Try Scale 0.75 or 1.00 and compare the same scene. |
 | The log says `vulkan: present arrived on a non-graphics queue` | The game presents from an async queue. For DOOM Eternal set `r_presentFromAsync "0"`. |
 

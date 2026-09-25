@@ -191,7 +191,7 @@ void BridgePresent(device* dev, swapchain* sc) {
     // 2. our device does the work
     const UINT i = static_cast<UINT>(g.bridge.backValue % State::kRing);
     // Resetting an allocator whose command list is still executing is undefined behaviour, so
-    // this wait is not optional and cannot be allowed to expire.
+    // this wait is not optional, and one that gives up (FenceWaitCapMs) returns before the reset.
     if (g.ringValue[i] != 0 &&
         !WaitFence(g.ringFence.Get(), g.ringValue[i], g.ringEvent, "the ring slot to come free"))
         return;
@@ -269,7 +269,10 @@ void BridgePresent(device* dev, swapchain* sc) {
 
     // 3. and the finished image comes back, once our queue has actually produced it
     ++g.bridge.backValue;
-    WaitForWorkQueue(g.completion);
+    // A wait that gave up has stood the add-on down; FlushAndWait11 above already let go of the
+    // back buffer, so nothing on the game's side is left holding it.
+    if (!WaitForWorkQueue(g.completion))
+        return;
     // Gated on freshness as well: without that, a skipped frame copies back whatever composition
     // the last evaluated frame left in the shared texture -- a whole stale picture, which is a
     // worse artefact than the stale correction this is here to avoid.

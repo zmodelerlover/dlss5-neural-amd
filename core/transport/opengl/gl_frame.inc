@@ -314,9 +314,10 @@ void Present(command_queue *queue, swapchain *sc)
         g.bridge.workQueue->Signal(g.bridge.crossFence.Get(), r.toGlValue);
     }
 
-    // Without the fences the CPU waits here; with them GL waits in BlitOut.
-    if (!r.semaphores)
-        WaitForWorkQueue(g.completion);
+    // Without the fences the CPU waits here; with them GL waits in BlitOut. A wait that gave up
+    // has stood the add-on down, and the result texture may still be being written.
+    if (!r.semaphores && !WaitForWorkQueue(g.completion))
+        return;
 
     // --- 3. and the finished image goes back over the host's ----------------------------------
     //

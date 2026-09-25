@@ -91,6 +91,11 @@ notice:
   present, on every route. A present from a device or queue other than the first one seen goes out
   as the game drew it, said once in the log. The D3D12 pre-clear depth copy is only ever taken on
   the add-on's own device.
+- **A wait on the add-on's own GPU work no longer lasts for ever.** After `FenceWaitCapMs` (new,
+  ini only, 10000 ms by default, at least 1000; `0` waits for ever as before) the effect switches
+  off, the panel says to restart the game, and whatever the GPU may still be reading is kept
+  instead of freed. Later resizes and the exit do not wait the whole cap out again. On
+  Vulkan and OpenGL a depth bind no longer waits on the add-on's lock, except the eight it logs.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 

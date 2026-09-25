@@ -336,7 +336,8 @@ void Present(command_queue *queue, swapchain *sc)
     g.bridge.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
     g.completion = ++g.serial;
     g.bridge.workQueue->Signal(g.fence.Get(), g.completion);
-    WaitForWorkQueue(g.completion);
+    if (!WaitForWorkQueue(g.completion))
+        return;  // gave up and stood down: r.out.image may still be being written
 
     // --- 3. and the finished image goes back over the host's -------------------------------
     if (fresh && !g.noBackBuffer.load())

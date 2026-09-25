@@ -120,7 +120,7 @@ steps = ("BlitIn(r)", "backFence->GetCompletedValue()", "workQueue->Wait(", "Rec
 at = [present.find(s) for s in steps]
 if -1 in at or at != sorted(at) or gl.count("workQueue->Wait(") != 1:
     bad.append("OpenGL Present: " + " < ".join(steps) + ", with exactly one queue Wait")
-if len(re.findall(r"WaitForWorkQueue\(", present)) != len(re.findall(r"if \(!r\.semaphores\)\s*WaitForWorkQueue\(", present)):
+if len(re.findall(r"WaitForWorkQueue\(", present)) != len(re.findall(r"if \(!r\.semaphores && !WaitForWorkQueue\(", present)):
     bad.append("OpenGL Present: the queue is waited for on the CPU only without the fences")
 if not 0 <= ensure.find("WaitForWorkQueue(g.completion)") < ensure.find("BuildCrossing(r, r.in"):
     bad.append("OpenGL Ensure: the crossing is rebuilt without draining our queue first")

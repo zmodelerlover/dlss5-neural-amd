@@ -77,7 +77,7 @@ bool DeviceLost()
     return true;
 }
 
-// Wait for a fence to reach a value, and do not give up on it.
+// Wait for a fence to reach a value, for FenceWaitCapMs at most (10 s; 0 waits for ever).
 //
 // This used to be a bare WaitForSingleObject with a 2 s cap whose result was thrown away, in both
 // of the places that wait on our own queue. Two seconds is generous while the game is in front
@@ -88,22 +88,40 @@ bool DeviceLost()
 // result that is still being written. All three are undefined behaviour, and all three happen in
 // the same few frames users report as "crashes when I alt-tab".
 //
-// Waiting longer is slow. Carrying on is an access violation. The only real end to the wait is
-// the device dying, which is what the loop checks for.
+// Waiting longer is slow. Carrying on is an access violation. So the wait ends on the device dying
+// or, past the cap (or with nothing to wait with), with the add-on standing down: every false from
+// here has stood it down, and no caller goes on to reuse or release what the GPU may still read.
+// The ring waits and the per-frame copy-back skip the frame, a between-pass finish fails the
+// route, and ReleaseSwapchainSized and the OpenGL rebuild return first, leaving it all parked
+// where it is for the rest of the session. Once one wait has given up, later ones (each resize,
+// the exit) only look: the queue that did not finish then is not waited out again for the whole
+// cap on the game's thread.
 bool WaitFence(ID3D12Fence *fence, UINT64 value, HANDLE ev, const char *what)
 {
+    static std::atomic<bool> gaveUp { false };
     if (fence == nullptr || fence->GetCompletedValue() >= value)
         return true;
-    if (ev == nullptr || FAILED(fence->SetEventOnCompletion(value, ev)))
+    if (gaveUp)
         return false;
-    // The value is read again after every wake. These events are auto-reset and shared, so a wake
-    // can be a registration some other wait left behind; ours is still pending and is waited for.
-    for (UINT waited = 0;; waited += 2)
+    if (const HRESULT hr = ev == nullptr ? E_HANDLE : fence->SetEventOnCompletion(value, ev); FAILED(hr))
     {
-        if (WaitForSingleObject(ev, 2000) == WAIT_OBJECT_0 && fence->GetCompletedValue() >= value)
+        Log("bridge: could not wait on %s (0x%08lX). Standing down, and keeping everything the GPU "
+            "may still read.", what, static_cast<unsigned long>(hr));
+        g.status.unavailable = true;
+        g.status.reason = "could not wait for the GPU to finish our work; restart the game to re-enable";
+        return false;
+    }
+    const ULONGLONG start = GetTickCount64();
+    const ULONGLONG cap = static_cast<ULONGLONG>(std::max(0, g.settings.fenceWaitCapMs.load()));
+    // The value decides, never the wake. These events are auto-reset and shared, so a wake can be
+    // a registration some other wait left behind -- or one this wait leaves behind if it gives up.
+    for (bool told = false;;)
+    {
+        const ULONGLONG waited = GetTickCount64() - start;
+        if (fence->GetCompletedValue() >= value)
         {
-            if (waited != 0)
-                Log("bridge: %s took %u s -- the process was most likely in the background.",
+            if (told)
+                Log("bridge: %s took %llu ms -- the process was most likely in the background.",
                     what, waited);
             return true;
         }
@@ -112,16 +130,35 @@ bool WaitFence(ID3D12Fence *fence, UINT64 value, HANDLE ev, const char *what)
             Log("bridge: %s will never complete; the device is gone.", what);
             return false;
         }
-        if (waited == 0)
-            Log("bridge: still waiting on %s after 2 s. Holding on rather than reusing what the "
-                "GPU still owns.", what);
+        if (cap != 0 && waited >= cap)
+        {
+            Log("bridge: gave up on %s after %llu ms (FenceWaitCapMs=%llu; 0 waits for ever). "
+                "Standing down, and keeping everything the GPU may still read.", what, waited, cap);
+            gaveUp = true;
+            g.status.unavailable = true;
+            g.status.reason = "the GPU did not finish our work within FenceWaitCapMs; restart the "
+                              "game to re-enable";
+            return false;
+        }
+        if (!told && waited >= 2000)
+        {
+            told = true;
+            Log("bridge: still waiting on %s after %llu ms. Holding on rather than reusing what "
+                "the GPU still owns.", what, waited);
+        }
+        WaitForSingleObject(ev, static_cast<DWORD>(cap == 0 ? 2000
+                                                            : std::min<ULONGLONG>(2000, cap - waited)));
     }
 }
 
-// The other half: wait for our own queue to finish what was just submitted.
-void WaitForWorkQueue(UINT64 value)
+// The other half: wait for our own queue to finish what was just submitted. With no event there is
+// nothing to wait with, and the caller goes on as it always has: only native D3D12 lacks one (until
+// a between-pass finish makes it), and it never waited at its teardown. ponytail: a teardown there
+// that waits would take g.lock-held time on the game's queue; add it once that is measured.
+bool WaitForWorkQueue(UINT64 value)
 {
-    WaitFence(g.fence.Get(), value, g.completionEvent, "the network to finish");
+    return g.completionEvent == nullptr ||
+           WaitFence(g.fence.Get(), value, g.completionEvent, "the network to finish");
 }
 
 // Same frame means the game waits for the network, and the runtime only makes the GPU queue wait.
