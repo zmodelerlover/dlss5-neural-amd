@@ -136,14 +136,17 @@ bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate
         r.Stop("ReShade gave no immediate command buffer.");
         return false;
     }
-    if (!BuildCrossing(r, r.in, w, h, fmt, vkFmt, cmd, "colour-in") ||
-        !BuildCrossing(r, r.out, w, h, fmt, vkFmt, cmd, "result-out"))
+    // Submitted and waited on failure too: a barrier already recorded on r.in must be done before
+    // the teardown destroys that image, and the teardown does not wait on the host's device.
+    const bool crossed = BuildCrossing(r, r.in, w, h, fmt, vkFmt, cmd, "colour-in") &&
+                         BuildCrossing(r, r.out, w, h, fmt, vkFmt, cmd, "result-out");
+    queue->flush_immediate_command_list();
+    queue->wait_idle();
+    if (!crossed)
     {
         r.Stop("the shared textures would not cross.");
         return false;
     }
-    queue->flush_immediate_command_list();
-    queue->wait_idle();
 
     // Our private copy, on our device, so the network never reads a shared resource directly --
     // same reason the D3D11 route keeps crossLocal.

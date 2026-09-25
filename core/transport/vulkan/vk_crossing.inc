@@ -105,18 +105,14 @@ void RestoreEnvironmentVariable(const wchar_t *name, bool present, const std::ws
 // The host VkDevice outlives a swapchain, but the imported images do not: they have the old
 // swapchain's size and are paired with D3D12 resources released by the common teardown. Make the
 // route visibly not ready before those resources go away, including when the replacement
-// swapchain happens to have exactly the same dimensions and format.
+// swapchain happens to have exactly the same dimensions and format. No device-wide wait: every
+// copy and barrier this route records is followed by the queue's own wait_idle, the core has
+// drained the D3D12 side before this, and vkDeviceWaitIdle would need every queue of the host's
+// device, which it does not own.
 void ReleaseSwapchainSized()
 {
     Route &r = g_route;
     r.ready = false;
-
-    if (r.device != nullptr && r.api.deviceWaitIdle != nullptr)
-    {
-        const int result = r.api.deviceWaitIdle(r.device);
-        if (result != 0)
-            Log("vulkan: vkDeviceWaitIdle during swapchain teardown returned %d.", result);
-    }
     r.in.Release(r.api, r.device);
     r.out.Release(r.api, r.device);
 
@@ -177,9 +173,11 @@ bool FindPhysicalDevice(Route &r)
         return false;
     }
 
-    // With more than one, there is no way from here to tell which the host chose -- ReShade does
-    // not expose the VkPhysicalDevice. The first is taken and the choice is logged, so a wrong
-    // one is visible in the log rather than showing up as an import that fails for no reason.
+    // ReShade does not expose the host's VkPhysicalDevice, but the vkCreateDevice hook saw its
+    // LUID. Without that the first is taken and logged, so a wrong pick on a box with two GPUs is
+    // visible in the log rather than showing up as an import that fails for no reason.
+    const uint64_t host = devicehook::g_hostLuid.load(std::memory_order_relaxed);
+    bool matched = false;
     for (uint32_t i = 0; i < count; ++i)
     {
         VkPhysicalDeviceIDProperties ids {};
@@ -193,20 +191,26 @@ bool FindPhysicalDevice(Route &r)
         std::memcpy(&vendor, props.properties + kVendorIdOffset, sizeof(vendor));
         LUID luid {};
         std::memcpy(&luid, ids.deviceLUID, sizeof(luid));
+        const bool hosts = host != 0 && ids.deviceLUIDValid != 0 &&
+                           std::memcmp(&host, ids.deviceLUID, sizeof(host)) == 0;
         Log("vulkan: physical device %u: %s (vendor %04X) LUID %08lX:%08lX valid=%u%s", i, name,
             vendor, static_cast<unsigned long>(luid.HighPart), luid.LowPart, ids.deviceLUIDValid,
-            i == 0 ? "  <- taken" : "");
-        if (i == 0)
+            hosts ? "  <- the host's, taken" : "");
+        if (i == 0 || (hosts && !matched))
         {
             r.gpu = gpus[i];
             r.luid = luid;
-            r.api.getMemoryProperties(r.gpu, &r.memProps);
+            matched = hosts;
         }
     }
-    if (count > 1)
-        Log("vulkan: more than one physical device. ReShade does not say which one the host is "
-            "rendering on, so the first was taken. If nothing imports, that is the first thing "
-            "to suspect.");
+    r.api.getMemoryProperties(r.gpu, &r.memProps);
+    // On one GPU the pick cannot be wrong, so only a box with two or more gets the hint.
+    if (!matched)
+        Log("vulkan: physical device 0 of %u taken: %s.%s", count,
+            host != 0 ? "none carries the LUID of the GPU the host created its device on"
+            : devicehook::g_ran.load() ? "the vkCreateDevice hook ran but got no valid LUID"
+                                       : "the vkCreateDevice hook never ran",
+            count > 1 ? " If nothing imports, that is the first thing to suspect." : "");
     return r.gpu != nullptr;
 }
 

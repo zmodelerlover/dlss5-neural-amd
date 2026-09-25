@@ -45,6 +45,9 @@ std::atomic_bool g_reportReady { false };
 std::atomic_bool g_stopping { false };
 char g_report[512] = "the host never created a Vulkan device through the patched entry";
 char g_installReport[512] = "vulkan: no device hook was installed";
+// The LUID of the GPU the host created its device on, 0 until seen. FindPhysicalDevice picks by it.
+// ponytail: the last device the host creates wins; key by VkDevice if a host renders on two GPUs.
+std::atomic<uint64_t> g_hostLuid { 0 };
 
 // VkPhysicalDeviceVulkan12Features, when the host chains one, carries timelineSemaphore itself and
 // the two must not both be present. Its layout is fixed by the spec: sType, four bytes of padding,
@@ -65,8 +68,25 @@ int __stdcall CreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *info,
     if (g_original == nullptr || info == nullptr)
         return -1;
 
+    const HMODULE vulkan = GetModuleHandleW(L"vulkan-1.dll");
+    // Read here, the one place the host's own VkPhysicalDevice is in hand; a handle kept for later
+    // would dangle if the host recreated its instance. A missing entry or invalid LUID is unknown.
+    if (auto props2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+            GetProcAddress(vulkan, "vkGetPhysicalDeviceProperties2")))
+    {
+        VkPhysicalDeviceIDProperties ids {};
+        ids.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+        VkPhysicalDeviceProperties2 props {};
+        props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        props.pNext = &ids;
+        props2(gpu, &props);
+        uint64_t luid = 0;
+        std::memcpy(&luid, ids.deviceLUID, sizeof(luid));
+        if (ids.deviceLUIDValid != 0)
+            g_hostLuid.store(luid, std::memory_order_relaxed);
+    }
     auto enumerate = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
-        GetProcAddress(GetModuleHandleW(L"vulkan-1.dll"), "vkEnumerateDeviceExtensionProperties"));
+        GetProcAddress(vulkan, "vkEnumerateDeviceExtensionProperties"));
 
     std::vector<VkExtensionProperties> supported;
     if (enumerate != nullptr)

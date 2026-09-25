@@ -112,6 +112,11 @@ notice:
   on the next frame; only a second one in a row stops the bridge. The D3D11 drain, on the 64-bit
   route too, and the D3D9 one no longer keep a CPU core spinning while they wait: past the first
   millisecond they wait a millisecond at a time on a high-resolution timer.
+- **Vulkan on a machine with two GPUs** (a laptop, or a desktop with the CPU's graphics on) now
+  works on the GPU the game renders on, found by its LUID, instead of always the first one, which
+  stood the route down at the first import. If the add-on loaded after the game made its device,
+  the first is still taken and the log says why. A resize or fullscreen switch no longer waits for
+  every queue of the game's Vulkan device, only for the add-on's own work.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 
