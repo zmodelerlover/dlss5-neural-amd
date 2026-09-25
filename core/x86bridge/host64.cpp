@@ -242,7 +242,7 @@ struct Host {
         Require(built&&f.generation==generation&&f.id>lastFrame&&f.depthValid<=1&&f.motionValid<=1&&f.resetHistory<=1,"invalid frame/generation");
         Require((!f.depthValid||spec.depth.valid)&&(!f.motionValid||spec.motion.valid),"unbuilt guide requested");
         lastFrame=f.id;
-        if(f.resetHistory)g.historyValid.store(false);
+        if(f.resetHistory){g.historyValid.store(false);g.jobRunning=false;}  // a reset follows a pause, and a pause is no network job
         g.guideDepth.ready=f.depthValid&&g.settings.useGameGuides.load()&&g.settings.useDepth.load();
         g.guideMotion.ready=f.motionValid&&g.settings.useGameGuides.load()&&g.settings.useMotion.load()&&!g.guideMotion.failed;
         const auto result=transport?CopyOnly():Neural();

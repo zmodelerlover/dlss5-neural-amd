@@ -23,7 +23,9 @@ never submits through ReShade, so its InfoQueue sees none of it:
     once, before any list runs, and a rebuild drains our queue and forgets the old context's names;
   - on D3D11 nothing is tallied, and no streak kept, while no present will settle it (NoBridge and
     Stage included), an MSAA back buffer goes out raw with the tallies cleared, and crossLocal is
-    made in the format it is read as (host64 too).
+    made in the format it is read as (host64 too);
+  - every route (host64 too) sizes the network raster by EffectiveScale(), the Scale under the cap
+    NoteJobCost puts on after evaluations long enough to risk a display-driver reset.
 
     python tools/transport_check.py
 """
@@ -59,6 +61,7 @@ runtimes = RUNTIMES.read_text(encoding="utf-8")
 waits = [lines_of(runtimes, n) for n in ("WaitFence", "WaitForPreviousJob")]
 bad = []
 files = []
+sized = 0
 for base in SCOPE:
     files += [base] if base.is_file() else sorted(p for p in base.rglob("*") if p.suffix in (".cpp", ".h", ".inc"))
 for f in files:
@@ -79,6 +82,12 @@ for f in files:
         if "SetEventOnCompletion(" in line and "diagnostics" not in f.parts and not (
                 f == RUNTIMES and any(n in w for w in waits)):
             bad.append("fence event registered outside WaitFence and WaitForPreviousJob: " + where(n))
+        if "EnsureResources(" in line and ("transport" in f.parts or f.name == "host64.cpp"):
+            sized += 1
+            if "EffectiveScale()" not in line:
+                bad.append("network raster sized from the raw Scale, past the TDR cap: " + where(n))
+if sized < 5:
+    bad.append(f"{sized} EnsureResources calls on the routes, fewer than the five routes")
 
 route = D3D12.read_text(encoding="utf-8").splitlines()
 first = next(n for n, line in enumerate(route) if "RecordNetwork(" in line)

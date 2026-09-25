@@ -73,6 +73,9 @@ notice:
   counted and logged the same way everywhere. Vulkan and OpenGL now also time each job, and on them
   and the 32-bit bridge the scale cap after three long evaluations really lowers the scale; the
   32-bit panel used to show that cap while the network still ran at the slider's scale.
+- Switching the effect off and on again (hotkey, panel or alt-tab), or a 32-bit game coming back
+  from a pause, no longer counts the time it was off as one long evaluation, which counted toward
+  the three that lower the scale.
 - **Raising `Passes` above what the game started with now takes effect after a restart**, and the
   panel says so on both routes. Each extra pass loads its own copy of the runtime (about 150 MB of
   VRAM), which stays loaded until the game exits, and a copy that failed to load was tried again on

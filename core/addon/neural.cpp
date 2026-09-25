@@ -2522,9 +2522,9 @@ void NoteJobCost(UINT64 ms)
 {
     constexpr UINT64 kDanger = 250;  // an order of magnitude past a frame, far short of TDR
     // A reading this large is not a job. The GPU cannot hold one for half a minute -- Windows
-    // resets the driver long before -- so it is a pause that slipped past the latch: the effect
-    // switched off and on, a window restored on a path that does not clear it. Counting it would
-    // cap the scale for something that never ran.
+    // resets the driver long before -- so it is a pause that slipped past the latch: a route that
+    // skipped frames without a reset (an MSAA or missing back buffer). Counting it would cap the
+    // scale for something that never ran.
     if (ms > 30000)
         return;
     if (ms > g.worstJobMs.load())
@@ -3628,7 +3628,10 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         Log("%s: %s", HotkeyName().c_str(), on ? "on" : "off");
     }
     if (!g.settings.enabled.load() || g.status.unavailable || g.status.failed)
+    {
+        g.jobRunning = false;  // off (hotkey, panel, alt-tab) is a pause too: see the restore below
         return;
+    }
     if (!g.loggedProfile)
     {
         g.loggedProfile = true;
@@ -3691,10 +3694,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
         // a temporal denoiser is asking it to smear a stale frame across the new one, which is
         // the ghosting people see for a second or two after alt-tabbing back. Start clean.
         g.historyValid.store(0);
-        // And the job clock with it. jobRunning is a latch: set when a job is submitted, read on
-        // the next present that finds the job finished. Across a pause -- minimised, disabled,
-        // alt-tabbed -- no present runs, so the next one measures the whole pause and calls it a
-        // network job. Three of those and the scale would be capped for having been alt-tabbed.
+        // And the job latch, or the next present times the whole pause as one long network job.
         g.jobRunning = false;
         Log("window restored; dropping the temporal history so nothing from before the alt-tab "
             "is carried into the new frame.");

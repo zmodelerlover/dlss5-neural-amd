@@ -15,7 +15,9 @@ it retired:
 And the run/skip decision is made in one place. Five copies had drifted (Vulkan and OpenGL recorded
 on top of a late job and never timed one), so each route (D3D12, D3D11, Vulkan, OpenGL, the 32-bit
 bridge's host) sets its runNetwork from JobGate (core/addon/runtimes.inc) exactly once, in code and
-not in a comment, and reads neither the job counter, the skip window nor the job cost itself.
+not in a comment, and reads neither the job counter, the skip window nor the job cost itself. A
+pause (the 64-bit effect off, the 32-bit host's reset after one) clears the jobRunning latch, or
+JobGate would time the whole pause as a network job, one toward the three that cap the scale.
 
 Busy is the runtime's own count, never the add-on's memory of it. A job given up on at 500 ms was
 still in the runtime's in-order queue, so recording on top only stacked work behind it. Hence:
@@ -128,6 +130,11 @@ for name, path in routes.items():
     if (text.count("WantedPasses()") != 1 or text.count("BringUpEngines(wanted)") != 1
             or stores != ["wanted"] or "settings.passes.load()" in text):
         bad.append(f"{name}: decides the pass count itself instead of taking BringUpEngines' answer")
+# A pause runs no JobGate, so the latch would time the whole pause as one job; three cap the scale.
+host = code((ROOT / "core/x86bridge/host64.cpp").read_text(encoding="utf-8"))
+if (not re.search(r"\|\| g\.status\.failed\)\s*\{\s*g\.jobRunning = false;\s*return;", code(neural))
+        or "if(f.resetHistory){g.historyValid.store(false);g.jobRunning=false;}" not in host):
+    bad.append("the effect switched off (64-bit) or a reset (32-bit host) keeps jobRunning set")
 
 latch = code(bring)
 # The count moves only in the branch that found every module drained, and that branch also resets
@@ -156,5 +163,6 @@ if bad:
     sys.exit(1)
 print("PASS same frame only: Inline=0 ignored, no decision on the menu flag, a latched async stands "
       "down, Timing only on the 32-bit bridge, one JobGate on each of the five routes, busy from the "
-      "runtime's own count, no timed let-go of a runtime job, every failed Close retires its job, one "
-      "pass-count latch that drains, resets history and loads copies only at the first bring-up")
+      "runtime's own count, no timed let-go of a runtime job, a pause clears the job latch, every "
+      "failed Close retires its job, one pass-count latch that drains, resets history and loads "
+      "copies only at the first bring-up")
