@@ -68,34 +68,36 @@ void Tonemap(PanelSettings &s)
          "Reinicie o jogo depois de mudar.");
 }
 
-// The slider is 0..1 and not 0..3 because of what the write actually does. Bits 2 and 4 stopped
-// being tone channels in v0.2.17: bit 4 is the timeout guard and bit 2 chooses last frame's
-// residual over nothing, so the record path writes `(value & ~2) | 4` and four slider positions
-// collapsed to two -- 2 was byte-for-byte identical to 0, and 3 to 1. A control where half the
-// range is a duplicate of the other half is a control that teaches you the wrong thing about the
-// field.
+// The slider is 0..1 and not 0..3 because of what the write actually does: the record path writes
+// `(value & ~2) | 4`, so four slider positions collapse to two -- 2 is byte-for-byte identical to
+// 0, and 3 to 1. A control where half the range is a duplicate of the other half is a control that
+// teaches you the wrong thing about the field. Bits 2 and 4 were read as the apply shader's
+// timeout policy in v0.2.17; on v0.3.0 and v0.4.0 the runtime builds that word from its own state.
 //
-// Bit 4 also has to stay set for a second reason, read in the worker: when the whole word is 0 the
-// runtime zeroes LocalTone and LocalStructure before they reach the network.
+// Bit 4 has to stay set for another reason, read in the worker: when the whole word is 0 the
+// runtime zeroes LocalStructure before it reaches the network (v0.3.0 zeroed LocalTone with it).
+// The worker only ever tests the word against zero, so in the disassembly bit 0 reaches nothing
+// on its own. Not measured.
 void ToneChannels(PanelSettings &s)
 {
     int ch = s.toneChannels & 1;
     if (ImGui::SliderInt(T("Tone channels", "Canais de tom"), &ch, 0, 1, "%d", 0))
         s.toneChannels = ch & 1;
-    Help("ToneChannels bit 0, the only bit of this field left that means what the name says. An "
-         "ini key of the engine that nothing here knew existed until the reader was decompiled. "
-         "Default 0, effect unknown -- it is here to be A/B'd against the residual.\n\n"
-         "The field is four bits wide but the other two are spoken for: the record path holds "
-         "bit 4 set, because with the whole word at 0 the runtime zeroes local tone and local "
-         "structure before they reach the network, whatever the sliders above say.",
+    Help("ToneChannels bit 0. An ini key of the engine that nothing here knew existed until the "
+         "reader was decompiled. On v0.3.0 and v0.4.0 the engine only tests the whole field "
+         "against zero, so in the disassembly this bit reaches nothing on its own; not "
+         "measured. Default 0, kept here to be A/B'd against the residual.\n\n"
+         "The record path always sets bit 4 and clears bit 2, so the field is never 0: at 0 the "
+         "runtime zeroes local structure before it reaches the network, whatever the sliders "
+         "above say.",
 
-         "ToneChannels bit 0, o único bit deste campo que ainda quer dizer o que o nome diz. Uma "
-         "chave de ini do motor que ninguém aqui sabia que existia até o leitor ser decompilado. "
-         "Padrão 0, efeito desconhecido -- está aqui para ser testada em A/B contra o "
-         "resíduo.\n\n"
-         "O campo tem quatro bits mas os outros dois têm dono: o caminho de gravação segura o "
-         "bit 4 ligado, porque com a palavra inteira em 0 o runtime zera tom local e estrutura "
-         "local antes deles chegarem na rede, digam o que disserem os sliders.");
+         "ToneChannels bit 0. Uma chave de ini do motor que ninguém aqui sabia que existia até "
+         "o leitor ser decompilado. No v0.3.0 e no v0.4.0 o motor só testa o campo inteiro "
+         "contra zero, então na desmontagem este bit sozinho não chega a lugar nenhum; não "
+         "medido. Padrão 0, mantido aqui para ser testado em A/B contra o resíduo.\n\n"
+         "O caminho de gravação sempre liga o bit 4 e desliga o bit 2, então o campo nunca é 0: "
+         "em 0 o runtime zera a estrutura local antes dela chegar na rede, digam o que disserem "
+         "os sliders.");
 }
 
 void OutputScale(PanelSettings &s)

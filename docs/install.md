@@ -28,9 +28,11 @@ Check them against `tools/SHA256SUMS.txt` before using them. The add-on hashes t
 and refuses anything that is not the exact build it was written against, because every offset in it
 is a hardcoded address into that one binary.
 
-**This release moved to the v0.3.0 runtime.** If you are upgrading, replace
-`dlssnr_amd_pass1.dll` — the old one is refused and the log says so by name. The weights did not
-change, so leave `dlssnr_on_amd_weights.bin` where it is.
+**This release moved to the v0.4.0 runtime.** If you are upgrading, replace
+`dlssnr_amd_pass1.dll` — the v0.3.0 one is refused and the log says so by name. It is about 10 MB
+now, up from 7 MB. The weights did not change, so leave `dlssnr_on_amd_weights.bin` where it is.
+If you build the runtime yourself from the upstream setup, the v0.4.0 setup carries the DLL inside
+the installer rather than after it; `tools/extract_runtime.py` finds it either way.
 
 ## Installing
 

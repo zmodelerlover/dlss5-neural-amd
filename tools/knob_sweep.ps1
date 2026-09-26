@@ -74,7 +74,11 @@ $KNOWN = @(
     'DLSSNR_NOPOSTHIST',    # passes NULL instead of the post-stage history pointer
     'DLSSNR_WBLOG',         # weight-loading logging
     'DLSSNR_STAGES',        # takes a value, not a flag
-    'DLSSNR_NO_REPACK'      # boolean, branches inline
+    'DLSSNR_NO_REPACK',     # boolean, branches inline
+    # New in v0.4.0. On gfx12 (RDNA4) only, the runtime now runs register-tiled k_reg_* kernels
+    # by default; other GPUs never take that path. DLSSNR_SLOW_PREPOST above turns it off too.
+    'DLSSNR_NO_REG',        # keeps gfx12 on the kernels v0.3.x ran (k_swin_var), off k_reg_*
+    'DLSSNR_CHAIN'          # the fused swin chain kernel on that k_reg_* path, off unless set
 )
 
 $gameDir = Split-Path -Parent $Exe
@@ -155,7 +159,7 @@ if ($Report) { Show-Report; return }
 if (-not $Knob) { throw "Pass -Knob <name|baseline>, or -Report. Known knobs: $($KNOWN -join ', ')" }
 if (-not (Test-Path $Exe)) { throw "Executable not found: $Exe" }
 if ($Knob -ne 'baseline' -and $KNOWN -notcontains $Knob) {
-    Write-Host "Warning: '$Knob' is not one of the six knobs read out of the runtime. Continuing anyway."
+    Write-Host "Warning: '$Knob' is not one of the knobs read out of the runtime. Continuing anyway."
 }
 
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -170,7 +174,7 @@ if ($Knob -ne 'baseline') {
     Write-Host "set $Knob=$Value"
 } else {
     foreach ($k in $KNOWN) { Remove-Item "env:$k" -ErrorAction SilentlyContinue }
-    Write-Host "baseline: all six knobs cleared from this process's environment"
+    Write-Host "baseline: all known knobs cleared from this process's environment"
 }
 
 Write-Host ""

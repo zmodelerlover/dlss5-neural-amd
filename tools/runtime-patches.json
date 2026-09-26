@@ -1,35 +1,33 @@
 {
-  "runtime": "DLSS-NR-on-AMD v0.3.0",
-  "original_sha256": "8321cae728d28cb7632d0d58d3d913e91132bf7645c126505698fbe4cd5a0138",
-  "original_size": 7290880,
+  "runtime": "DLSS-NR-on-AMD v0.4.0",
+  "original_sha256": "d62be3d8b9fbb3c6c81982c4ddb3dfa00eb9662e3206925cbe5b7e1bc6798b80",
+  "original_size": 10027008,
   "changes": [
     {
-      "offset": "0x60a6",
-      "before": "ff15cc3b0800",
+      "offset": "0x667d",
+      "before": "ff15852f0900",
       "after": "31c090909090",
       "reason": "disable the runtime's own setup thread. It exists to install detours on ExecuteCommandLists, the two CreateSwapChain overloads and the two Presents, so that the DLL can drive itself. This add-on drives it instead, and the two cannot both hold the wheel"
     },
     {
-      "offset": "0x8873",
-      "before": "ff15f7e70800",
+      "offset": "0x9232",
+      "before": "ff1568e90900",
       "after": "909090909090",
       "reason": "the detour above calls the original ExecuteCommandLists before notifying. The add-on calls that notify entry itself, after its own submit, so the call here would execute the list a second time"
-    },
-    {
-      "offset": "0x76c0e",
-      "before": "70726576696f757320726573696475616c2073686f776e",
-      "after": "63757272656e7420696e707574206b6570742020202020",
-      "reason": "report the timeout fallback accurately: with ToneChannels bit 4 set and bit 2 clear the shader shows nothing, not the previous residual"
     }
   ],
   "dropped": [
     {
+      "was": "0x76c0e on v0.3.0, 0x85684 on v0.4.0: 'previous residual shown' rewritten as 'current input kept'",
+      "reason": "the text it replaced was the true one. On the add-on's path (packet +0x4c zero) the record entry hands the apply pass the previous job's slot once that job has finished, and the apply pass sets its own bit 2 from that, so a timed-out inline frame after the first is shown with last frame's residual. The same on v0.3.0 and v0.4.0; ToneChannels never reaches that word. Dropped rather than paired with a patch that makes it true, until the two are measured against each other"
+    },
+    {
       "was": "0x62bed on v0.2.14",
-      "reason": "the shader edit that made a timed-out frame keep its own input instead of pasting last frame's residual. v0.2.17 offers the same choice as ToneChannels bit 4 with bit 2 clear, which the add-on now sets, so there is nothing left to patch"
+      "reason": "the shader edit that made a timed-out frame keep its own input instead of pasting last frame's residual. The shader's guard is unchanged on v0.4.0, and the choice is not ToneChannels bits 4 and 2 as it was taken to be: the runtime builds that word from its own state. The host-side equivalent would clear bit 2 at 0x19258 (4420eb to b30090), and is not applied until it is measured"
     },
     {
       "was": "the GPU wait spin cap",
-      "reason": "never applied here and still is not. It bounds the wait shader at 262144 iterations, about 6 ms, against a network that takes 9 to 187 ms, so inline mode would time out on every frame and the apply pass would keep its input"
+      "reason": "never applied here and still is not. It bounds the wait shader at 262144 iterations, about 6 ms, against a network that takes 9 to 187 ms, so inline mode would time out on every frame and the apply pass would keep its input. The runtime's own cap adapts per job and never goes below 300000"
     }
   ]
 }

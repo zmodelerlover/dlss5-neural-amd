@@ -3,7 +3,7 @@
 Este é o mapa, não o manual. Ele **aponta onde pesquisar**; o detalhe está no código e nos handoffs
 de sessão. Mande este quando o assunto for "vou mexer no projeto" sem saber ainda em quê.
 
-Última revisão: 22/09/2026.
+Última revisão: 26/09/2026 (runtime v0.4.0).
 
 ---
 
@@ -12,7 +12,7 @@ de sessão. Mande este quando o assunto for "vou mexer no projeto" sem saber ain
 Add-on do ReShade que roda **DLSS-5 Neural Rendering em GPU AMD**.
 
 O add-on captura o quadro apresentado, entrega a um runtime de terceiro
-(`dlssnr_amd_pass1.dll`, projeto "DLSS-NR-on-AMD" v0.3.0, que roda a rede em kernels HIP
+(`dlssnr_amd_pass1.dll`, projeto "DLSS-NR-on-AMD" v0.4.0, que roda a rede em kernels HIP
 pré-compilados), e compõe a resposta de volta na tela. Um efeito ReShade companheiro
 (`DLSS5_Neural_Feed.fx`) fornece movimento e profundidade.
 
@@ -134,6 +134,15 @@ Reinstalar exige o jogo fechado — a DLL está carregada.
 
 - **NR Preset** — a DLL tem um conjunto de pesos só; o combo não faz nada nem na NVIDIA.
 - **Model A/B/C entrar na rede pela rota atual** — o vetor de condicionamento vive só em LDS.
+  *Reaberto em parte pelo v0.4.0:* o próprio runtime lê a chave `Style` do ini dele e manda
+  `Style/128` para a lane 10 (lido nos kernels). Chega na saída: no framecheck (quadro
+  sintético), sem o pino, `Style=2` move a saída em 0,008 de média; no jogo não foi medido. O
+  overlay do runtime standalone grava `Style` de volta nesse ini, então a pasta de um jogo pode
+  trazer 1 ou 2. O `ArmRuntime` fixa o campo em 0 (`rt::kStyle`) por cima do ini, que é o zero
+  do v0.3.0; `ToneCurve` e `ToneLift` ficam fixos nos padrões pelo mesmo motivo. Com os pinos,
+  um ini com tudo isso dá a mesma saída byte a byte
+  (`daniel-runtime/analysis-reshade/fix2/lt/`). Qualquer outro valor, ou mostrar na UI, exige
+  medição no jogo antes (regra 4).
 - **Kernel custom com ROCm pra levar controle à rede** — mesma razão, por construção.
 - **Embarcar hiprtc** — 111,8 MiB pra economizar 60 ms.
 - **Textura D3D12 compartilhada pro kernel** — zera em silêncio devolvendo `hipSuccess`.
@@ -143,12 +152,24 @@ Reinstalar exige o jogo fechado — a DLL está carregada.
 
 ## 8. O que está aberto, em ordem de valor
 
-1. Mapear `VarParams` no `k_swin_var<32,true>`, o kernel que realmente embarca.
-2. Descobrir o que é a lane 10 — o quinto input de condicionamento que o port prega em zero.
-   Style ou `UICorrection`? Decidir antes de mexer.
-3. Comparação A/B com a máquina NVIDIA na mesma cena.
-4. RDR1 em D3D12 — a rota nunca foi exercitada.
-5. `DepthInverted` num jogo com depth real.
+1. **Antes de soltar o v0.4.0: a saída da rede não é a do v0.3.0, e a causa não foi achada.** No
+   framecheck (quadro sintético 960x540, mesmas configurações, RX 9070 XT) o |resíduo| médio do
+   v0.4.0 é 1,18x o do v0.3.0 no 1º quadro, 1,15x no 12º e 1,24x no 20º, com a mesma estrutura
+   (correlação 0,985 a 0,989). Já aparece no 1º quadro, que não tem histórico. Não são os kernels
+   novos de gfx12 (`DLSSNR_NO_REG=1` dá saída idêntica bit a bit) nem `UseGameExposure`/`Residual`.
+   Fazer o A/B no jogo contra o v0.3.0 (regras 4 e 5). O instalador e os arquivos no HF só mudam
+   para o v0.4.0 depois disso, e juntos com o add-on (CHANGELOG, Unreleased). Scripts e medições em
+   `daniel-runtime/analysis-reshade/loadtest/`. Próximo passo: bisectar com v0.3.1/v0.3.3; os
+   endereços deles foram lidos na mesma análise (`map-options-code/map_all.json`,
+   `map-data-state/datamap_*.pkl`, `map-patches/patch_sites.json`), mas não foram conferidos.
+2. Mapear `VarParams` no `k_swin_var<32,true>`, o kernel que realmente embarca. No v0.4.0 a
+   lane 10 é `VarParams+0x5c`; em gfx12 o caminho padrão virou `k_reg_swin32<20>`.
+3. Lane 10 — o quinto input de condicionamento. Lido no v0.4.0: é o `Style/128` do ini do runtime
+   (no v0.3.0 era zero fixo). No framecheck, sem o pino, muda a saída; o add-on fixa em 0. Falta
+   medir o efeito na imagem de um jogo antes de qualquer controle.
+4. Comparação A/B com a máquina NVIDIA na mesma cena.
+5. RDR1 em D3D12 — a rota nunca foi exercitada.
+6. `DepthInverted` num jogo com depth real.
 
 ---
 

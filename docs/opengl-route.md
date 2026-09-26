@@ -326,10 +326,10 @@ particular. The game is deliberately kept **outside** the repository.
 .\ReShade_Setup_6.8.0_Addon.exe --headless --api opengl "<game>\bin\<game>.exe"
 
 # 3. the runtime the add-on is pinned to, built by this project's own tools
-python tools\extract_runtime.py <dlssnr_on_amd_setup.exe v0.3.0> version.dll
-#   -> 8321cae728d28cb7632d0d58d3d913e91132bf7645c126505698fbe4cd5a0138 (original_sha256)
+python tools\extract_runtime.py <dlssnr_on_amd_setup.exe v0.4.0> version.dll
+#   -> d62be3d8b9fbb3c6c81982c4ddb3dfa00eb9662e3206925cbe5b7e1bc6798b80 (original_sha256)
 python tools\patch_runtime.py version.dll tools\runtime-patches.json dlssnr_amd_pass1.dll
-#   -> 70af3fb757f83f71ec947ce461970fdecc9636864bc01d952abffb36ae310be6 (SHA256SUMS.txt)
+#   -> ff6feffa41abccce98ddf0cb37ce5cafd525c1a5dc8c59d2434cb3da8b7a16a8 (SHA256SUMS.txt)
 
 # 4. beside the game's exe: amd-nr.addon64, dlssnr_amd_pass1.dll,
 #    dlssnr_on_amd_weights.bin (6bf8dc93...), and a amd-nr.ini
@@ -337,9 +337,11 @@ python tools\patch_runtime.py version.dll tools\runtime-patches.json dlssnr_amd_
 
 The runtime pairing is worth stating plainly, because a mismatch here is refused with a hash error
 and it is easy to arrive at the wrong file: the add-on consumes the **patched** runtime, and
-`runtime-patches.json` currently targets **DLSS-NR-on-AMD v0.3.0**, not the v0.2.17 the CHANGELOG
-and the superseded 2026-09-10 preview mention. The vendor's own installer output, and any
-`dlssnr_amd_pass1.dll` already sitting in a game folder, will not match.
+`runtime-patches.json` currently targets **DLSS-NR-on-AMD v0.4.0**, not the v0.3.0 or v0.2.17
+that older CHANGELOG entries and the superseded 2026-09-10 preview mention. The vendor's own
+installer output, and any `dlssnr_amd_pass1.dll` already sitting in a game folder, will not match.
+From v0.3.3 the setup carries the DLL in its `.rdata` instead of appending it; `extract_runtime.py`
+reads both layouts and says which one it found.
 
 `amd-nr.ini` for a scripted session:
 

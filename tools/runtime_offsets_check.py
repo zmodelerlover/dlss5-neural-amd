@@ -20,6 +20,10 @@ What it proves, in the order of how much each would have caught:
   * Every data offset lands in `.data` and every entry point in `.text`. `.rdata` is where a stale
     data offset goes to fault, so this is not a formality.
   * The file is the build `kRuntimeSha256` names, and it has been through `patch_runtime.py`.
+  * The runtime names d3d12.dll in a table the add-on rewrites. The private-D3D12 copy renames it
+    in the import and delay-import tables; v0.4.0 moved it from the first to the second while the
+    add-on read only the first, and a runtime it cannot rename loads the system d3d12.dll -- the
+    resize crash that copy exists to prevent, back with nothing failing on the way.
 
 No binaries ship with this project: the DLL is yours.
 """
@@ -50,6 +54,33 @@ def sections(data):
         name = data[off:off + 8].rstrip(b"\0").decode("latin1")
         vsize, va, _, raw = struct.unpack_from("<IIII", data, off + 8)
         out.append((name, va, vsize, raw))
+    return out
+
+
+def import_names(data):
+    """(table, dll) per descriptor of the import table (directory 1) and the delay-import table
+    (directory 13, RVA form only) -- the two RuntimeCopyUsingPrivateD3D12 rewrites."""
+    e = struct.unpack_from("<I", data, 0x3C)[0]
+    opt = e + 24
+    dirs = opt + (112 if struct.unpack_from("<H", data, opt)[0] == 0x20B else 96)
+    count = struct.unpack_from("<I", data, dirs - 4)[0]
+    secs = sections(data)
+
+    def at(rva):
+        for _, va, vsize, raw in secs:
+            if va <= rva < va + vsize:
+                return raw + rva - va
+        return None
+
+    out = []
+    for table, index, size, field in (("import", 1, 20, 12), ("delay-import", 13, 32, 4)):
+        desc = at(struct.unpack_from("<I", data, dirs + index * 8)[0]) if index < count else None
+        while desc is not None and struct.unpack_from("<I", data, desc + field)[0] != 0:
+            if table == "import" or struct.unpack_from("<I", data, desc)[0] & 1:
+                name = at(struct.unpack_from("<I", data, desc + field)[0])
+                if name is not None:
+                    out.append((table, data[name:data.index(b"\0", name)].decode("latin1")))
+            desc += size
     return out
 
 
@@ -176,6 +207,11 @@ def main(argv):
     for change in json.loads(spec.read_text())["changes"]:
         off, after = int(change["offset"], 16), bytes.fromhex(change["after"])
         check(raw[off:off + len(after)] == after, f"patch at {change['offset']} applied")
+
+    # -- And d3d12.dll is named where the add-on can rename it -----------------------------------
+    tables = sorted({t for t, name in import_names(raw) if name.lower() == "d3d12.dll"})
+    check(bool(tables), "d3d12.dll is named where the private copy renames it ("
+                        + (", ".join(tables) or "in neither table") + ")")
 
     print("\n" + ("PASS" if not bad else f"FAIL: {len(bad)} check(s)"))
     return 0 if not bad else 1
