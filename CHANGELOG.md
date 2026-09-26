@@ -1,6 +1,63 @@
 # Changelog
 
-## Unreleased
+## v0.6.7 - 2026-09-26 - DLSS-NR-on-AMD v0.4.0
+
+Requires the pinned **DLSS-NR-on-AMD v0.4.0** runtime; v0.3.0 is refused by hash. The weights are
+unchanged, so an upgrade replaces one DLL, now about 10 MB, and downloads nothing else. Upstream
+describes v0.4.0 as 42% faster than v0.3.3; here it has only been measured against v0.3.0, on a
+synthetic frame, below.
+
+**Released together with AMD-NR-ReShade-Installer v0.6.1**, which moves its runtime and add-on
+pins to this release and to the patched v0.4.0 build (10,027,008 bytes, `ff6feffa…`, as in
+`tools/SHA256SUMS.txt`) in the same step. This add-on refuses the v0.3.0 `dlssnr_amd_pass1.dll` by
+size and says "a different build" in the panel, so a by-hand install needs the new runtime too.
+
+- **Move to DLSS-NR-on-AMD v0.4.0.** Every offset this add-on writes into moved again, and every
+  v0.3.0 address lands in `.rdata` on v0.4.0; see [below](#the-runtime-moved-to-v040).
+- **The network's output is not v0.3.0's, and why is not known yet.** framecheck on its synthetic
+  960x540 frame, same settings, RX 9070 XT: the mean |residual| on v0.4.0 is 1.18x v0.3.0's on the
+  first frame, 1.15x at frame 12 and 1.24x at frame 20 (0.0353 against 0.0300, 0.0361 against
+  0.0315, 0.0381 against 0.0307), with the same structure (correlation 0.985 to 0.989). It is there
+  on the first frame, which has no history. It is not the new gfx12 kernels -- `DLSSNR_NO_REG=1`
+  gives a bit-identical output -- nor the new keys: `UseGameExposure=0` leaves it as it is and
+  `Residual=0` moves it by under 0.1%. Every value this add-on writes was seen to reach the output
+  (EngineScale x2 doubles the residual). The same runs put a frame at 8.9 ms on v0.4.0 against
+  15.5 ms on v0.3.0. In game (GTA IV, 32-bit bridge) it was compared with v0.3.0 before this
+  release and approved.
+- **Keep the system `d3d12.dll` out of D3D11, Vulkan and OpenGL games, and out of the 32-bit
+  bridge's helper, on the new runtime.** Since v0.3.1 the runtime delay-loads d3d12 rather than
+  importing it, and the private copy's rename only read the import table, so on v0.4.0 it would have
+  found nothing, loaded the runtime as it is, and the first evaluation would have pulled the system
+  `d3d12.dll` in -- the NFS 2015 resize crash the private copy exists to prevent. The rename covers
+  the delay-import table now, and `tools/runtime_offsets_check.py` fails a runtime that names
+  `d3d12.dll` in neither table.
+- **Pin four of the runtime's new ini keys to what v0.3.0 did.** On this route the runtime reads
+  `dlssnr_on_amd.ini` once, when it loads (its re-read every 120 presents sits behind the setup
+  thread the first patch removes), and the add-on now overwrites these right after, so a file left
+  in the game folder cannot reach past them:
+  - `CpuWait` to 0. At 1 the notify entry holds the thread presenting the game's frame until the
+    network finishes, up to twice `InlineWaitMs`, on every frame. Its default of 2 never waits on
+    this route.
+  - `Style` to 0. It goes to the network as `Style`/128, into the input v0.3.0 held at zero, and
+    the standalone runtime's own overlay writes it back into that ini, so a folder that once had
+    the standalone can carry 1 or 2. Without the pin that would feed the network behind the
+    add-on's back, and a Model would no longer be its grade alone.
+  - `ToneCurve` to reinhard and `ToneLift` to 0, which the same overlay also writes. They reshape
+    the apply pass's tonemap when Tonemap is on.
+
+  Measured with framecheck on its synthetic frame, Tonemap on: with the pins taken out, `Style=2`
+  moves the output by a mean 0.008 and `ToneCurve=aces` with `ToneLift=0.25` by 0.009; with them,
+  an ini carrying all of that plus `CpuWait=1` gives the same bytes as the add-on's own ini.
+  `UseGameExposure` is left alone: the runtime honours it only when it is handed an exposure
+  texture, and this add-on hands it none.
+- **Two runtime patches, not three.** The dropped one rewrote the runtime's timeout log line from
+  "previous residual shown" to "current input kept", and the original was the true one: on this
+  route a timed-out inline frame after the first is shown with last frame's residual, on v0.3.0 as
+  on v0.4.0. The same reading retires the claim that ToneChannels bits 4 and 2 choose that policy;
+  the runtime builds that word from its own state. ToneChannels is still written non-zero, because
+  at 0 the runtime zeroes LocalStructure, and the panel's help now says only that.
+- `tools/extract_runtime.py` reads the setups from v0.3.3 on, which carry the DLL as a byte array
+  in the installer's `.rdata` instead of appended after it.
 
 The source is laid out by layer, one transport per graphics API, and both routes draw the same
 panel. The output was checked against v0.6.6 byte for byte in 26 settings that move the picture,
@@ -18,6 +75,57 @@ notice:
   language, the hotkey and which controls are shown, and sets Scale back to the 1.0 a fresh
   `amd-nr.ini` starts with.
 - With the additive composition, the Guard help no longer leaves its `(?)` on its own.
+
+### The runtime moved to v0.4.0
+
+`dlssnr_on_amd_weights.bin` is the file v0.3.0 used, and the runtime's own table of the 153
+tensors it expects is the same in both builds, names, sizes and order, so the network did not
+change. Everything around it did: `.text` grew by 49 KB, `.hip_fat` from 6.3 MB to 8.9 MB and from
+34 kernels to 86, and `.data` moved from 0x93000 to 0xA3000 -- so **every v0.3.0 address this
+add-on writes lands in `.rdata` on v0.4.0**, the read-only page the v0.3.0 port already crashed on
+once. None carried over on faith. The option struct keeps its shape but moved by 0x10AE8 up to
+ToneChannels and by 0x10AF8 after it, where v0.3.3 inserted `Style`, `ToneCurve`, `ToneLift` and
+`UseGameExposure`; the device block, the job block and the watchdog each moved by their own delta.
+
+The method was the one that worked for v0.3.0, done twice and compared. Once mechanically: every
+function of v0.3.0 matched to its v0.4.0 counterpart by its strings and imports, the two
+instruction streams aligned, and every aligned reference to `.data` voting for where an address
+went -- run through v0.3.1 and v0.3.3 as well, where it reproduced the OptiScaler fork's own
+independently read v0.3.1 layout. Once by hand, from an anchor in the new binary for each address:
+the ini reader's key string beside its store, a log format string that labels the argument, the
+record entry's three opening tests, the init call site storing its result into the ready byte.
+They agree on every address.
+
+| | v0.3.0 | v0.4.0 |
+|---|---|---|
+| notify | 0x9460 | 0x9e10 |
+| record | 0x12640 | 0x14cd0 |
+| weights loader | 0x1fe80 | 0x26110 |
+| device, queue, engine object | 0x96f68 / 0x96f70 / 0x96f78 | 0xa78c0 / 0xa78c8 / 0xa78d8 |
+| job counter / job id | 0x977d4 / 0x97a6c | 0xa824c / 0xa8554 |
+| watchdog job counters | 0x97950 / 0x97954 | 0xa83e0 / 0xa83e4 |
+| option struct (Enabled) | 0x97b1c | 0xa8604 |
+| effective HIP device | 0x97c30 | 0xa8728 |
+
+The two patches kept moved too -- `0x60a6` to `0x667d` and `0x8873` to `0x9232` -- and are the
+same two: kill the runtime's own setup thread, and remove the doubled `ExecuteCommandLists` from
+the notify entry this add-on calls.
+
+**What v0.4.0 brings that reaches this route.** On RDNA4 (gfx12), and only there, the network runs
+new register-tiled kernels by default (`DLSSNR_NO_REG` turns them off); that is inside the record
+function this add-on calls, so it applies here. On every GPU, the inline wait is recorded as 1-pixel
+draws on the command list the add-on hands over, instead of a compute spin the OS cannot preempt,
+which the runtime's own log blames for GPU watchdog resets every few minutes (`SpinDraw`, on by
+default). The runtime reads four new keys from `dlssnr_on_amd.ini` -- `Style`, `ToneCurve`,
+`ToneLift`, `UseGameExposure` -- and the add-on pins the first three to their defaults, as above;
+the fourth has no effect without an exposure texture. As read in the binary, each default is what
+v0.3.0 did without the key: `Style` 0 is the zero v0.3.0 held that network input at. That is a
+statement about the keys, not about the output, which does not match v0.3.0's; see *The network's
+output is not v0.3.0's* at the top.
+
+**What does not.** Everything behind the setup thread the first patch removes: the FSR and
+frame-generation detection, the wait for a game to load d3d12 and dxgi, and the one thing that
+would make `CpuWait=2` wait.
 
 ## v0.6.6 - 2026-09-22 - The 32-bit panel is the rebuilt one
 
