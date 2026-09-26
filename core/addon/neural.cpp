@@ -1322,7 +1322,6 @@ void LoadSettings()
     g.settings.scale.store(std::clamp(num(L"Scale", g.settings.scale.load()), 0.25f, 2.0f));
     g.settings.language.store(std::clamp(static_cast<int>(num(L"Language", 0.0f)), 0, 1));
     // Advanced=1 was the single switch this replaced; honour it once as "show all of them".
-    // Advanced=1 was the single switch this replaced; honour it once as "show all of them".
     // kOptAll lives beside enum Opt, so a new bit widens both the mask and this in one edit.
     g.settings.optional.store(static_cast<uint32_t>(num(L"HiddenShown",
         static_cast<float>(flag(L"Advanced", false) ? kOptAll : g.settings.optional.load()))) & kOptAll);
@@ -3480,6 +3479,7 @@ bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
     l = { t.tone, t.structure, t.skin, outScale, autoMask, true };
     return changed;
 }
+#include "mochizuki.inc"
 
 // Everything the network does in one frame, recorded into whatever command list it is handed.
 // `colourSrc` is the image to work from and must already be readable as a shader resource; the
@@ -3948,8 +3948,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     }
 
     UINT accepted = 0;
-    bool nativeFailure = false;
-    for (UINT i = 0; i < wanted; ++i)
+    bool nativeFailure = MzSelected() && !MzRecord(cmd, haveMotion, wanted, submitPass, accepted);
+    for (UINT i = 0; i < wanted && !MzSelected(); ++i)
     {
         const UINT slot = std::min(i, State::kMaxPasses - 1);
         HMODULE r = RuntimeFor(slot);
@@ -4166,7 +4166,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             Log("%s", table);
         }
     }
-    if (wanted > 1 && !g.loggedPassDetail)
+    if (wanted > 1 && !g.loggedPassDetail && !MzSelected())
     {
         g.loggedPassDetail = true;
         Log("multipass parameter handoff: %s",
@@ -4190,7 +4190,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // already holds this frame's output on the GPU timeline. Re-capture, and the correction is
     // this frame's with no lag. In async the engine is on its own timeline and has written
     // nothing yet, so the capture above -- last frame's matched pair -- is the honest one.
-    if (g.settings.inlineMode.load() && accepted != 0)
+    if ((g.settings.inlineMode.load() || MzSelected()) && accepted != 0)
         captureResidual();
     }
 
@@ -4330,9 +4330,9 @@ UINT WantedPasses()
 // to what did, and says so once, rather than silently running that pass through pass 1's state.
 bool BringUpEngines(UINT &wanted)
 {
-    if (!InitPipeline() || !InitEngine())
+    if (!InitPipeline() || !(MzSelected() ? MzInit() : InitEngine()))
         return false;
-    if (!(g.settings.serialPasses.load() && g.settings.inlineMode.load()))
+    if (MzSelected() || !(g.settings.serialPasses.load() && g.settings.inlineMode.load()))
         return true;
     for (UINT slot = 1; slot < wanted; ++slot)
     {
@@ -4593,7 +4593,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
 std::wstring ExportLogs()
 {
     const auto r = logexport::ToDesktop({ ExeDirectory() }, { L"amd-nr.log", L"dlssnr_on_amd.log",
-                                                              L"ReShade.log", L"amd-nr.ini" });
+                                                              L"mochizuki_nr.log", L"ReShade.log", L"amd-nr.ini" });
     if (r.copied != 0)
         Log("menu: exported %d file(s) to %ls", r.copied, r.folder.c_str());
     return r.folder.wstring();
@@ -4633,6 +4633,7 @@ PanelStatus ReadPanelStatus()
     st.hotkeyName = HotkeyName();
     st.hasFeedEffect = true;
     st.feedStatus = g.feedStatus;
+    MzStatus(st);
     return st;
 }
 
@@ -4701,6 +4702,7 @@ void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)
 
 void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)
 {
+    MzChoose(actions);
     if (actions.Has(PanelAction::FactoryDefaults))
     {
         ApplyPanelSettings(after, KeepPreferences(g_factory, after));

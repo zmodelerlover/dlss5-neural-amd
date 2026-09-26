@@ -2,6 +2,8 @@
 // Build: ./build.ps1 -Target framecheck -Exe
 // Run in a private directory containing the runtime, weights and amd-nr.ini:
 //   amd-nr-framecheck.exe input.ppm [frames=20]
+// With NrBackend=mochizuki in amd-nr.ini the directory holds MochizukiNrRuntime.dll and
+// dlssnr-amd\ instead of the danielblnc runtime and its weights.
 // PPM must be binary P6, RGB8, with no comments. Outputs are tightly packed raw
 // textures plus capture.csv (formats/dimensions) and timings.csv (GPU and wall ms).
 // This includes the production implementation so experiments cannot silently use
@@ -169,7 +171,7 @@ void Run(const std::filesystem::path &input, int frames)
     cmd->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
     Barrier(cmd, source.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     Submit();
-    Check(InitEngine(), "engine initialization");
+    Check(MzSelected() ? MzInit() : InitEngine(), "engine initialization");
     ComPtr<ID3D12QueryHeap> queries;
     D3D12_QUERY_HEAP_DESC qd {}; qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; qd.Count = 2;
     Hr(g.device->CreateQueryHeap(&qd, IID_PPV_ARGS(&queries)), "query heap");
@@ -179,6 +181,18 @@ void Run(const std::filesystem::path &input, int frames)
     std::ofstream manifest(ExeDirectory() / "capture.csv");
     timing << "frame,gpu_ms,wall_ms,job,accepted,watchdog_job\n";
     manifest << "file,width,height,dxgi_format\n";
+    // The mochizuki runtime builds its network on a thread of its own and lets frames through
+    // without it until then.
+    for (const auto until = GetTickCount64() + 120000; MzSelected() && g.activePasses == 0;)
+    {
+        Check(GetTickCount64() < until, "the mochizuki network was not built in two minutes");
+        cmd = Begin();
+        Check(RecordNetwork(cmd, source.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, nullptr, true,
+            WantedPasses(), [&]() { return SubmitPrivatePass(cmd, g.alloc[0].Get()); }), "record network");
+        Submit();
+        ++g.status.frame;
+        Sleep(100);
+    }
     for (int f = 1; f <= frames; ++f)
     {
         const auto start = std::chrono::steady_clock::now();
@@ -188,13 +202,13 @@ void Run(const std::filesystem::path &input, int frames)
             WantedPasses(), [&]() { return SubmitPrivatePass(cmd, g.alloc[0].Get()); }), "record network");
         cmd->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
         cmd->ResolveQueryData(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, times.Get(), 0);
-        Submit(g.activePasses != 0);
+        Submit(g.activePasses != 0 && g.runtime != nullptr);
         const double wall = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         UINT64 *ticks = nullptr; D3D12_RANGE range {0, 16};
         Hr(times->Map(0, &range, reinterpret_cast<void **>(&ticks)), "timestamp map");
         const double gpu = (ticks[1] - ticks[0]) * 1000.0 / frequency;
         times->Unmap(0, &none);
-        const UINT watchdog = static_cast<UINT>(InterlockedCompareExchange(
+        const UINT watchdog = g.runtime == nullptr ? 0 : static_cast<UINT>(InterlockedCompareExchange(
             reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kWatchdogJobB)), 0, 0));
         timing << f << ',' << gpu << ',' << wall << ',' << g.lastJob << ',' << g.activePasses
                << ',' << watchdog << '\n';

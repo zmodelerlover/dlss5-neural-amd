@@ -62,11 +62,44 @@ void StatusColumn(const PanelStatus &status)
         RightLine(nullptr, T("depth %.4f..%.4f, %d%% still", "profundidade %.4f..%.4f, %d%% parado"),
                   static_cast<double>(status.depthMin), static_cast<double>(status.depthMax),
                   status.stillPct);
+    if (status.mochizuki == 1)
+        RightLine(nullptr, "%s",
+                  T("mochizuki: building the network", "mochizuki: construindo a rede"));
+    else if (status.mochizuki == 2)
+        RightLine(nullptr, T("mochizuki: network %.1f ms", "mochizuki: rede %.1f ms"),
+                  static_cast<double>(status.mochizukiMs));
+    else if (status.mochizuki == 3)
+        RightLine(&kWarn, "%s", T("mochizuki failed; see mochizuki_nr.log",
+                                  "mochizuki falhou; veja mochizuki_nr.log"));
     if (skipping)
         Note(kWarn, T("The network is not finishing inside a frame, and that is the flicker. "
                       "Lower Scale and set Passes to 1.",
                       "A rede não está terminando dentro do quadro, e é isso o piscar. Baixe a "
                       "Escala e ponha Passes em 1."));
+}
+
+// The runtime is taken when the network first starts, so a pick here is written to amd-nr.ini and
+// applies on the next launch.
+void Runtime(const PanelStatus &status, PanelActions &actions)
+{
+    int chosen = status.runtimeChosen;
+    if (ImGui::Combo(T("NR runtime", "Runtime da rede"), &chosen,
+                     "danielblnc (HIP)\0mochizuki (Vulkan)\0") &&
+        chosen != status.runtimeChosen)
+        actions.runtime = chosen;
+    Help("Which port of NVIDIA's network runs it. danielblnc runs it in HIP kernels, on RDNA3 and "
+         "RDNA4. mochizuki runs it as Vulkan shaders with FP8 matrix instructions, on RDNA4 (RX "
+         "9000) only, and builds the network the first time in each game, which takes up to a "
+         "minute. Each needs its own files in the game's folder. Applies when the game is started "
+         "again.",
+         "Qual porte da rede da NVIDIA roda. O danielblnc roda em kernels HIP, em RDNA3 e RDNA4. O "
+         "mochizuki roda como shaders Vulkan com instruções de matriz FP8, só em RDNA4 (RX 9000), e "
+         "constrói a rede na primeira vez em cada jogo, o que leva até um minuto. Cada um precisa "
+         "dos próprios arquivos na pasta do jogo. Vale quando o jogo for aberto de novo.");
+    if (chosen >= 0 && chosen < 2 && !status.runtimeInstalled[chosen])
+        Note(kWarn, T("Not installed in this game's folder.", "Não está instalado na pasta deste jogo."));
+    else if (status.runtimeActive >= 0 && chosen != status.runtimeActive)
+        Note(kWarn, T("Restart the game to switch.", "Reinicie o jogo para trocar."));
 }
 
 } // namespace
@@ -80,6 +113,7 @@ void DrawGeneral(PanelSettings &s, const PanelStatus &status, PanelActions &acti
     if (ImGui::Combo(T("Language", "Idioma"), &lang, "English\0Português\0"))
         s.language = lang;
     StatusColumn(status);
+    Runtime(status, actions);
 }
 
 } // namespace ui

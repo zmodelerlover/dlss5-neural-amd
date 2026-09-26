@@ -41,7 +41,7 @@ struct Host {
     WireStatus ExportStatus(){
         WireStatus s;s.connected=1;s.transportOnly=transport;
         s.processed=processedFrames;s.skipped=skippedFrames;
-        s.engineReady=!transport&&g.runtime!=nullptr&&!g.status.unavailable&&!g.status.failed;
+        s.engineReady=!transport&&(g.runtime!=nullptr||mz.session!=nullptr)&&!g.status.unavailable&&!g.status.failed;
         s.unavailable=g.status.unavailable;s.failed=g.status.failed;
         s.outWidth=spec.colour.width;s.outHeight=spec.colour.height;s.netWidth=g.netWidth;s.netHeight=g.netHeight;
         s.loadedPasses=g.loadedPasses;s.activePasses=g.activePasses;
@@ -247,7 +247,7 @@ struct Host {
     }
     ID3D12CommandList *lists[] { cmd };
     g.bridge.workQueue->ExecuteCommandLists(1, lists);
-    if (g.activePasses != 0)
+    if (g.activePasses != 0 && g.runtime != nullptr)
         reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
             g.bridge.workQueue.Get(), 1, lists);
     g.ringValue[i] = ++g.ringSerial;

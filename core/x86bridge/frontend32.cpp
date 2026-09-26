@@ -890,7 +890,7 @@ bool StateRequest(x86bridge::Kind kind,const void* body=nullptr,uint32_t bytes=0
 std::wstring ExportBridgeLogs(){
     wchar_t exe[32768]{};GetModuleFileNameW(nullptr,exe,32768);
     const auto r=logexport::ToDesktop({Directory(),std::filesystem::path(exe).parent_path()},
-        {L"amd-nr-x86.log",L"amd-nr-x86-host.log",L"dlssnr_on_amd.log",L"ReShade.log",L"amd-nr.ini"});
+        {L"amd-nr-x86.log",L"amd-nr-x86-host.log",L"dlssnr_on_amd.log",L"mochizuki_nr.log",L"ReShade.log",L"amd-nr.ini"});
     if(r.copied!=0)Log("menu: exported %d file(s) to %ls",r.copied,r.folder.c_str());
     return r.folder.wstring();
 }
