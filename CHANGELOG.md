@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.6.8 - 2026-09-26 - the mochizuki runtime
+
+**Released together with AMD-NR-ReShade-Installer v0.6.2**, which pins this add-on and, when its
+mochizuki box is ticked, installs `MochizukiNrRuntime.dll` and `dlssnr-amd\` beside it: the build
+OptiScaler 0.4.1-amd-nr carries. The danielblnc runtime stays the default and is unchanged.
+Approved after an in-game try in Euro Truck Simulator 2 (D3D11).
+
+- **A second runtime: mochizuki.** **NR runtime** in the panel (`NrBackend` in `amd-nr.ini`, applied
+  on the next launch; danielblnc stays the default) can run the network through
+  `MochizukiNrRuntime.dll` (mochizuki0323's Vulkan port, as the OptiScaler AMD NR fork builds it)
+  instead of `dlssnr_amd_pass1.dll`. It runs on a Vulkan device of its own and meets our D3D12
+  device through shared buffers and a shared fence; the frame's command list is submitted in two
+  halves around it. Scale, Passes, Structure, Tone, Skin, the mask, the per-pass profiles and every
+  compose control apply; the Engine controls that write into the danielblnc runtime do not. The
+  status column shows the build and the network's GPU time. framecheck on its 960x540 frame: 6.8,
+  11.7 and 17.3 ms for one to three passes, mean correction 0.029 (0.030 on the danielblnc
+  runtime), with a colour cast that Colour Strength 0 takes back to the OptiScaler fork's default.
+  With `NrBackend=mochizuki` and its files missing (the installer took them out) it runs
+  danielblnc, and the panel says mochizuki is not installed. On the 32-bit bridge the status line
+  is not shown yet; `mochizuki_nr.log` has it. **Export logs** takes `mochizuki_nr.log` too.
+- **framecheck drives either runtime**, and waits for the mochizuki network to be built.
+
 ## v0.6.7 - 2026-09-26 - DLSS-NR-on-AMD v0.4.0
 
 Requires the pinned **DLSS-NR-on-AMD v0.4.0** runtime; v0.3.0 is refused by hash. The weights are

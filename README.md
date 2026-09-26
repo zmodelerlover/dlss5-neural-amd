@@ -88,6 +88,38 @@ The defaults are a reasonable starting point.
 The panel shows fifteen controls. Everything else it can do is one tick away under **More
 settings** at the bottom, and all of it is editable in `amd-nr.ini` either way.
 
+## The mochizuki runtime (experimental)
+
+The add-on can also run the network through `MochizukiNrRuntime.dll`, the runtime the
+[OptiScaler AMD NR fork](https://github.com/MatheusFerreiraS/neural-amd-opti) ships for
+[DLSSNR-AMD](https://github.com/mochizuki0323/DLSSNR-AMD) by mochizuki0323. That is a Vulkan port of
+the same network, with FP8 matrix instructions that only RDNA4 (RX 9000) has. It needs no HIP.
+
+AMD-NR-ReShade Installer v0.6.2 and later put it in when you tick **mochizuki** in a game's sheet
+(RDNA4 cards only). By hand, put `MochizukiNrRuntime.dll` and its `dlssnr-amd\` folder (shaders and
+`dlssnr.bin`, generated from your own `nvngx_dlssnr.dll` 310.8.0) next to the game's executable.
+Then pick **mochizuki (Vulkan)** in **NR runtime**, under Language in the panel. The panel says when
+the one picked is not in the game's folder. The choice is saved to `amd-nr.ini` as
+`NrBackend=mochizuki` (or `danielblnc`, the default) and applies when the game is started again. With
+`NrBackend=mochizuki` and its files gone, the add-on runs danielblnc.
+
+The first time in each game the network takes up to a minute to build, and frames go out untouched
+until it is ready; the status column says "mochizuki: building the network" meanwhile, then the
+network's GPU time. On the 32-bit bridge that line is not shown yet; `mochizuki_nr.log` has it.
+
+Scale, Passes, Structure, Tone, Skin, the character mask, the per-pass profiles and every compose
+control (Intensity, Limit, Colour Strength, the grade) work as they do with the danielblnc runtime.
+The Engine controls that write into `dlssnr_amd_pass1.dll` (Temporal, Tonemap, Tone channels, Output
+scale, Timing) have no effect on it. Temporal history follows **History** and the motion field.
+Its log is `mochizuki_nr.log` in the game folder.
+
+Measured with framecheck on its 960x540 frame (RX 9070 XT): 6.8 ms for one pass, 11.7 ms for two,
+17.3 ms for three. The picture it gives is not the danielblnc runtime's: the same mean correction
+(0.029 against 0.030) with a different structure, and a colour cast of its own: on that frame red
+moves by -0.029 and blue by +0.039 on average. Colour Strength at 0 keeps the game's hue and leaves
++0.009, +0.005 and +0.003, the same as the OptiScaler fork's default for this runtime. In a game it
+has been tried in Euro Truck Simulator 2 (D3D11).
+
 ## Better motion vectors (optional)
 
 The network takes four inputs: colour, depth, motion and exposure. Colour is always there. On a
@@ -207,6 +239,10 @@ reimplemented or redistributed here. This repository adds the ReShade add-on aro
 D3D12, Vulkan and OpenGL routes, the 32-bit bridge, the guide capture and the overlay.
 
 It has its own terms. The MIT licence below covers only the code in this repository.
+
+The optional mochizuki runtime is **[DLSSNR-AMD](https://github.com/mochizuki0323/DLSSNR-AMD)** by
+**mochizuki0323** (MIT), built as `MochizukiNrRuntime.dll` by the OptiScaler AMD NR fork. The add-on
+loads it and ships none of it.
 
 Thanks to everyone who ran a build and sent back a log.
 

@@ -94,6 +94,7 @@ não sobrevive ao fechar.
 | kernels HIP, pesos, engenharia reversa | `dossie.../LEIA-PRIMEIRO.md` | `tools/carve_amd_kernels.py`, `read_amd_weights.py` |
 | o que já foi tentado e fechado | `handoffs/README.md` (explica a cadeia) | — |
 | instalar / empacotar | `docs/install.md` | `tools/package-release.ps1` |
+| runtime mochizuki (Vulkan) | README, seção "The mochizuki runtime"; no opti, `handoff/mochizuki-backend.md` | `core/addon/mochizuki.inc` |
 
 ---
 
@@ -171,6 +172,14 @@ Reinstalar exige o jogo fechado — a DLL está carregada.
 4. Comparação A/B com a máquina NVIDIA na mesma cena.
 5. RDR1 em D3D12 — a rota nunca foi exercitada.
 6. `DepthInverted` num jogo com depth real.
+7. **Runtime mochizuki pelo ReShade.** Lançado no v0.6.8 (26/09) com o instalador v0.6.2, que o
+   instala quando a caixa mochizuki da ficha está marcada. Escolha no combo "NR runtime" do painel,
+   que grava `NrBackend` no `amd-nr.ini` e vale no próximo início (`core/shared/runtime_choice.h`; na
+   ponte 32-bit o frontend grava e o helper lê). No framecheck: passes 1 a 3 custam 6,8/11,7/17,3 ms
+   em 960x540, resíduo médio 0,029 contra 0,030 do danielblnc, com estrutura diferente (correlação
+   0,22) e um tom de cor próprio que Colour Strength 0 tira. Em jogo: aprovado depois de um teste no
+   ETS2 (D3D11). Falta medir: o caminho temporal com vetores do jogo, a rota D3D12 (o `submitPass`
+   dela espera a fila do jogo na CPU a cada quadro) e a ponte 32-bit (GTA IV instalado, sem retorno).
 
 ---
 
