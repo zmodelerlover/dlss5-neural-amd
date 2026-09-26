@@ -3,7 +3,7 @@
 Este é o mapa, não o manual. Ele **aponta onde pesquisar**; o detalhe está no código e nos handoffs
 de sessão. Mande este quando o assunto for "vou mexer no projeto" sem saber ainda em quê.
 
-Última revisão: 26/09/2026 (runtime v0.4.0).
+Última revisão: 26/09/2026 (runtime v0.4.0, publicado no v0.6.7).
 
 ---
 
@@ -152,13 +152,14 @@ Reinstalar exige o jogo fechado — a DLL está carregada.
 
 ## 8. O que está aberto, em ordem de valor
 
-1. **Antes de soltar o v0.4.0: a saída da rede não é a do v0.3.0, e a causa não foi achada.** No
-   framecheck (quadro sintético 960x540, mesmas configurações, RX 9070 XT) o |resíduo| médio do
-   v0.4.0 é 1,18x o do v0.3.0 no 1º quadro, 1,15x no 12º e 1,24x no 20º, com a mesma estrutura
-   (correlação 0,985 a 0,989). Já aparece no 1º quadro, que não tem histórico. Não são os kernels
-   novos de gfx12 (`DLSSNR_NO_REG=1` dá saída idêntica bit a bit) nem `UseGameExposure`/`Residual`.
-   Fazer o A/B no jogo contra o v0.3.0 (regras 4 e 5). O instalador e os arquivos no HF só mudam
-   para o v0.4.0 depois disso, e juntos com o add-on (CHANGELOG, Unreleased). Scripts e medições em
+1. **A saída da rede no v0.4.0 não é a do v0.3.0, e a causa não foi achada.** No framecheck
+   (quadro sintético 960x540, mesmas configurações, RX 9070 XT) o |resíduo| médio do v0.4.0 é
+   1,18x o do v0.3.0 no 1º quadro, 1,15x no 12º e 1,24x no 20º, com a mesma estrutura (correlação
+   0,985 a 0,989). Já aparece no 1º quadro, que não tem histórico. Não são os kernels novos de
+   gfx12 (`DLSSNR_NO_REG=1` dá saída idêntica bit a bit) nem `UseGameExposure`/`Residual`. Não
+   bloqueia mais: o A/B no jogo contra o v0.3.0 (GTA IV, ponte 32-bit) foi aprovado em 26/09, e o
+   v0.6.7 saiu no mesmo dia, junto com o AMD-NR-ReShade-Installer v0.6.1, que trocou o runtime, o
+   add-on e a ponte no payload. Scripts e medições em
    `daniel-runtime/analysis-reshade/loadtest/`. Próximo passo: bisectar com v0.3.1/v0.3.3; os
    endereços deles foram lidos na mesma análise (`map-options-code/map_all.json`,
    `map-data-state/datamap_*.pkl`, `map-patches/patch_sites.json`), mas não foram conferidos.
