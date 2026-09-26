@@ -1,17 +1,17 @@
 {
-  "runtime": "DLSS-NR-on-AMD v0.4.0",
-  "original_sha256": "d62be3d8b9fbb3c6c81982c4ddb3dfa00eb9662e3206925cbe5b7e1bc6798b80",
-  "original_size": 10027008,
+  "runtime": "DLSS-NR-on-AMD v0.4.1",
+  "original_sha256": "823063eb4c76b1334fd1800c41798873ae61d4016af0406f1f0b9dce57b1d376",
+  "original_size": 9916928,
   "changes": [
     {
-      "offset": "0x667d",
-      "before": "ff15852f0900",
+      "offset": "0x65bd",
+      "before": "ff15f5410900",
       "after": "31c090909090",
       "reason": "disable the runtime's own setup thread. It exists to install detours on ExecuteCommandLists, the two CreateSwapChain overloads and the two Presents, so that the DLL can drive itself. This add-on drives it instead, and the two cannot both hold the wheel"
     },
     {
-      "offset": "0x9232",
-      "before": "ff1568e90900",
+      "offset": "0x91a2",
+      "before": "ff15300a0a00",
       "after": "909090909090",
       "reason": "the detour above calls the original ExecuteCommandLists before notifying. The add-on calls that notify entry itself, after its own submit, so the call here would execute the list a second time"
     }

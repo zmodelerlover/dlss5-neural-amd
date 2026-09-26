@@ -8,6 +8,7 @@
 #include "../ui/i18n.h"
 #include "../ui/panel.h"
 #include "../shared/runtime_choice.h"
+#include "../addon/runtime_offsets.h"
 
 #include <cstdio>
 #include <cstring>
@@ -66,6 +67,9 @@ ui::PanelStatus BridgeStatus(){
     for(std::string& candidate:GuideCandidates())s.routeDiagnostics.push_back(std::move(candidate));
     s.routeDiagnostics.push_back("Logs: amd-nr-x86.log / amd-nr-x86-host.log");
     ReadRuntime(s);
+    s.mochizuki=w.mochizuki;
+    if(w.mochizuki!=0)s.mochizukiMs=w.networkMs;
+    if(w.danielblnc!=0){s.danielblnc=rt::kVersion;s.danielblncMs=w.networkMs;}
     return s;
 }
 

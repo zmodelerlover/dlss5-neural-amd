@@ -4,9 +4,10 @@
 #include <type_traits>
 namespace x86bridge {
 // Version 3: the panel rebuild added five settings fields and the host now reports the
-// scale cap, so a v2 peer would read this layout wrong rather than fail. Both sides are
+// scale cap, so a v2 peer would read this layout wrong rather than fail. Version 4: the
+// status carries the runtime in use and its network time. Both sides are
 // built together by build-x86bridge.ps1, and a mismatched pair is refused at the header.
-constexpr uint32_t Magic=0x42313158, Version=3;
+constexpr uint32_t Magic=0x42313158, Version=4;
 enum class Kind:uint32_t { Hello=1, Build=2, Frame=3, Drop=4, Quit=5, GetState=6, SetState=7, SaveSettings=8, ReloadSettings=9, Command=10, Status=11 };
 enum class Result:uint32_t { Original=0, Neural=1, Error=2, Ready=3, Transport=4 };
 #pragma pack(push,1)
@@ -42,6 +43,9 @@ struct WireStatus {
     // slider. 0 means no cap. Without it the panel would compare the raster against the
     // slider and report a working configuration as "not applied yet" for ever.
     float scaleCap=0;
+    // The runtime's status column line: mochizuki as PanelStatus holds it (0 not in use), whether
+    // danielblnc is loaded, and the network's GPU time of whichever runs.
+    int32_t mochizuki=0;uint32_t danielblnc=0;float networkMs=0;
 };
 struct StateSnapshot { WireSettings settings;WireStatus status; };
 #pragma pack(pop)
@@ -54,8 +58,8 @@ static_assert(sizeof(Ack)==48 && offsetof(Ack,generation)==24 && offsetof(Ack,lu
 static_assert(std::is_trivially_copyable_v<Build> && std::is_standard_layout_v<Frame>);
 static_assert(sizeof(WireSettings)==224 && offsetof(WireSettings,passOverride)==176);
 static_assert(sizeof(WireCommand)==16 && offsetof(WireCommand,code)==8);
-static_assert(sizeof(WireStatus)==112 && offsetof(WireStatus,depthMin)==72);
-static_assert(sizeof(StateSnapshot)==336 && offsetof(StateSnapshot,status)==224);
+static_assert(sizeof(WireStatus)==124 && offsetof(WireStatus,depthMin)==72);
+static_assert(sizeof(StateSnapshot)==348 && offsetof(StateSnapshot,status)==224);
 #define CHECK_WIRE(T) static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
 CHECK_WIRE(Header) CHECK_WIRE(Hello) CHECK_WIRE(Texture) CHECK_WIRE(Build) CHECK_WIRE(Frame) CHECK_WIRE(Ack)
 CHECK_WIRE(WireSettings) CHECK_WIRE(WireCommand) CHECK_WIRE(WireStatus) CHECK_WIRE(StateSnapshot)

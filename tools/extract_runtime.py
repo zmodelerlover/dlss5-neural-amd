@@ -12,7 +12,7 @@ Where inside moved with v0.3.3, and the two layouts have nothing else in common:
     v0.2.17, 267 on v0.3.0 and v0.3.1, so not a constant to hardcode.
   * v0.3.3 on: a Tauri installer with nothing appended. The DLL is a byte array in its .rdata,
     unaligned, straight after the strings "dlssnr_on_amd_weights.bin" and "nvngx_dlssnr.dll",
-    with the rest of the installer after it. It sits at 0x2609c7 on both v0.3.3 and v0.4.0, but
+    with the rest of the installer after it. It sits at 0x2609c7 on v0.3.3, v0.4.0 and v0.4.1, but
     only because what comes before it happens to be the same size in both.
 
 So neither the file size nor the installer's end says where the DLL is; the DLL does. Every "MZ"
@@ -25,17 +25,18 @@ size) across *its* section table, not the file size and not the last section in 
 Keep the builder's tail, or on the new layout the rest of the .rdata, and every hash is wrong by
 bytes nobody documents.
 
-Verified against v0.3.0, v0.3.1, v0.3.3 and v0.4.0; the appended-only version this replaced was
+Verified against v0.3.0, v0.3.1, v0.3.3, v0.4.0 and v0.4.1; the appended-only version this replaced was
 verified against v0.2.14 to v0.3.0. Output hashes:
 
   v0.3.0  8321cae728d28cb7632d0d58d3d913e91132bf7645c126505698fbe4cd5a0138
   v0.3.1  b108d6407eb7f094a4f9111edd778eee7b978b648d413a9fc7aeedfdd914c154
   v0.3.3  907b30a61644a6d7e43e58a43a9d97a04a24b1a764a88bdef3954ac807e8d112
   v0.4.0  d62be3d8b9fbb3c6c81982c4ddb3dfa00eb9662e3206925cbe5b7e1bc6798b80
+  v0.4.1  823063eb4c76b1334fd1800c41798873ae61d4016af0406f1f0b9dce57b1d376
 
-The v0.4.0 one is the `original_sha256` in runtime-patches.json, i.e. the file this add-on's
+The v0.4.1 one is the `original_sha256` in runtime-patches.json, i.e. the file this add-on's
 offsets were read out of. The v0.3.0 one is byte for byte the `version.dll` that setup drops, so
-a folder that already has one did not need the setup run again. The v0.3.3 and v0.4.0 setups were
+a folder that already has one did not need the setup run again. The v0.3.3, v0.4.0 and v0.4.1 setups were
 never run to compare against what they drop.
 
 Usage:

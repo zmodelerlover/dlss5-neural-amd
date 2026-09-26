@@ -263,13 +263,25 @@ bool MzRecord(ID3D12GraphicsCommandList*& cmd, bool haveMotion, UINT passes,
     return true;
 }
 
-// For the panel: the runtime choice, and the mochizuki status column line.
+// The danielblnc network's GPU time for the last frame: each pass's last finished job, added up.
+float DanielblncMs() {
+    float sum = 0.0f;
+    for (UINT i = 0; i < g.activePasses && i < State::kMaxPasses; ++i)
+        sum += At<float>(RuntimeFor(i), rt::kNetworkMs);
+    return sum;
+}
+
+// For the panel: the runtime choice, and the status column line of the runtime in use.
 void MzStatus(PanelStatus& st) {
     const bool selected = MzSelected();
     st.runtimeActive = mz.selected;
     st.runtimeChosen = mz.chosen;
     for (int r = 0; r < runtime_choice::kCount; ++r)
         st.runtimeInstalled[r] = mz.installed[r];
+    if (!selected && g.runtime != nullptr) {
+        st.danielblnc = rt::kVersion;
+        st.danielblncMs = DanielblncMs();
+    }
     if (!selected)
         return;
     st.mochizuki = 1;

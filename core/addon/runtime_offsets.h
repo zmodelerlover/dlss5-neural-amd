@@ -25,6 +25,13 @@
 // map-options-code, map-patches, reconcile; implement/anchor_check.py replays one anchor per
 // address against this file).
 //
+// v0.4.1 moved the data block again, in two pieces: +0x2020 up to kHistoryOn and +0x2038 from kReady
+// on. Init, notify and the ini reader's stores kept their code; the record entry gained the
+// QueuePriority stream. Mapped twice from v0.4.0 (unique instruction windows, and the aligned
+// references of every matched function), in daniel-runtime/analysis-opti (map_layout_040_041.txt,
+// datamap_040_041.txt), and the two agree on every address here. Code addresses quoted in the
+// comments below (worker 0x1be8f and so on) are still v0.4.0's.
+//
 // When the runtime moves again: re-derive, edit only this file, and run the checker.
 
 #pragma once
@@ -34,51 +41,60 @@
 namespace rt
 {
 
+// The DLSS-NR-on-AMD release kRuntimeSha256 names, for the panel.
+constexpr char kVersion[] = "0.4.1";
+
 // -- Data ---------------------------------------------------------------------------------------
 
-constexpr size_t kDevice = 0xa78c0;       // ID3D12Device *, handed over before init
-constexpr size_t kQueue = 0xa78c8;        // ID3D12CommandQueue *, the present queue it records on
-constexpr size_t kEngineObject = 0xa78d8; // the object kInitFn takes as its first argument
+constexpr size_t kDevice = 0xa98e0;       // ID3D12Device *, handed over before init
+constexpr size_t kQueue = 0xa98e8;        // ID3D12CommandQueue *, the present queue it records on
+constexpr size_t kEngineObject = 0xa98f8; // the object kInitFn takes as its first argument
 
-constexpr size_t kHistory = 0xa7a20;   // ID3D12Resource *, last frame's output
-constexpr size_t kHistoryOn = 0xa7a28; // whether to read it
+constexpr size_t kHistory = 0xa9a40;   // ID3D12Resource *, last frame's output
+constexpr size_t kHistoryOn = 0xa9a48; // whether to read it
 
-constexpr size_t kReady = 0xa7d10;         // set once init succeeded; the record entry tests it
-constexpr size_t kNativeFailure = 0xa7d12; // the engine gave up; the record entry tests it
+constexpr size_t kReady = 0xa9d48;         // set once init succeeded; the record entry tests it
+constexpr size_t kNativeFailure = 0xa9d4a; // the engine gave up; the record entry tests it
 
-constexpr size_t kInlineMode = 0xa8218; // 1 inline, 0 async. The runtime reads the ini key
+constexpr size_t kInlineMode = 0xaa250; // 1 inline, 0 async. The runtime reads the ini key
                                         // `Async`, which is this inverted
-constexpr size_t kJobCounter = 0xa824c; // interlocked; how far the engine has got
+constexpr size_t kJobCounter = 0xaa284; // interlocked; how far the engine has got
 
-constexpr size_t kWatchdogJobA = 0xa83e0; // a pair of job ids its watchdog writes on a timeout --
-constexpr size_t kWatchdogJobB = 0xa83e4; // NOT a pointer, and writing through it crashes
+// float, the network's GPU time for the job that just finished, in ms: the "X ms network on the
+// GPU" of the runtime's "network job N done" log line (its fourth argument, read at 0x1de20). The
+// worker writes it when a job ends (0x1dd18) and nowhere else. The float beside it, 0xaa2ac, is
+// the line's "waiting for the capture" and is zeroed when a job starts.
+constexpr size_t kNetworkMs = 0xaa2b0;
+
+constexpr size_t kWatchdogJobA = 0xaa418; // a pair of job ids its watchdog writes on a timeout --
+constexpr size_t kWatchdogJobB = 0xaa41c; // NOT a pointer, and writing through it crashes
 
 // ini `CpuWait`, new in v0.3.1: 1 makes the notify entry block the calling thread until the job
 // it just took has finished, up to twice InlineWaitMs; 2, the default, only within a second of an
 // FSR frame-generation dispatch, which cannot happen here. 0 never waits. Pinned to 0: every
 // notify comes from the thread presenting the game's frame, the add-on paces the network itself
 // (RuntimeBusy), and v0.3.0 had no such wait at all.
-constexpr size_t kCpuWait = 0xa8440;
+constexpr size_t kCpuWait = 0xaa478;
 
-constexpr size_t kInterop = 0xa8468;
-constexpr size_t kListMarker = 0xa8548; // ID3D12CommandList *, the list it accepted
-constexpr size_t kJobId = 0xa8554;      // moves once per evaluation that really recorded
+constexpr size_t kInterop = 0xaa4a0;
+constexpr size_t kListMarker = 0xaa580; // ID3D12CommandList *, the list it accepted
+constexpr size_t kJobId = 0xaa58c;      // moves once per evaluation that really recorded
 
 // The option struct, mapped by decompiling the runtime's own ini reader: the key string sits beside
 // the address it writes, so these are named rather than guessed.
-constexpr size_t kDepthInverted = 0xa85f8; // int, the engine's own default of 1
-constexpr size_t kFsrFlagsSeen = 0xa85fc;
-constexpr size_t kEnabled = 0xa8604;        // ini `Enabled`
-constexpr size_t kTemporal = 0xa8605;       // ini `Temporal`
-constexpr size_t kUseFsrInputs = 0xa8606;   // ini `UseFsrInputs`
-constexpr size_t kUseDepth = 0xa8607;       // ini `UseDepth`
-constexpr size_t kTonemap = 0xa8608;        // ini `Tonemap`
-constexpr size_t kLocalTone = 0xa8618;      // ini `LocalTone`,       default 0.0
-constexpr size_t kLocalStructure = 0xa861c; // ini `LocalStructure`,  default 1.0
-constexpr size_t kSkinStructure = 0xa8620;  // ini `SkinStructure`,   default -1.0
-constexpr size_t kScale = 0xa8624;          // ini `Scale`,           default 0.03125
-constexpr size_t kUseAutoMask = 0xa8628;    // ini `UseAutoMask`,     default 1
-constexpr size_t kToneChannels = 0xa862c;   // ini `ToneChannels`,    default 0
+constexpr size_t kDepthInverted = 0xaa630; // int, the engine's own default of 1
+constexpr size_t kFsrFlagsSeen = 0xaa634;
+constexpr size_t kEnabled = 0xaa63c;        // ini `Enabled`
+constexpr size_t kTemporal = 0xaa63d;       // ini `Temporal`
+constexpr size_t kUseFsrInputs = 0xaa63e;   // ini `UseFsrInputs`
+constexpr size_t kUseDepth = 0xaa63f;       // ini `UseDepth`
+constexpr size_t kTonemap = 0xaa640;        // ini `Tonemap`
+constexpr size_t kLocalTone = 0xaa650;      // ini `LocalTone`,       default 0.0
+constexpr size_t kLocalStructure = 0xaa654; // ini `LocalStructure`,  default 1.0
+constexpr size_t kSkinStructure = 0xaa658;  // ini `SkinStructure`,   default -1.0
+constexpr size_t kScale = 0xaa65c;          // ini `Scale`,           default 0.03125
+constexpr size_t kUseAutoMask = 0xaa660;    // ini `UseAutoMask`,     default 1
+constexpr size_t kToneChannels = 0xaa664;   // ini `ToneChannels`,    default 0
 
 // Inserted by v0.3.3 and pinned to their defaults, because the runtime reads them from an ini that
 // the standalone runtime's own overlay writes them back into, so a game folder that once had it
@@ -89,20 +105,20 @@ constexpr size_t kToneChannels = 0xa862c;   // ini `ToneChannels`,    default 0
 // bytes as the add-on's own. UseGameExposure, the fourth, is not pinned: the record entry honours
 // it only when the packet carries an exposure texture (0x17e22), and this add-on passes none; a
 // framecheck run with it at 0 gave the same bytes.
-constexpr size_t kStyle = 0xa8630;     // ini `Style`, int, clamped to 0..2
-constexpr size_t kToneCurve = 0xa8634; // ini `ToneCurve`, int: 0 reinhard, 1 aces
-constexpr size_t kToneLift = 0xa8638;  // ini `ToneLift`, float, clamped to 0..0.25
+constexpr size_t kStyle = 0xaa668;     // ini `Style`, int, clamped to 0..2
+constexpr size_t kToneCurve = 0xaa66c; // ini `ToneCurve`, int: 0 reinhard, 1 aces
+constexpr size_t kToneLift = 0xaa670;  // ini `ToneLift`, float, clamped to 0..0.25
 
-constexpr size_t kHipDevice = 0xa8728; // the device actually in use, not the ini's copy
+constexpr size_t kHipDevice = 0xaa760; // the device actually in use, not the ini's copy
 
 // The window the log dumps once after init, to show the engine's own defaults read back.
-constexpr size_t kFloatDumpFirst = 0xa8610, kFloatDumpLast = 0xa862c;
-constexpr size_t kByteDumpFirst = 0xa85f8, kByteDumpLast = 0xa860f;
+constexpr size_t kFloatDumpFirst = 0xaa648, kFloatDumpLast = 0xaa664;
+constexpr size_t kByteDumpFirst = 0xaa630, kByteDumpLast = 0xaa647;
 
 // -- Entry points -------------------------------------------------------------------------------
 
-constexpr size_t kNotifyFn = 0x9e10;  // the frame-notify the runtime would have detoured
-constexpr size_t kRecordFn = 0x14cd0; // records one evaluation onto a command list
-constexpr size_t kInitFn = 0x26110;   // loads the weights
+constexpr size_t kNotifyFn = 0x9d80;  // the frame-notify the runtime would have detoured
+constexpr size_t kRecordFn = 0x14c40; // records one evaluation onto a command list
+constexpr size_t kInitFn = 0x26130;   // loads the weights
 
 }  // namespace rt

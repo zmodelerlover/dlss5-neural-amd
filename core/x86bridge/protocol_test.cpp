@@ -34,6 +34,6 @@ int main(){
     WireSettings base{};base.tone=1;base.scale=.5f;WireSettings current{};current.settings_revision=7;current.enabled=1;current.language=1;current.toggleKey=70;current.startOn=1;
     auto factory=FactorySettings(base,current);assert(factory.colourStrength==0.25f&&factory.structure==1&&factory.skin==-1&&factory.passes==1&&factory.inlineMode==1);
     assert(factory.tone==1&&factory.scale==.5f&&factory.enabled==1&&factory.language==1&&factory.toggleKey==70&&factory.startOn==1&&factory.settings_revision==8);
-    printf("PASS protocol v3 WireSettings=224 WireStatus=112 StateSnapshot=336 WireCommand=16; roundtrips, clamps, NaN/Inf, old-version rejection, revisions, command dedup\n");
+    printf("PASS protocol v4 WireSettings=224 WireStatus=124 StateSnapshot=348 WireCommand=16; roundtrips, clamps, NaN/Inf, old-version rejection, revisions, command dedup\n");
     printf("PASS fixed-width layouts Header=16 Hello=16 Texture=24 Build=104 Frame=32 Ack=48; malformed/version/old-frame/generation rejected; transport is explicit; pointer_bits=%zu\n",sizeof(void*)*8);
 }

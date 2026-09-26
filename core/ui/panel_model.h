@@ -136,6 +136,10 @@ struct PanelStatus
     // network, 2 running, 3 failed. mochizukiMs is the network's median GPU time.
     int mochizuki = 0;
     float mochizukiMs = 0.0f;
+    // The danielblnc runtime once it is loaded: its release, and the network's GPU time for the
+    // last frame with every pass added up (0 until a job has finished).
+    const char *danielblnc = nullptr;
+    float danielblncMs = 0.0f;
     // The NR runtime (runtime_choice.h): what amd-nr.ini asks for, what this run took when the
     // network started (-1 before), and which of the two are in the game's folder.
     int runtimeChosen = 0, runtimeActive = -1;

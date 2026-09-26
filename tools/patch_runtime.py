@@ -8,9 +8,9 @@ moves and the offsets the add-on writes into stay valid. They neutralise two cal
 DLL was built to install its own hooks and to announce a submission it did not make. Driving it
 from an add-on means doing both ourselves.
 
-The offsets are file offsets into one exact build, and they moved again for v0.4.0: the setup
-thread's `call CreateThread` is at 0x667d (0x60a6 on v0.3.0, 0x6006 on v0.2.17), and the doubled
-ExecuteCommandLists call at 0x9232 (0x8873, 0x8583). The script refuses a file whose hash is not
+The offsets are file offsets into one exact build, and they moved again for v0.4.1: the setup
+thread's `call CreateThread` is at 0x65bd (0x667d on v0.4.0, 0x60a6 on v0.3.0, 0x6006 on
+v0.2.17), and the doubled ExecuteCommandLists call at 0x91a2 (0x9232, 0x8873, 0x8583). The script refuses a file whose hash is not
 `original_sha256`, so a stale pairing cannot be applied silently.
 
 Three things this used to do and no longer does:

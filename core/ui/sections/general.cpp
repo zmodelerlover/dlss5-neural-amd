@@ -62,6 +62,11 @@ void StatusColumn(const PanelStatus &status)
         RightLine(nullptr, T("depth %.4f..%.4f, %d%% still", "profundidade %.4f..%.4f, %d%% parado"),
                   static_cast<double>(status.depthMin), static_cast<double>(status.depthMax),
                   status.stillPct);
+    if (status.danielblnc != nullptr && status.danielblncMs > 0.0f)
+        RightLine(nullptr, T("danielblnc %s: network %.1f ms", "danielblnc %s: rede %.1f ms"),
+                  status.danielblnc, static_cast<double>(status.danielblncMs));
+    else if (status.danielblnc != nullptr)
+        RightLine(nullptr, "danielblnc %s", status.danielblnc);
     if (status.mochizuki == 1)
         RightLine(nullptr, "%s",
                   T("mochizuki: building the network", "mochizuki: construindo a rede"));

@@ -370,15 +370,15 @@ void Barrier(ID3D12GraphicsCommandList *c, ID3D12Resource *r, D3D12_RESOURCE_STA
 // updated two of them and the 32-bit bridge crashed on its first frame.
 #include "runtime_offsets.h"
 
-// v0.4.0 of DLSS-NR-on-AMD, lifted out of its setup by tools/extract_runtime.py and run
+// v0.4.1 of DLSS-NR-on-AMD, lifted out of its setup by tools/extract_runtime.py and run
 // through tools/patch_runtime.py -- this is the hash of the patched file, which is what
 // the add-on loads. Every offset in runtime_offsets.h was re-derived against this build; no
-// v0.3.0 address is even in .data on it. v0.3.0 and anything else is refused by hash rather
-// than written into with the wrong addresses.
+// v0.4.0 data address lands on the same field in it. v0.4.0 and anything else is refused by
+// hash rather than written into with the wrong addresses.
 constexpr unsigned char kRuntimeSha256[32] = {
-    0xff, 0x6f, 0xef, 0xfa, 0x41, 0xab, 0xcc, 0xce, 0x98, 0xdd, 0xf0, 0xcb, 0x37, 0xce, 0x5c, 0xaf,
-    0xd5, 0x25, 0xc1, 0xa5, 0xdc, 0x8c, 0x59, 0xd2, 0x43, 0x4c, 0xb3, 0xda, 0x8b, 0x7a, 0x16, 0xa8};
-constexpr size_t kRuntimeSize = 10027008;
+    0xc8, 0x80, 0x87, 0x16, 0xc2, 0x86, 0xa3, 0x4f, 0xe2, 0x5b, 0x8c, 0xf5, 0xb4, 0x1a, 0x6b, 0x0f,
+    0x40, 0xac, 0x1e, 0x12, 0x37, 0xb3, 0xac, 0x39, 0xb9, 0x03, 0xf0, 0xa9, 0x0c, 0xd4, 0xf2, 0xe9};
+constexpr size_t kRuntimeSize = 9916928;
 
 template <class T> T &At(HMODULE h, size_t rva)
 {
@@ -2718,8 +2718,8 @@ bool InitEngine()
     {
         // Said in the panel too. This is the one failure a user can actually fix, and the log
         // line above it says which file and which build, so pointing at the log is worth it.
-        g.status.reason = "dlssnr_amd_pass1.dll is a different build to the one this add-on is built "
-                   "against; see amd-nr.log";
+        g.status.reason = "dlssnr_amd_pass1.dll is not the danielblnc 0.4.1 build this add-on needs; "
+                   "see amd-nr.log";
         Log("off: %s", g.status.reason);
         return false;
     }

@@ -49,7 +49,10 @@ struct Host {
         s.probeValid=!transport&&built&&g.probeStillPct.load()>=0;
         s.depthMin=g.probeDepthMin.load();s.depthMax=g.probeDepthMax.load();s.motionMean=g.probeMotionMean.load();s.motionMax=g.probeMotionMax.load();s.stillPct=g.probeStillPct.load();
         s.stage=g.stage.load();s.events=g.events;s.noBridge=g.noBridge.load();s.noBackBuffer=g.noBackBuffer.load();
-        s.scaleCap=g.scaleCap.load();return s;
+        s.scaleCap=g.scaleCap.load();
+        ui::PanelStatus p;MzStatus(p);
+        s.mochizuki=p.mochizuki;s.danielblnc=p.danielblnc!=nullptr;s.networkMs=p.mochizuki!=0?p.mochizukiMs:p.danielblncMs;
+        return s;
     }
     void Snapshot(Kind kind,Result result=Result::Ready){
         StateSnapshot s{ExportSettings(),ExportStatus()};Reply(kind,result);
