@@ -95,7 +95,7 @@ The add-on can also run the network through `MochizukiNrRuntime.dll`, the runtim
 [DLSSNR-AMD](https://github.com/mochizuki0323/DLSSNR-AMD) by mochizuki0323. That is a Vulkan port of
 the same network, with FP8 matrix instructions that only RDNA4 (RX 9000) has. It needs no HIP.
 
-AMD-NR-ReShade Installer v0.6.2 and later put it in when you tick **mochizuki** in a game's sheet
+AMD-NR-ReShade Installer v0.6.3 and later put it in when you tick **mochizuki** in a game's sheet
 (RDNA4 cards only). By hand, put `MochizukiNrRuntime.dll` and its `dlssnr-amd\` folder (shaders and
 `dlssnr.bin`, generated from your own `nvngx_dlssnr.dll` 310.8.0) next to the game's executable.
 Then pick **mochizuki (Vulkan)** in **NR runtime**, under Language in the panel. The panel says when

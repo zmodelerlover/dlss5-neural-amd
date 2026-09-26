@@ -3,7 +3,7 @@
 Este é o mapa, não o manual. Ele **aponta onde pesquisar**; o detalhe está no código e nos handoffs
 de sessão. Mande este quando o assunto for "vou mexer no projeto" sem saber ainda em quê.
 
-Última revisão: 26/09/2026 (runtime v0.4.0, publicado no v0.6.7).
+Última revisão: 26/09/2026 (runtime v0.4.1, publicado no v0.6.9).
 
 ---
 
@@ -12,7 +12,7 @@ de sessão. Mande este quando o assunto for "vou mexer no projeto" sem saber ain
 Add-on do ReShade que roda **DLSS-5 Neural Rendering em GPU AMD**.
 
 O add-on captura o quadro apresentado, entrega a um runtime de terceiro
-(`dlssnr_amd_pass1.dll`, projeto "DLSS-NR-on-AMD" v0.4.0, que roda a rede em kernels HIP
+(`dlssnr_amd_pass1.dll`, projeto "DLSS-NR-on-AMD" v0.4.1, que roda a rede em kernels HIP
 pré-compilados), e compõe a resposta de volta na tela. Um efeito ReShade companheiro
 (`DLSS5_Neural_Feed.fx`) fornece movimento e profundidade.
 
@@ -180,6 +180,14 @@ Reinstalar exige o jogo fechado — a DLL está carregada.
    0,22) e um tom de cor próprio que Colour Strength 0 tira. Em jogo: aprovado depois de um teste no
    ETS2 (D3D11). Falta medir: o caminho temporal com vetores do jogo, a rota D3D12 (o `submitPass`
    dela espera a fila do jogo na CPU a cada quadro) e a ponte 32-bit (GTA IV instalado, sem retorno).
+   O instalador v0.6.2 nunca mostrou a caixa na rota ReShade (ela estava dentro do painel do
+   OptiScaler, e a versão escolhida do GitHub perdia os releases do OptiScaler); o v0.6.3 corrige.
+8. **Runtime danielblnc v0.4.1** no v0.6.9 (26/09). Mapeado a partir do v0.4.0 em
+   `daniel-runtime/analysis-opti` (`map_layout_040_041.txt`, `datamap_040_041.txt`). A coluna de
+   status mostra "danielblnc 0.4.1: rede X ms" (`rt::kVersion`, `rt::kNetworkMs` = 0xaa2b0, o
+   "ms network on the GPU" do log do runtime; o float ao lado, 0xaa2ac, é a espera pela captura).
+   A ponte 32-bit passou ao protocolo v4 (`WireStatus` com a linha do runtime), então a linha do
+   mochizuki também aparece no painel 32-bit.
 
 ---
 

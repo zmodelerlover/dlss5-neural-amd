@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
+
+Requires the pinned **DLSS-NR-on-AMD v0.4.1** runtime; v0.4.0 is refused by hash. The weights are
+unchanged, so an upgrade replaces one DLL and downloads nothing else.
+
+**Released together with AMD-NR-ReShade-Installer v0.6.3**, which moves its runtime and add-on pins
+to this release and to the patched v0.4.1 build (9,916,928 bytes, `c8808716…`, as in
+`tools/SHA256SUMS.txt`) in the same step. Tested in game in Euro Truck Simulator 2 (64-bit) and
+GTA IV (32-bit bridge).
+
+- **Move to DLSS-NR-on-AMD v0.4.1.** Upstream runs the network on a high-priority GPU queue
+  (`QueuePriority`, on by default) and measures 8% faster than v0.4.0, 9% more under heavy load.
+  The data block moved again (+0x2020 up to the history fields, +0x2038 from the ready byte on), so
+  every address in `core/addon/runtime_offsets.h` was mapped from v0.4.0 twice: instruction
+  windows, and the aligned references of every matched function. The two agree on every address,
+  and with the OptiScaler fork's own map. The two patches moved to `0x65bd` and `0x91a2`. framecheck
+  on its 960x540 frame gives byte-identical output to v0.4.0.
+- **The status column names the danielblnc runtime and its cost**: "danielblnc 0.4.1: network
+  13.3 ms", the network's GPU time for the last frame with every pass added up, read from the
+  runtime (the "ms network on the GPU" of its own log). A `dlssnr_amd_pass1.dll` of another
+  release is refused with a panel note that names the one this add-on needs.
+- **The 32-bit bridge shows the runtime line too**, danielblnc's and mochizuki's, which v0.6.8 left
+  out. Bridge protocol v4: `amd-nr.addon32` and `amd-nr-host64.exe` from this release go together,
+  and a mismatched pair is refused at the header, as before.
+
 ## v0.6.8 - 2026-09-26 - the mochizuki runtime
 
 **Released together with AMD-NR-ReShade-Installer v0.6.2**, which pins this add-on and, when its
