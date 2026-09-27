@@ -74,11 +74,13 @@ everything below. Changes a player would notice:
 - Switching the effect off and on again (hotkey, panel or alt-tab), or a 32-bit game coming back
   from a pause, no longer counts the time it was off as one long evaluation, which counted toward
   the three that lower the scale.
-- **Raising `Passes` above what the game started with now takes effect after a restart**, and the
-  panel says so on both routes. Each extra pass loads its own copy of the runtime (about 150 MB of
-  VRAM), which stays loaded until the game exits, and a copy that failed to load was tried again on
-  every frame. Any other change waits until no copy has a job in flight, up to 2 s, and then
-  starts history again, so a pass that sat out is no longer handed a frame from before.
+- **`Passes` applies live in both directions**, on both routes. Each extra pass loads its own copy
+  of the runtime (about 150 MB of VRAM) the first time a count needs it, which costs one long frame,
+  and it stays loaded until the game exits. A copy that fails to load is no longer tried again on
+  every frame: the count is held at the passes that did load, the log says why once, and the panel
+  names the pass. A change waits until no copy has a job in flight, up to 2 s, and then starts
+  history again, so a pass that sat out is no longer handed a frame from before. If the runtime
+  does not drain three times running, the count is kept and the next change tries again.
 - On D3D12, and on OpenGL with its fences, a frame that arrives while the last one is still on the
   GPU after the 500 ms hold ran out no longer rewrites the views that one is still reading, which
   could compose it from another back buffer: an old frame flashing up. The frame goes out as the

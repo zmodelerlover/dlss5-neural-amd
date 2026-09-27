@@ -246,7 +246,7 @@ void CascadeRows() {
 // Bench 2: Portuguese is a whole other panel, and every string in it is clean UTF-8.
 void Language() {
     ui::PanelStatus st = Status64();
-    st.passesAvailable = 1; // the Passes restart note is drawn, and checked, in both languages
+    st.passesAvailable = 1; // the Passes load-failure note is drawn, and checked, in both languages
     g_openMore = true;
     ui::PanelSettings en = Base(), pt = Base();
     en.optional = pt.optional = ui::kOptAll;
@@ -311,21 +311,24 @@ void Actions() {
           "releasing Scale unchanged: scale=%.2f", s.scale);
 }
 
-// More passes than the runtime copies loaded this session wait for a restart, and the panel says so.
-void PassesRestart() {
+// Passes applies live, so no count waits for a restart; only a copy that failed to load holds it.
+void PassesLive() {
     ui::PanelStatus st = Status64();
     ui::PanelSettings s = Base(); // two passes
-    auto says = [&] {
-        bool note = false;
-        for (const std::string& x : Draw(s, st, nullptr, true))
-            note |= x.find("when the game restarts") != std::string::npos;
-        return note;
+    auto drawn = [&](const char* a, const char* b) { // one line holding both, in either language
+        bool found = false;
+        for (int language : {1, 0})
+            for (const std::string& x : Draw((s.language = language, s), st, nullptr, true))
+                found |= x.find(a) != std::string::npos && x.find(b) != std::string::npos;
+        return found;
     };
-    CHECK(!says(), "restart note before any engine is up");
+    for (st.passesAvailable = 0; st.passesAvailable <= 3; ++st.passesAvailable)
+        CHECK(!drawn("restart", "ass") && !drawn("reinici", "ass"), "Passes waits for a restart");
     st.passesAvailable = 1;
-    CHECK(says(), "two passes over one loaded copy show no restart note");
+    CHECK(drawn("Pass 2 could not load; running 1.", "") && drawn("O passe 2 n", "rodando 1."),
+          "a pass held by a failed copy is not named in both languages");
     st.passesAvailable = 2;
-    CHECK(!says(), "restart note with a copy loaded for every pass");
+    CHECK(!drawn("could not load", ""), "load-failure note with every asked pass available");
 }
 
 // The rows that wait for another setting: ticked, they stay off screen until it is on.
@@ -479,7 +482,7 @@ int main() {
     Dependencies();
     Language();
     Actions();
-    PassesRestart();
+    PassesLive();
     Factory();
     Route32();
     RouteCaps();

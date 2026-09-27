@@ -43,7 +43,7 @@ enum class StandDown:uint32_t { None=0, Other=1, DeviceLost=2, EngineInit=3, Res
 struct WireStatus {
     uint64_t processed=0,skipped=0;
     uint32_t connected=0,engineReady=0,unavailable=0,failed=0,transportOnly=0;
-    // loadedPasses: how many passes the helper's loaded runtime copies can run (PassesAvailable).
+    // loadedPasses: how many passes the helper can run this session (PassesAvailable).
     uint32_t outWidth=0,outHeight=0,netWidth=0,netHeight=0,loadedPasses=0,activePasses=0;
     // depthActive: 1 the game's depth is fed, 3 fed and the probe's last reading varied, 2 withheld.
     uint32_t depthActive=0,motionActive=0,probeValid=0;

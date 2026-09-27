@@ -1917,7 +1917,7 @@ bool ArmRuntime(HMODULE h)
 // A second (third) copy of the runtime, for pass `slot` + 1. The loader keys modules by file
 // name, so a byte-identical copy under another name is a separate module: its own globals, its
 // own HIP engine object, its own weights in VRAM (about 150 MB each) and, the point of it, its
-// own temporal state. Loaded once, at the first bring-up, for the count asked for then
+// own temporal state. Loaded the first time a pass count needs it, with no job in flight
 // (BringUpEngines), which costs one long frame.
 bool LoadExtraRuntime(UINT slot)
 {
@@ -1946,8 +1946,8 @@ bool LoadExtraRuntime(UINT slot)
                        reinterpret_cast<LPCWSTR>(h), &pinned);
     if (!ArmRuntime(h))
     {
-        Log("pass %u: its own copy of the runtime did not initialise; the pass will share the "
-            "first module and its history.", slot + 1);
+        Log("pass %u: its own copy of the runtime did not initialise; it stays loaded, unused, "
+            "since what it started cannot be unloaded safely.", slot + 1);
         return false;
     }
     g.runtimes[slot] = h;

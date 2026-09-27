@@ -127,13 +127,13 @@ void Passes(PanelSettings &s, const PanelStatus &status)
          "porque cada passe está editando o trabalho do anterior.\n\n"
          "1 é o padrão. Olhe a porcentagem de pulados lá em cima ao subir: rede que para de "
          "terminar dentro do quadro é o piscar.");
+    // Below the slider only when a pass's copy of the runtime failed to load, which is not retried.
     if (status.passesAvailable != 0 && static_cast<uint32_t>(s.passes) > status.passesAvailable)
     {
-        char note[160];
+        char note[96];
         std::snprintf(note, sizeof(note),
-                      T("More than %u passes take effect when the game restarts; until then it runs %u.",
-                        "Mais de %u passes valem quando o jogo reiniciar; até lá roda %u."),
-                      status.passesAvailable, status.passesAvailable);
+                      T("Pass %u could not load; running %u.", "O passe %u não carregou; rodando %u."),
+                      status.passesAvailable + 1, status.passesAvailable);
         Note(kWarn, note);
     }
 }

@@ -385,16 +385,20 @@ UINT WantedPasses()
         std::clamp(g.settings.passes.load(), 1, static_cast<int>(State::kMaxPasses)));
 }
 
-// How many passes the modules already loaded can run: pass 1's and each copy after it, or every
-// pass on the legacy batch path, which runs them all through pass 1's. 0 until the engine is up.
+// The first pass slot whose copy of the runtime did not come up, which is also how many passes
+// this session can run; kMaxPasses while none has failed. Never tried again: a copy that loaded
+// and failed to arm stays pinned with whatever it had started, and a retry was a 7 MB file copy and
+// a LoadLibrary on every present.
+UINT g_passLimit = State::kMaxPasses;
+
+// How many passes this session can run: every one, through a copy of the runtime per pass loaded
+// the first time a count needs it, or all through pass 1's on the legacy batch path; fewer once a
+// copy did not come up. 0 until the engine is up.
 UINT PassesAvailable()
 {
     if (MzSelected())
         return State::kMaxPasses;  // mochizuki runs every pass inside its one runtime
-    UINT n = g.runtime == nullptr ? 0 : g.settings.serialPasses.load() ? 1 : State::kMaxPasses;
-    while (n != 0 && n < State::kMaxPasses && g.runtimes[n] != nullptr)
-        ++n;
-    return n;
+    return g.runtime == nullptr ? 0 : g.settings.serialPasses.load() ? g_passLimit : State::kMaxPasses;
 }
 
 bool InitPipeline();
@@ -406,21 +410,22 @@ bool LoadExtraRuntime(UINT slot);
 //
 // Copies only in serial mode: that is the only mode in which each pass is submitted and finished on
 // its own, which is what lets each module be told about exactly the list it recorded. The legacy
-// batch path keeps the single shared module it always had. A copy that fails to come up clamps the
-// pass count to what did, and says so, rather than silently running that pass through pass 1's
-// state.
+// batch path keeps the single shared module it always had.
 //
-// Copies load at the first bring-up only. A module is never unloaded -- about 150 MB of VRAM and a
-// worker polling with Sleep(0) each, for the session -- and a copy that failed was tried again on
-// every present, a 7 MB file copy and a LoadLibrary a frame. So a later change runs on what is
-// loaded, and more passes than that wait for a restart, which the panel says.
+// A copy loads the first time a count needs it and stays for the session, about 150 MB of VRAM and
+// a worker polling with Sleep(0) each: its worker and its HIP engine would still be running code an
+// unload took away. So a lower count leaves it loaded and a higher one again takes it at once. A
+// copy that fails clamps the count to what did come up, says why once, and is not tried again.
 //
 // A change is taken on a present with no job in flight in any module, and history starts again:
-// a pass that sat out holds an old frame, and the chain ends on another pass. The drain is a wait,
-// not a skip to the next present, because on D3D12 the last job is still running when the next
-// present arrives, every frame. Bounded at 2 s under g.lock, one job in practice and only when
-// somebody moved the slider; three in a row that ran out mean the runtime is not retiring jobs,
-// and every later change waits for a restart too. A drain that succeeds starts the count over.
+// a pass that sat out holds an old frame, and the chain ends on another pass. Copies load inside
+// that drain, never beside a running job: what a runtime's init does to the HIP device under
+// another module's job is not known. The drain is a wait, not a skip to the next present, because
+// on D3D12 the last job is still running when the next present arrives, every frame. Bounded at
+// 2 s under g.lock, one job in practice and only when somebody moved the slider; three in a row
+// that ran out mean the runtime is not retiring jobs, so the count is kept and only the next change
+// tries again, rather than stalling every present for 2 s. A drain that succeeds starts the count
+// over.
 bool BringUpEngines(UINT &wanted)
 {
     // mochizuki runs every pass inside its own runtime, with its own history per pass, so none of
@@ -440,42 +445,51 @@ bool BringUpEngines(UINT &wanted)
         return false;
     // The request last seen (0: none yet), the count running, and drains in a row that ran out.
     static UINT asked = 0, live = 0, timeouts = 0;
-    if (asked == 0)
-        for (UINT slot = 1; slot < wanted && g.settings.serialPasses.load(); ++slot)
-            if (!LoadExtraRuntime(slot))
-            {
-                Log("pass count clamped to %u: no separate runtime for pass %u. See the lines "
-                    "above for why.", slot, slot + 1);
-                break;
-            }
-    const UINT next = std::min(wanted, PassesAvailable());
     const bool fresh = wanted != asked;
-    if (fresh && next < wanted && asked != 0)
-        Log("passes %u: the runtime is loaded for %u this session; the rest start after a restart.",
-            wanted, next);
     asked = wanted;
-    if (live == 0 || next == live)
-        live = next;
-    else if (timeouts < 3)
+    UINT next = std::min(wanted, PassesAvailable());
+    // Copies load in order and stop at the first that fails, so the last one says whether any is due.
+    const bool load = g.settings.serialPasses.load() && g.runtimes[next - 1] == nullptr;
+    // Nothing records before the first bring-up, so that one has nothing to drain.
+    const bool change = live != 0 && (load || next != live);
+    if (change)
     {
+        if (timeouts >= 3 && !fresh)
+        {
+            wanted = live;
+            return true;
+        }
         const UINT64 deadline = GetTickCount64() + 2000;
         while (RuntimeBusy() && GetTickCount64() < deadline && !DeviceLost())
             Sleep(1);
-        if (!RuntimeBusy())
+        if (RuntimeBusy())
         {
-            Log("passes %u -> %u, taken with every module drained; history starts again.", live, next);
-            live = next;
-            timeouts = 0;
-            ResetTemporal("Passes changed");
+            if (++timeouts < 3)
+                Log("passes %u -> %u: a job was still in flight after 2 s; trying again next frame.",
+                    live, next);
+            else
+                Log("kept at %u passes: the runtime did not drain in 2 s, %u times running. Passes "
+                    "%u is tried again on the next change.", live, timeouts, wanted);
+            wanted = live;
+            return true;
         }
-        else
-            Log("passes %u -> %u: a job was still in flight after 2 s; %s.", live, next,
-                ++timeouts < 3 ? "trying again next frame"
-                               : "this change and every later one apply after a restart");
+        timeouts = 0;
     }
-    else if (fresh)
-        Log("passes %u -> %u applies after a restart: the runtime did not drain in 2 s, three times "
-            "running.", live, next);
+    for (UINT slot = 1; load && slot < next; ++slot)
+        if (g.runtimes[slot] == nullptr && !LoadExtraRuntime(slot))
+        {
+            g_passLimit = slot;
+            Log("passes %u: held at %u. Pass %u's copy of the runtime did not come up (the lines "
+                "above say why) and is not tried again this session.", wanted, slot, slot + 1);
+            break;
+        }
+    next = std::min(wanted, PassesAvailable());
+    if (change)
+    {
+        Log("passes %u -> %u, taken with every module drained; history starts again.", live, next);
+        ResetTemporal("Passes changed");
+    }
+    live = next;
     wanted = live;
     return true;
 }

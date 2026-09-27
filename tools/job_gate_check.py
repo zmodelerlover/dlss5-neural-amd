@@ -33,12 +33,15 @@ still in the runtime's in-order queue, so recording on top only stacked work beh
 
 And the pass count has one latch, BringUpEngines (runtimes.inc), which every route calls before
 JobGate; the 32-bit host's SET_STATE only stores the request. So:
-  - a change waits, bounded at 2 s, until no module has a job in flight, then starts history again;
-  - it never exceeds PassesAvailable, what the copies loaded this session can run: LoadExtraRuntime
-    is called once, in the first bring-up, so a copy is neither loaded later nor tried again;
+  - a change, up or down, waits, bounded at 2 s, until no module has a job in flight, then starts
+    history again; three drains in a row that ran out keep the count until the next change, and
+    nothing in it says a restart applies it;
+  - a missing copy loads only there, after that drain: LoadExtraRuntime is called once in the core,
+    in BringUpEngines, and a copy that fails latches g_passLimit, so it is not tried again and the
+    count never exceeds PassesAvailable;
   - no route decides the count itself: each hands WantedPasses to BringUpEngines once and stores
     only its answer in g.loadedPasses, and both panels are told PassesAvailable, which is what their
-    "takes effect when the game restarts" note compares Passes with.
+    note on a pass that could not load compares Passes with.
 
     python tools/job_gate_check.py
 """
@@ -149,20 +152,27 @@ if "g.jobRunning = false;" not in body(code(neural), "void ReleaseSwapchainSized
     bad.append("ReleaseSwapchainSized keeps jobRunning set: the first job after a rebuild times the gap")
 
 latch = code(bring)
-# The count moves only in the branch that found every module drained, and that branch also resets
-# history and the run of timeouts; `asked` keeps a request from loading or logging on every present.
-drained = re.search(r"if \(!RuntimeBusy\(\)\)\s*\{([^}]*)\}", latch)
-if not (all(s in latch for s in ("PassesAvailable()", "timeouts < 3", "asked = wanted;", "wanted = live;"))
-        and re.search(r"GetTickCount64\(\) \+ 2000;", latch) and drained
-        and all(s in drained.group(1)
-                for s in ("live = next;", "timeouts = 0;", "ResetTemporal("))):
-    bad.append("runtimes.inc: BringUpEngines does not drain for 2 s, reset history and cap the count "
-               "at the loaded copies on a Passes change")
+# A change drains first; one that ran out keeps the count (and three in a row wait for the next
+# change); copies load only past the drain; history starts again once the new count is taken.
+drain = latch.find("GetTickCount64() + 2000;")
+stuck = re.search(r"if \(RuntimeBusy\(\)\)\s*\{(.*?)\n        \}", latch, re.S)
+loads = re.search(r"if \(g\.runtimes\[slot\] == nullptr && !LoadExtraRuntime\(slot\)\)\s*\{([^}]*)\}", latch)
+taken = re.search(r"if \(change\)\s*\{[^}]*ResetTemporal\(\"Passes changed\"\);[^}]*\}\s*live = next;", latch)
+if not (all(s in latch for s in ("PassesAvailable()", "timeouts >= 3 && !fresh", "timeouts = 0;",
+                                 "asked = wanted;", "wanted = live;"))
+        and stuck and all(s in stuck.group(1) for s in ("++timeouts", "wanted = live;", "return true;"))
+        and loads and all(s in loads.group(1) for s in ("g_passLimit = slot;", "break;"))
+        and taken and 0 <= drain < stuck.start() < loads.start() < taken.start()):
+    bad.append("runtimes.inc: BringUpEngines does not drain for 2 s, load missing copies after the "
+               "drain, latch a failed one and reset history on a Passes change")
+if "g_passLimit" not in code(body(runtimes, "UINT PassesAvailable(")):
+    bad.append("runtimes.inc: PassesAvailable is not capped by a copy that failed to load")
+if "restart" in latch or "restart" in code(body(perf, "void Passes(")):
+    bad.append("a Passes change is said to wait for a restart; it applies live")
 core_code = "".join(code(p.read_text(encoding="utf-8", errors="replace"))
                     for p in sorted((ROOT / "core").rglob("*")) if p.suffix in (".cpp", ".h", ".inc"))
-if (len(re.findall(r"(?<!bool )LoadExtraRuntime\(", core_code)) != 1
-        or not re.search(r"if \(asked == 0\)\s*for \([^\n]*\)\s*if \(!LoadExtraRuntime\(slot\)\)", latch)):
-    bad.append("a runtime copy loads outside BringUpEngines' first bring-up, so a failed one is retried")
+if len(re.findall(r"(?<!bool )LoadExtraRuntime\(", core_code)) != 1:
+    bad.append("a runtime copy loads outside BringUpEngines' drained change")
 for path, wiring in (("core/addon/neural.cpp", "st.passesAvailable = PassesAvailable();"),
                      ("core/x86bridge/host64.cpp", "s.loadedPasses=PassesAvailable();"),
                      ("core/x86bridge/panel32.cpp", "s.passesAvailable=w.loadedPasses;"),
@@ -176,5 +186,5 @@ if bad:
 print("PASS same frame only: Inline=0 ignored, no decision on the menu flag, a latched async stands "
       "down, Timing only on the 32-bit bridge, one JobGate on each of the five routes, busy from the "
       "runtime's own count, no timed let-go of a runtime job, a pause clears the job latch, every "
-      "failed Close retires its job, one pass-count latch that drains, resets history and loads "
-      "copies only at the first bring-up")
+      "failed Close retires its job, one pass-count latch that drains, loads missing copies live, "
+      "latches a failed one and resets history")
