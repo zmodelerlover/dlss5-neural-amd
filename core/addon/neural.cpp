@@ -361,18 +361,15 @@ void Barrier(ID3D12GraphicsCommandList *c, ID3D12Resource *r, D3D12_RESOURCE_STA
 // updated two of them and the 32-bit bridge crashed on its first frame.
 #include "runtime_offsets.h"
 
-// v0.3.0 of DLSS-NR-on-AMD, lifted out of its setup by tools/extract_runtime.py and run
+// v0.4.1 of DLSS-NR-on-AMD, lifted out of its setup by tools/extract_runtime.py and run
 // through tools/patch_runtime.py -- this is the hash of the patched file, which is what
-// the add-on loads. Every offset below was re-derived against this build. Nothing moved by
-// a constant: the .data globals shifted by 0xa080 near the device pointer, 0xa0e0 across the
-// inline block, 0xa158 across the job block and 0xa160 across the option struct, because
-// v0.3.0 inserts new globals between them. Older builds are refused by hash rather than
-// written into with the wrong addresses.
-constexpr unsigned char kRuntimeSha256[32] = { 0xd6, 0x20, 0xe4, 0x69, 0x94, 0x51, 0xc8, 0xe1,
-                                               0x3f, 0xb7, 0x76, 0x98, 0x1e, 0x91, 0x2e, 0xcc,
-                                               0x4b, 0xdf, 0x02, 0x9b, 0x2b, 0xfc, 0x8f, 0xec,
-                                               0xc1, 0x44, 0x87, 0xbd, 0x9d, 0xfd, 0xa9, 0xaa };
-constexpr size_t kRuntimeSize = 7290880;
+// the add-on loads. Every offset in runtime_offsets.h was re-derived against this build; no
+// v0.4.0 data address lands on the same field in it. v0.4.0 and anything else is refused by
+// hash rather than written into with the wrong addresses.
+constexpr unsigned char kRuntimeSha256[32] = {
+    0xc8, 0x80, 0x87, 0x16, 0xc2, 0x86, 0xa3, 0x4f, 0xe2, 0x5b, 0x8c, 0xf5, 0xb4, 0x1a, 0x6b, 0x0f,
+    0x40, 0xac, 0x1e, 0x12, 0x37, 0xb3, 0xac, 0x39, 0xb9, 0x03, 0xf0, 0xa9, 0x0c, 0xd4, 0xf2, 0xe9};
+constexpr size_t kRuntimeSize = 9916928;
 
 template <class T> T &At(HMODULE h, size_t rva)
 {
@@ -701,12 +698,10 @@ struct State
         // cascade at the bottom of the panel is what turns them on, one at a time, so a panel grows
         // by what somebody asked for rather than by everything that exists. See enum Opt.
         std::atomic<uint32_t> optional;
-        // The engine's own option struct, mapped by decompiling its ini reader rather than guessed:
-        //   97b30 LocalTone (0.0)   97b34 LocalStructure (1.0)   97b38 SkinStructure (-1.0)
-        //   97b3c Scale (0.03125)   97b40 UseAutoMask (1)        97b44 ToneChannels (0)
-        //   97b1c Enabled  97b1d Temporal  97b1e UseFsrInputs  97b1f UseDepth  97b20 Tonemap (-1)
-        // The last four of these were never written by this add-on, and two were written wrong.
-        // Their defaults are the engine's own, so leaving them alone changes nothing.
+        // The engine's own option struct (runtime_offsets.h), mapped by decompiling its ini reader
+        // rather than guessed. The four below were never written by this add-on, and two fields
+        // were written wrong. Their defaults are the engine's own, so leaving them alone changes
+        // nothing.
         std::atomic<int> autoMask;
         std::atomic<int> toneChannels;
         std::atomic<float> engineScale;
@@ -813,7 +808,7 @@ struct State
         std::atomic<int> historyGuard { 0 };  // Lab: the reference's history filters, core/temporal/smooth.inc
         std::atomic<float> outputSmooth, outputSmoothLimit;
         std::atomic<int> fixedSeed;  // Lab: the pre-block's noise seed pinned, core/temporal/seed.inc
-        // 97b10 DepthInverted. 1 is both runtimes' own default; RenoDX writes 0 explicitly on its
+        // DepthInverted. 1 is both runtimes' own default; RenoDX writes 0 explicitly on its
         // Present route (ETS2 trace, where its depth was a dummy, so that 0 says nothing about any
         // game's real buffer). Exposed so the two can be told apart on a game with real depth; no run
         // here has yet.
@@ -1282,11 +1277,11 @@ bool EnsureNeuralIni()
          "; in that order, so Natural is 1 and Cinematic is 2.\r\n"
          "; On NVIDIA a model is two things: an input of the network (style/128, which is\r\n"
          "; what changes lighting and detail there) and a grade on the finished frame. This\r\n"
-         "; runtime has no slot for the first: its network takes tone, structure and the two\r\n"
-         "; derived skin/structure values, and nothing else. So here a model is its grade\r\n"
-         "; only: B darkens by 0.1 stop, flattens contrast a quarter off its S-curve and\r\n"
-         "; takes a tenth of the saturation; C only takes 15 percent of the saturation, both\r\n"
-         "; scaled by Tone clamped to 0..1, constants read out of nvngx_dlssnr.dll.\r\n"
+         "; add-on feeds the network tone, structure and skin and nothing else, so here a\r\n"
+         "; model is its grade only: B darkens by 0.1 stop, flattens contrast a quarter off\r\n"
+         "; its S-curve and takes a tenth of the saturation; C only takes 15 percent of the\r\n"
+         "; saturation, both scaled by Tone clamped to 0..1, constants read out of\r\n"
+         "; nvngx_dlssnr.dll.\r\n"
          "; NR Preset does not exist here or on NVIDIA: the shipping DLL carries one set of\r\n"
          "; weights (preset 1) and any other value falls back to it. docs/styles-model-abc.md.\r\n"
          "Style=0\r\n"
@@ -1837,153 +1832,7 @@ bool InitHip()
     return true;
 }
 
-// The engine reads dlssnr_on_amd.ini from DllMain, so it has to exist before LoadLibrary. A fresh
-// one halves the engine's own watchdog budget (200 ms in v0.3.0): a stuck job holds the game's
-// queue that long every frame. One that exists is the person's and is never rewritten; InitEngine
-// logs the InlineWaitMs it set, and says so when it is over 200.
-void EnsureEngineIni(const std::filesystem::path &dir)
-{
-    const auto ini = dir / L"dlssnr_on_amd.ini";
-    std::error_code ec;
-    if (std::filesystem::exists(ini, ec))
-        return;
-
-    std::ofstream f(ini, std::ios::binary);
-    if (!f)
-    {
-        Log("could not write %ls; the engine will fall back to its own defaults.", ini.c_str());
-        return;
-    }
-    // v0.3.0 renamed the inline switch: the key is now `Async`, and it is the inverse of the old
-    // `Inline` (Async=0 means inline). An ini this add-on wrote for v0.2.17 is still correct by
-    // accident -- the unknown `Inline` key is ignored and `Async` defaults to 0 -- so an existing
-    // file is left alone, as it always was.
-    f << "[DlssNrOnAmd]\r\n"
-         "Enabled=1\r\n"
-         "Async=0\r\n"
-         "; Host watchdog budget, ms (the engine's own default is 200). The network takes about\r\n"
-         "; 16 ms at 0.50 scale, so 100 is a wide margin; past it the frame goes out without the\r\n"
-         "; effect. Keep it far under 2000: a stall that long is a Windows driver reset (TDR).\r\n"
-         "InlineWaitMs=100\r\n"
-         "Interop=1\r\n"
-         "UseFsrInputs=1\r\n"
-         "UseDepth=0\r\n"
-         "Temporal=0\r\n"
-         "Tonemap=0\r\n"
-         "HipDevice=-1\r\n";
-    Log("wrote a default dlssnr_on_amd.ini next to the exe.");
-}
-
-// The NR runtime imports d3d12.dll statically, so merely loading it pulls the system copy into
-// the process -- and that is the thing this whole dance exists to avoid. Measured: with the
-// engine loaded, ReShade installs its d3d12 hooks and the game's next resize dies; without it,
-// no hooks and the resizes pass.
-//
-// An import is just a null-terminated name in the file, so a copy with that name overwritten by
-// one of the same length imports whatever we choose. The private D3D12 is already loaded by the
-// time this runs, so the loader matches it by base name and never goes to disk for it.
-//
-// The original file is left alone, and it is the original that the hash is checked against.
-std::filesystem::path RuntimeCopyUsingPrivateD3D12(const std::filesystem::path &original)
-{
-    if (g_privateD3D12 == nullptr)
-        return original;  // the game is on D3D12 already; its d3d12.dll is long since loaded
-
-    const auto patched = ExeDirectory() / L"amd-nr-pass1.dll";
-    std::ifstream in(original, std::ios::binary);
-    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), {});
-    in.close();
-    if (bytes.empty())
-        return original;
-
-    // Rewrite ONLY the name in the import table. Overwriting every occurrence of the string in
-    // the file was wrong: the same bytes can appear inside code or unrelated data, and patching
-    // those corrupts the DLL. The runtime then faulted repeatedly (0xC0000005 at heap addresses)
-    // and the frame came back black. Walk the PE properly instead.
-    auto rvaToOffset = [&](uint32_t rva) -> size_t {
-        if (bytes.size() < 0x40)
-            return 0;
-        const auto u16 = [&](size_t o) {
-            return static_cast<uint16_t>((unsigned char)bytes[o] | ((unsigned char)bytes[o + 1] << 8));
-        };
-        const auto u32 = [&](size_t o) {
-            return static_cast<uint32_t>((unsigned char)bytes[o] | ((unsigned char)bytes[o + 1] << 8) |
-                                         ((unsigned char)bytes[o + 2] << 16) |
-                                         ((unsigned char)bytes[o + 3] << 24));
-        };
-        const size_t pe = u32(0x3C);
-        if (pe + 24 > bytes.size() || u32(pe) != 0x00004550)
-            return 0;
-        const uint16_t sections = u16(pe + 6);
-        const uint16_t optSize = u16(pe + 20);
-        size_t sec = pe + 24 + optSize;
-        for (uint16_t i = 0; i < sections; ++i, sec += 40)
-        {
-            if (sec + 40 > bytes.size())
-                return 0;
-            const uint32_t va = u32(sec + 12), rawSize = u32(sec + 16), rawPtr = u32(sec + 20);
-            if (rva >= va && rva < va + rawSize)
-                return rawPtr + (rva - va);
-        }
-        return 0;
-    };
-    const auto u16at = [&](size_t o) {
-        return static_cast<uint16_t>((unsigned char)bytes[o] | ((unsigned char)bytes[o + 1] << 8));
-    };
-    const auto u32at = [&](size_t o) {
-        return static_cast<uint32_t>((unsigned char)bytes[o] | ((unsigned char)bytes[o + 1] << 8) |
-                                     ((unsigned char)bytes[o + 2] << 16) |
-                                     ((unsigned char)bytes[o + 3] << 24));
-    };
-    size_t rewritten = 0;
-    if (bytes.size() > 0x40)
-    {
-        const size_t pe = u32at(0x3C);
-        if (pe + 24 < bytes.size() && u32at(pe) == 0x00004550)
-        {
-            const size_t opt = pe + 24;
-            const uint16_t magic = u16at(opt);
-            // The import directory is entry 1 of the data directories, which sit after the
-            // fixed part of the optional header: 96 bytes for PE32, 112 for PE32+.
-            const size_t dirs = opt + (magic == 0x20B ? 112 : 96);
-            const uint32_t importRva = u32at(dirs + 1 * 8);
-            size_t desc = rvaToOffset(importRva);
-            for (; desc != 0 && desc + 20 <= bytes.size(); desc += 20)
-            {
-                const uint32_t nameRva = u32at(desc + 12);
-                if (nameRva == 0)
-                    break;  // the null descriptor ends the array
-                const size_t nameOff = rvaToOffset(nameRva);
-                constexpr size_t n = sizeof(kSystemD3D12Ansi) - 1;
-                if (nameOff != 0 && nameOff + n < bytes.size() &&
-                    _strnicmp(&bytes[nameOff], kSystemD3D12Ansi, n) == 0 &&
-                    bytes[nameOff + n] == 0)
-                {
-                    std::memcpy(&bytes[nameOff], kPrivateD3D12Ansi, n);
-                    ++rewritten;
-                }
-            }
-        }
-    }
-    if (rewritten == 0)
-    {
-        Log("no d3d12.dll import found in the runtime; loading it unpatched.");
-        return original;
-    }
-
-    std::ofstream out(patched, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        Log("could not write %ls; loading the runtime unpatched, which will pull the system "
-            "d3d12.dll in.", patched.c_str());
-        return original;
-    }
-    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    out.close();
-    Log("runtime copied to %ls with its %s import pointed at %s (%zu occurrence(s)).",
-        patched.filename().c_str(), kSystemD3D12Ansi, kPrivateD3D12Ansi, rewritten);
-    return patched;
-}
+#include "runtime_files.inc"
 
 // Who jumped to null, and from where.
 //
@@ -2046,6 +1895,12 @@ bool ArmRuntime(HMODULE h)
     At<uint8_t>(h, rt::kUseFsrInputs) = 1;
     At<uint8_t>(h, rt::kUseDepth) = 0;
     At<int>(h, rt::kTonemap) = RuntimeTonemap();
+    // Pinned over dlssnr_on_amd.ini; runtime_offsets.h says why each matters. The runtime read the
+    // file in DllMain, and its re-read every 120 presents is on the path the first patch removes.
+    At<int>(h, rt::kCpuWait) = 0;
+    At<int>(h, rt::kStyle) = 0;
+    At<int>(h, rt::kToneCurve) = 0;
+    At<float>(h, rt::kToneLift) = 0.0f;
 
     const std::string file = (ExeDirectory() / L"dlssnr_on_amd_weights.bin").string();
     if (g.hipSet(g.hipDevice) != 0 ||
@@ -2123,8 +1978,8 @@ bool InitEngine()
     {
         // Said in the panel too. This is the one failure a user can actually fix, and the log
         // line above it says which file and which build, so pointing at the log is worth it.
-        g.status.reason = "dlssnr_amd_pass1.dll is a different build to the one this add-on is built "
-                   "against; see amd-nr.log";
+        g.status.reason = "dlssnr_amd_pass1.dll is not the danielblnc 0.4.1 build this add-on needs; "
+                   "see amd-nr.log";
         Log("off: %s", g.status.reason);
         return false;
     }
@@ -2191,14 +2046,16 @@ bool InitEngine()
             n += std::snprintf(line + n, sizeof(line) - n, " %02x",
                                static_cast<unsigned>(At<uint8_t>(h, rva)));
         Log("%s", line);
-        Log("  97b10 is DepthInverted, pinned to the engine's own default of 1 and no longer a "
-            "control. 97b40 UseAutoMask, 97b44 ToneChannels and 97b3c Scale are the fields the "
+        Log("  %zx is DepthInverted, pinned to the engine's own default of 1 and no longer a "
+            "control. %zx UseAutoMask, %zx ToneChannels and %zx Scale are the fields the "
             "Engine tab writes; what they read back as here is the engine's own state before "
-            "this add-on touches them.");
-        Log("  written by this add-on: 97b30 tone, 97b34 structure, 97b38 skin. If one of those "
+            "this add-on touches them.",
+            rt::kDepthInverted, rt::kUseAutoMask, rt::kToneChannels, rt::kScale);
+        Log("  written by this add-on: %zx tone, %zx structure, %zx skin. If one of those "
             "reads back as something this add-on never wrote, the engine owns it. To find out "
             "whether they change the picture, run the same scene twice with Skin at 0 and at 3 "
-            "and compare the 'measure, residual' line -- if it does not move, the slider is inert.");
+            "and compare the 'measure, residual' line -- if it does not move, the slider is inert.",
+            rt::kLocalTone, rt::kLocalStructure, rt::kSkinStructure);
     }
     return true;
 }
@@ -2738,15 +2595,14 @@ float EffectiveGuard()
 // The neutral value of all three slots is zero, so the runtime's (value - neutral) * t + neutral
 // reduces to value * t. Returns whether anything is actually being applied, so Style=0 and
 // StyleStrength=0 both skip the work instead of running an identity.
-// There is no style input on this runtime. 97b3c ("Scale", default 1/32) was taken for one on
-// 21/09 because it sits right after the four control floats in the engine object
-// (0x96F98..0x96FA4: tone, structure, skinEff, structEff) and the NVIDIA forward takes a fifth
-// value, style/128. It is not: the engine's own dump line prints "ctl (%.2f %.2f %.2f %.2f)",
-// four values, and the fifth float (0x96FA8, object+48) goes to the post kernel that writes the
-// output, not to the network. Writing style/128 there made Model A (0) return the input
-// unchanged -- measured in ETS2: residual mean 0.00024 against an input mean of 0.45 -- and cut
-// Models B and C to a quarter and a half. So on AMD a Model is its grade and nothing else; the
-// network half of it has no slot to reach.
+// Scale (default 1/32) was taken for a style input on 21/09, on v0.3.0, because it sits right
+// after the four control floats in the engine object and the NVIDIA forward takes a fifth value,
+// style/128. It is not: it goes to the post kernel that writes the output, not to the network.
+// Writing style/128 there made Model A (0) return the input unchanged -- measured in ETS2:
+// residual mean 0.00024 against an input mean of 0.45 -- and cut Models B and C to a quarter and
+// a half. v0.3.3 gave the runtime a real one, its own ini key Style, sent to the network as
+// Style/128 in the lane v0.3.0 held at zero: unpinned, Style=2 moved framecheck's output by a mean
+// 0.008. ArmRuntime pins it to v0.3.0's zero over any ini, so a Model stays its grade and no more.
 //
 // How much of the model's grade is applied. The NVIDIA DLL scales a style's coefficients by
 // LocalToneStrength clamped to [0,1]; Model Strength sits on top of that, so at 1 the grade is
@@ -2815,6 +2671,7 @@ bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
     l = { t.tone, t.structure, t.skin, outScale, autoMask, true };
     return changed;
 }
+#include "mochizuki.inc"
 
 #include "../temporal/optical_flow.inc"
 #include "../temporal/motion_feed.inc"
@@ -3055,8 +2912,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     FeedMotion(cmd, haveMotion);  // after the probe's copy, so the probe reads the field as it came
 
     UINT accepted = 0;
-    bool nativeFailure = false;
-    for (UINT i = 0; i < wanted; ++i)
+    bool nativeFailure = MzSelected() && !MzRecord(cmd, haveMotion, wanted, submitPass, accepted);
+    for (UINT i = 0; i < wanted && !MzSelected(); ++i)
     {
         const UINT slot = std::min(i, State::kMaxPasses - 1);
         HMODULE r = RuntimeFor(slot);
@@ -3077,7 +2934,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         const bool handed = ArmHistory(r, slot);
         if (handed)
             PrepareHistory(cmd, slot);
-        // 97b1d is Temporal, not "motion is valid" -- the engine's own ini reader reads the
+        // This byte is Temporal, not "motion is valid" -- the engine's own ini reader reads the
         // key "Temporal" into this byte. The old name was a guess and it made the session-2
         // measurement look unexplained: Temporal=1 was the only run where the engine reported
         // non-zero motion, which is not a coincidence, it is what temporal accumulation is for.
@@ -3089,45 +2946,31 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // field RenoDX exposes as "Character Mask" -- and it defaults to 1, so the add-on was
         // silently relying on the default. ToneChannels and Scale were not known to exist.
         At<int>(r, rt::kUseAutoMask) = autoMask;
-        // Bits 2 and 4 of ToneChannels stopped being tone channels in v0.2.17. The apply shader
-        // now reads them as the timeout policy, in one line:
-        //
-        //     if (tone & 4) { if (flags.Load(12) != 0) d = (tone & 2) ? prev[id.xy].rgb
-        //                                                            : float3(0, 0, 0); }
-        //
-        // Bit 4 turns the guard on at all; bit 2 chooses last frame's residual over nothing. With
-        // both clear -- the engine's own default -- a timed-out frame keeps whatever half-written
-        // bytes are in the residual buffer, which is the one outcome nobody wants.
-        //
-        // Against v0.2.14 this add-on patched that line in the binary to `return;`: on a timeout
-        // keep the current frame and never paste a stale correction. Upstream has since made the
-        // same choice available as a flag, so the patch is gone and these two bits carry it. Bit 1
-        // is the only one left that means what the name says.
-        //
-        // Bit 4 also has to be set for another reason, read in the worker (0x180019070): when the
-        // whole ToneChannels word is 0 the runtime zeroes LocalTone and LocalStructure before they
-        // reach the network. Writing this field as 0 would silently run the network with no tone
-        // and no structure control, whatever the sliders say.
+        // ToneChannels bits 4 and 2 were taken for the apply shader's timeout policy. On v0.3.0 and
+        // v0.4.0 they are not: the runtime builds that shader's flag word from its own state, and a
+        // timed-out inline frame after the first is shown with last frame's residual (see dropped
+        // in tools/runtime-patches.json). The worker reads this word once, as a whole: at 0 it
+        // zeroes LocalStructure before it reaches the network, and v0.3.0 zeroed LocalTone with it.
+        // So bit 4 stays set, or the network would silently run with no structure control.
         At<int>(r, rt::kToneChannels) = (g.settings.toneChannels.load() & ~2) | 4;
-        // 97b3c IS a scale, and it is not a control of the network. It lands at object+48
-        // (0x96FA8), right after the four control floats, and from there it goes to the post
-        // kernel that writes the output (sub_18002D2D0, the second off_18006BC68 launch, argument
-        // after the history pointer), not to the pre kernel that feeds the network. Between 21/09
-        // 22:24 and 22/09 00:04 this line wrote style/128 here, on the reading that it was the
-        // NVIDIA forward's fifth control. Measured in ETS2 with Model A (0 here): the network
-        // returned its input, residual mean 0.00024 against an input of 0.45, and nothing on
-        // screen changed with the effect, the Model or the pass count. Model B and C were at a
-        // quarter and a half of the effect. The runtime's own default, 1/32, is what goes here;
-        // LoadSettings refuses anything near zero.
+        // Scale IS a scale, and it is not a control of the network. It lands in the engine object
+        // right after the control floats, and from there it goes to the post kernel that writes
+        // the output, not to the pre kernel that feeds the network. Between 21/09 22:24 and 22/09
+        // 00:04 this line wrote style/128 here, on the reading that it was the NVIDIA forward's
+        // fifth control. Measured in ETS2 with Model A (0 here): the network returned its input,
+        // residual mean 0.00024 against an input of 0.45, and nothing on screen changed with the
+        // effect, the Model or the pass count. Model B and C were at a quarter and a half of the
+        // effect. The runtime's own default, 1/32, is what goes here; LoadSettings refuses
+        // anything near zero.
         At<float>(r, rt::kScale) = outScale;
         At<int>(r, rt::kTonemap) = RuntimeTonemap();
         At<uint8_t>(r, rt::kInlineMode) = g.settings.inlineMode.load() ? 1 : 0;
         At<uint8_t>(r, rt::kUseDepth) = haveDepth && g.depthUsable.load() ? 1 : 0;  // SetDepthUsable
-        // 97b10 DepthInverted. Both runtimes boot this at 1 -- the NVIDIA DLL writes options+260
-        // = 1 when the parameter is absent, and the AMD port's static initialiser sets
-        // dword_180076E10 = 1. RenoDX sends 0 explicitly, measured on ETS2 where its depth was a
-        // dummy, so neither value has been shown right for a real buffer yet. Default 1, exposed
-        // under Depth so the comparison can be made.
+        // DepthInverted. Both runtimes boot this at 1 -- the NVIDIA DLL writes options+260 = 1 when
+        // the parameter is absent, and the AMD port's static initialiser sets it to 1. RenoDX sends
+        // 0 explicitly, measured on ETS2 where its depth was a dummy, so neither value has been
+        // shown right for a real buffer yet. Default 1, exposed under Depth so the comparison can
+        // be made.
         At<UINT>(r, rt::kDepthInverted) = g.settings.depthInverted.load() != 0 ? 1u : 0u;
         At<uint8_t>(r, rt::kFsrFlagsSeen) = 1;
         // All three come from one place now, and that place is per-pass. Local Tone is written on
@@ -3150,8 +2993,12 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         packet.exposureState = 4;
         packet.scaleX = 1.0f;
         packet.scaleY = 1.0f;
+        // v0.4.0 also records its inline wait on this list as draws (its ini SpinDraw, default 1),
+        // so after the call the list's graphics root signature, pipeline, viewport, scissor and
+        // render targets are the runtime's. Nothing here draws, and every dispatch below binds its
+        // own compute state again, so nothing depends on them.
         // Read before the call so the report below can say whether this pass moved anything.
-        // The marker at 97a60 cannot answer that on its own: pass 1 sets it to cmd, so on pass 2
+        // The list marker cannot answer that on its own: pass 1 sets it to cmd, so on pass 2
         // the equality test below is comparing cmd against cmd whatever the engine did, and a
         // silently refused pass 2 would be counted as accepted. The job id is the field that
         // changes per evaluation, so an id that does not move is a pass that did not run.
@@ -3252,7 +3099,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             Log("%s", table);
         }
     }
-    if (wanted > 1 && !g.loggedPassDetail)
+    if (wanted > 1 && !g.loggedPassDetail && !MzSelected())
     {
         g.loggedPassDetail = true;
         Log("multipass parameter handoff: %s", g.settings.serialPasses.load()
@@ -3574,7 +3421,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
 std::wstring ExportLogs()
 {
     const auto r = logexport::ToDesktop({ ExeDirectory() }, { L"amd-nr.log", L"dlssnr_on_amd.log",
-                                                              L"ReShade.log", L"amd-nr.ini" });
+                                                              L"mochizuki_nr.log", L"ReShade.log", L"amd-nr.ini" });
     if (r.copied != 0)
         Log("menu: exported %d file(s) to %ls", r.copied, r.folder.c_str());
     return r.folder.wstring();
@@ -3615,6 +3462,7 @@ PanelStatus ReadPanelStatus()
     st.hotkeyName = HotkeyName();
     RouteCaps(st);  // Feed.fx, Read from the game and depth, as far as this route reaches them
     st.feedStatus = g.feedStatus;
+    MzStatus(st);
     return st;
 }
 
@@ -3683,6 +3531,7 @@ void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)
 
 void HandlePanelActions(const PanelActions &actions, const PanelSettings &after)
 {
+    MzChoose(actions);
     if (actions.Has(PanelAction::FactoryDefaults))
     {
         ApplyPanelSettings(after, KeepPreferences(g_factory, after));

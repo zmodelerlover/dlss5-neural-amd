@@ -129,7 +129,7 @@ struct Transport final : FrameTransport {
             cmd_list->barrier(1, &backRes, &a, &b);
         }
         // Executed before the runtime is told, as on every other route: the runtime's own detour
-        // executes the list before notifying (tools/runtime-patches.json, 0x8873).
+        // executes the list before notifying (the second change in tools/runtime-patches.json).
         const UINT nw = g.netWidth, nh = g.netHeight;
         ID3D12CommandList* submitted[]{cmd};
         queue->flush_immediate_command_list();

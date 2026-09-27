@@ -452,6 +452,21 @@ void RouteCaps() {
     }
 }
 
+// The status column names the danielblnc release in use, with its network time once a job ended.
+void RuntimeLine() {
+    ui::PanelStatus st = Status64();
+    ui::PanelSettings s = Base();
+    st.danielblnc = "0.4.1";
+    CHECK(Draw(s, st, nullptr, true).count("t:danielblnc 0.4.1"),
+          "danielblnc release missing before a job ended");
+    st.danielblncMs = 10.84f;
+    CHECK(Draw(s, st, nullptr, true).count("t:danielblnc 0.4.1: network 10.8 ms"),
+          "danielblnc network time missing");
+    st.danielblnc = nullptr;
+    CHECK(!Draw(s, st, nullptr, true).count("t:danielblnc 0.4.1: network 10.8 ms"),
+          "danielblnc line without the runtime");
+}
+
 } // namespace
 
 int main() {
@@ -468,6 +483,7 @@ int main() {
     Factory();
     Route32();
     RouteCaps();
+    RuntimeLine();
     if (g_failures) {
         std::printf("panel_check: %d failure(s)\n", g_failures);
         return 1;

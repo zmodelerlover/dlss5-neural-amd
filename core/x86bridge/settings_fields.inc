@@ -59,7 +59,7 @@ X(uint32_t, depthNormalise, "DepthNormalise", 0, 0, 1)
 X(uint32_t, optional, "HiddenShown", 0, 0, 33554431)
 X(int32_t, style, "Style", 0, 0, 2)
 X(float, styleStrength, "StyleStrength", 1, 0, 1)
-// The temporal-stability controls (core/temporal/seed.inc, smooth.inc), on the wire since v4.
+// The temporal-stability controls (core/temporal/seed.inc, smooth.inc), on the wire since v5.
 X(int32_t, fixedSeed, "FixedSeed", 1, 0, 1)
 X(float, outputSmooth, "OutputSmooth", 0.8, 0, 1)
 X(float, outputSmoothLimit, "OutputSmoothLimit", 10, -1e9, 1e9)

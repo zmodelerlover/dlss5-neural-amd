@@ -1,7 +1,7 @@
 // The pre-block's noise seed, pinned. Part of the core's unity build, included by neural.cpp.
 //
 // The runtime hands its pre-block kernel the engine's evaluation count (rt::kFrameCounter, read at
-// launch in sub_18002D2D0 and bumped after every job), and the network's output moves with it: on a
+// launch in the launch function (sub_180034920 on v0.4.1) and bumped after every job), and the network's output moves with it: on a
 // still frame with nothing temporal on, consecutive outputs differ by 0.44/255 on average and up to
 // 15/255 (E5). NVIDIA cycles its seed 0..7 per frame; the reference pins it at 0
 // (native_game_oneshot.h:179). FixedSeed=1 does what the reference does. The worker's one-time

@@ -467,7 +467,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                             Log("WARNING: the network is returning its input unchanged (residual "
                                 "mean %.6f against an input mean of %.6f). The picture will not "
                                 "change with the effect on, whatever the log says about frames. "
-                                "Checks, in order: output scale 97b3c %.5f (the runtime's default "
+                                "Checks, in order: output Scale %.5f (the runtime's default "
                                 "is 0.03125); intensity %.2f; structure %.2f (0 removes the "
                                 "effect); the runtime log for GPU errors or 'output stores are "
                                 "being dropped'.",

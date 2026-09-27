@@ -15,7 +15,7 @@ int main(){
     for(auto status:{Result::Original,Result::Error,Result::Ready}){a.result=status;assert(!Confirmed(a,f,false));}
     a.result=Result::Neural;assert(Confirmed(a,f,false));a.frame--;assert(!Confirmed(a,f,false));a.frame=f.id;a.generation--;assert(!Confirmed(a,f,false));
     a.generation=f.generation;a.result=Result::Transport;assert(!Confirmed(a,f,false)&&Confirmed(a,f,true));
-    h=Header{};h.bytes=sizeof(Hello);h.version=1;assert(!ValidHeader(h));h.version=2;assert(!ValidHeader(h));h.version=3;assert(!ValidHeader(h));
+    h=Header{};h.bytes=sizeof(Hello);h.version=1;assert(!ValidHeader(h));h.version=2;assert(!ValidHeader(h));h.version=3;assert(!ValidHeader(h));h.version=4;assert(!ValidHeader(h));
     for(auto kind:{Kind::GetState,Kind::SetState,Kind::SaveSettings,Kind::ReloadSettings,Kind::Command,Kind::Status}){h=Header{};h.kind=kind;h.bytes=BodyBytes(kind);assert(ValidHeader(h));++h.bytes;assert(!ValidHeader(h));}
     WireSettings settings{};settings.settings_revision=0x123456789abcdef0ULL;
     settings.skin=-1;settings.structure=3;settings.language=1;settings.passOverride[2]=1;settings.passSkin[2]=2;
@@ -44,6 +44,7 @@ int main(){
     auto factory=FactorySettings(base,current);assert(factory.colourStrength==1&&factory.skin==-1);
     assert(factory.tone==1&&factory.scale==.5f&&factory.enabled==1&&factory.language==1&&factory.toggleKey==70&&factory.startOn==1&&factory.settings_revision==8);
     status.reason=static_cast<uint32_t>(StandDown::DeviceLost);std::memcpy(&statusCopy,&status,sizeof(status));assert(statusCopy.reason==2);
-    printf("PASS protocol v4 WireSettings=236 WireStatus=116 StateSnapshot=352 WireCommand=16; roundtrips, table ranges, NaN/Inf, old-version rejection, revisions, command dedup, stand-down code\n");
+    status.mochizuki=2;status.danielblnc=0;status.networkMs=6.8f;std::memcpy(&statusCopy,&status,sizeof(status));assert(statusCopy.reason==2&&statusCopy.mochizuki==2&&statusCopy.networkMs==6.8f);
+    printf("PASS protocol v5 WireSettings=236 WireStatus=128 StateSnapshot=364 WireCommand=16; roundtrips, table ranges, NaN/Inf, old-version rejection, revisions, command dedup, stand-down code, runtime line\n");
     printf("PASS fixed-width layouts Header=16 Hello=16 Texture=24 Build=104 Frame=32 Ack=48; malformed/version/old-frame/generation rejected; transport is explicit; pointer_bits=%zu\n",sizeof(void*)*8);
 }

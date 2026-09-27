@@ -18,10 +18,10 @@ checked separately.
 | | NVIDIA (DLL + RenoDX) | here | evidence |
 |---|---|---|---|
 | Weights | one set, `preset=1` | the same set, extracted | NGX log: `1 config(s) available` |
-| Network controls | LocalTone 1, LocalStructure 1, Skin 1, UseAutoMask 1 | identical defaults, same slots (`97b30/34/38/40`) | `ngx_params.log` P0; `runtime_offsets_check.py` |
+| Network controls | LocalTone 1, LocalStructure 1, Skin 1, UseAutoMask 1 | identical defaults, same slots (`97b30/34/38/40` on v0.3.0; `runtime_offsets.h` names them) | `ngx_params.log` P0; `runtime_offsets_check.py` |
 | Style clamp | unsigned, to `n-1 = 2` | `clamp(style, 0, 2)` | `Evaluate` at `0x21BB0`, `n=3` at runtime |
 | Skin / structure derivation with AutoMask off | both effective values `-1.0` | the AMD worker does the same: `0x180019070..0xE5`, constant `0x18006ABAC = 0xBF800000` | IDA, both DLLs |
-| What the forward receives | LocalTone, LocalStructure (raw), style/128, ControlMask device pointer (null under RenoDX), skinEff, structEff | **four** floats at `0x96F98..0x96FA4`: tone, structure (raw), skinEff, structEff; no style, no mask input. `0x96FA8` (`97b3c`, "Scale") is the post kernel's output scale, not a control | NVIDIA `0x225A7..0x225CB`; AMD worker `movq [0x96F98]`, `[0x96FA0]`, `[0x96FA4]`; evaluate `sub_18002D2D0` object+32/40 to the pre kernel, object+48 to the post kernel; log format `ctl (%.2f %.2f %.2f %.2f)` |
+| What the forward receives | LocalTone, LocalStructure (raw), style/128, ControlMask device pointer (null under RenoDX), skinEff, structEff | **four** floats at `0x96F98..0x96FA4`: tone, structure (raw), skinEff, structEff; no style, no mask input. `0x96FA8` (`97b3c`, "Scale") is the post kernel's output scale, not a control. v0.3.3 added a fifth lane ahead of tone, fed the runtime's own ini `Style`/128; this add-on pins it to 0 over whatever `dlssnr_on_amd.ini` says, which is v0.3.0's zero (read in the kernels; unpinned, `Style=2` moves framecheck's synthetic output by a mean 0.008, not measured in a game) | NVIDIA `0x225A7..0x225CB`; AMD worker `movq [0x96F98]`, `[0x96FA0]`, `[0x96FA4]`; evaluate `sub_18002D2D0` object+32/40 to the pre kernel, object+48 to the post kernel; log format `ctl (%.2f %.2f %.2f %.2f)` |
 | Grading operator | normalise, `exp2` exposure, smoothstep contrast, HSL saturation, in that order, each saturating | `NeuralStyle()` in `kComposeShader`, same order | operator's §5.7: sm_86 SASS read instruction by instruction; `style_check.py` |
 | Grade coefficients between frames | struct re-initialised to neutrals every evaluate, style 0 writes nothing | coefficients recomputed every frame from `g.style` | operator's §5.8, `0x19FBD..0x1A076` |
 | History reset | on Style, UseAutoMask (exact); Tone, Structure, Skin (`>1e-5`); not on Intensity | `ControlsChanged()`, same set, same tolerance | 27 `reset temporal history` lines in the trace |
@@ -49,8 +49,9 @@ hhkbble's cube scaling, which the fork ships on by default.
 ## What is not the same
 
 - **The Model does not reach the network.** On NVIDIA `style/128` is an input of the forward and
-  is what makes B and C differ in kind. This runtime's network has no such input; a Model here is
-  its grade only. For one day the add-on wrote `style/128` into `97b3c`, which is the post
+  is what makes B and C differ in kind. On v0.3.0 this runtime's network had no such input; since
+  v0.3.3 it has one, fed from its own ini key `Style`, which this add-on pins to 0 over whatever
+  the ini says. A Model here is its grade only. For one day the add-on wrote `style/128` into `97b3c`, which is the post
   kernel's output scale, and Model A returned the input unchanged (residual mean 0.00024 on an
   input of 0.45, ETS2). Reverted; the add-on refuses that field near zero and reports an inert
   network in the log and on the status line.

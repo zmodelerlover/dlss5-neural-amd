@@ -12,8 +12,8 @@ HMODULE RuntimeFor(UINT slot)
 
 // The jobs module m has taken and not finished, by its own count: kJobId moves on each record, and
 // the worker moves kJobCounter as it retires them, strictly in order. The record entry refuses a
-// job on the same subtraction, at four in flight (0x15383), and teardown zeroes both. Same frame
-// only: async never moves kJobCounter, which is why async is retired.
+// job on the same subtraction at four in flight (runtime_offsets.h, kJobId), and teardown zeroes
+// both. Same frame only: async never moves kJobCounter, which is why async is retired.
 int Outstanding(HMODULE m)
 {
     return static_cast<int>(static_cast<UINT>(At<volatile LONG>(m, rt::kJobId)) -
@@ -46,7 +46,7 @@ void NotifyRuntimes(ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *co
 // notified, on the queue it would have run on: the worker only takes a job it was told of, so an
 // untold one stays outstanding for ever and JobGate skips the network for good. Told, it waits for
 // a capture that never lands and retires on the runtime's own timeout. The notify compares the list
-// with its marker and never touches it (0x9460).
+// with its marker and never touches it (the notify entry, runtime_offsets.h kNotifyFn).
 void RetireUnsubmitted(ID3D12CommandQueue *queue, ID3D12CommandList *list)
 {
     NotifyRuntimes(queue, 1, &list);
@@ -161,6 +161,9 @@ bool WaitForWorkQueue(UINT64 value)
            WaitFence(g.fence.Get(), value, g.completionEvent, "the network to finish");
 }
 
+bool MzSelected();
+bool MzInit();
+
 // Same frame means the game waits for the network, and the runtime only makes the GPU queue wait.
 // A route that does not hold the CPU once a frame (D3D12, and OpenGL once its fences are proven)
 // holds here instead, at the start of the next present, so the game's CPU work has already
@@ -172,7 +175,8 @@ bool WaitForWorkQueue(UINT64 value)
 // not a counter a fraction of a millisecond behind its fence.
 void WaitForPreviousJob()
 {
-    if (g.runtime == nullptr || At<uint8_t>(g.runtime, rt::kInlineActive) != 1)
+    // mochizuki queues its network on g.queue ahead of g.completion, so the same hold paces it.
+    if (!MzSelected() && (g.runtime == nullptr || At<uint8_t>(g.runtime, rt::kInlineActive) != 1))
         return;
     // Not g.completionEvent: a timed-out SetEventOnCompletion signals late and would end a later
     // WaitFence early. A stale signal here only costs one more trip round the loop.
@@ -385,6 +389,8 @@ UINT WantedPasses()
 // pass on the legacy batch path, which runs them all through pass 1's. 0 until the engine is up.
 UINT PassesAvailable()
 {
+    if (MzSelected())
+        return State::kMaxPasses;  // mochizuki runs every pass inside its one runtime
     UINT n = g.runtime == nullptr ? 0 : g.settings.serialPasses.load() ? 1 : State::kMaxPasses;
     while (n != 0 && n < State::kMaxPasses && g.runtimes[n] != nullptr)
         ++n;
@@ -417,6 +423,19 @@ bool LoadExtraRuntime(UINT slot);
 // and every later change waits for a restart too. A drain that succeeds starts the count over.
 bool BringUpEngines(UINT &wanted)
 {
+    // mochizuki runs every pass inside its own runtime, with its own history per pass, so none of
+    // the module copies, drains and latches below apply to it. A new count still starts history
+    // again, as it does here.
+    if (MzSelected())
+    {
+        static UINT mzLive = 0;
+        if (!InitPipeline() || !MzInit())
+            return false;
+        if (mzLive != 0 && wanted != mzLive)
+            ResetTemporal("Passes changed");
+        mzLive = wanted;
+        return true;
+    }
     if (!InitPipeline() || !InitEngine())
         return false;
     // The request last seen (0: none yet), the count running, and drains in a row that ran out.

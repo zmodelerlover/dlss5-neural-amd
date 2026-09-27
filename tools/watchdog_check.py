@@ -37,7 +37,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-neural = (ROOT / "core/addon/neural.cpp").read_text(encoding="utf-8")
+neural = "\n".join((ROOT / f).read_text(encoding="utf-8")
+                   for f in ("core/addon/neural.cpp", "core/addon/runtime_files.inc"))
 runtimes = (ROOT / "core/addon/runtimes.inc").read_text(encoding="utf-8")
 
 

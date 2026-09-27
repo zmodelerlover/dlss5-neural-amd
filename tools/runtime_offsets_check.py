@@ -26,6 +26,10 @@ What it proves, in the order of how much each would have caught:
   * Every data offset lands in `.data` and every entry point in `.text`. `.rdata` is where a stale
     data offset goes to fault, so this is not a formality.
   * The file is the build `kRuntimeSha256` names, and it has been through `patch_runtime.py`.
+  * The runtime names d3d12.dll in a table the add-on rewrites. The private-D3D12 copy renames it
+    in the import and delay-import tables; v0.4.0 moved it from the first to the second while the
+    add-on read only the first, and a runtime it cannot rename loads the system d3d12.dll -- the
+    resize crash that copy exists to prevent, back with nothing failing on the way.
 
 No binaries ship with this project: the DLL is yours.
 """
@@ -56,6 +60,33 @@ def sections(data):
         name = data[off:off + 8].rstrip(b"\0").decode("latin1")
         vsize, va, _, raw = struct.unpack_from("<IIII", data, off + 8)
         out.append((name, va, vsize, raw))
+    return out
+
+
+def import_names(data):
+    """(table, dll) per descriptor of the import table (directory 1) and the delay-import table
+    (directory 13, RVA form only) -- the two RuntimeCopyUsingPrivateD3D12 rewrites."""
+    e = struct.unpack_from("<I", data, 0x3C)[0]
+    opt = e + 24
+    dirs = opt + (112 if struct.unpack_from("<H", data, opt)[0] == 0x20B else 96)
+    count = struct.unpack_from("<I", data, dirs - 4)[0]
+    secs = sections(data)
+
+    def at(rva):
+        for _, va, vsize, raw in secs:
+            if va <= rva < va + vsize:
+                return raw + rva - va
+        return None
+
+    out = []
+    for table, index, size, field in (("import", 1, 20, 12), ("delay-import", 13, 32, 4)):
+        desc = at(struct.unpack_from("<I", data, dirs + index * 8)[0]) if index < count else None
+        while desc is not None and struct.unpack_from("<I", data, desc + field)[0] != 0:
+            if table == "import" or struct.unpack_from("<I", data, desc)[0] & 1:
+                name = at(struct.unpack_from("<I", data, desc + field)[0])
+                if name is not None:
+                    out.append((table, data[name:data.index(b"\0", name)].decode("latin1")))
+            desc += size
     return out
 
 
@@ -192,6 +223,34 @@ def main(argv):
             check(data_off.get(want) == rva, f"in-flight test reads {rva:#x}, which the header calls "
                                              f"{want} ({data_off.get(want, 0):#x})")
 
+    # -- The engine's latched mode, and the seed the pre-block is handed ---------------------------
+    # The record entry starts its watchdog only when the latched byte reads 1 (`cmp byte [rip+..],
+    # 1`, 0x1783d on v0.4.1), the byte after kInlineMode; and zeroes the frame counter right after
+    # the warm-up job (`mov dword [rip+..], 0`, 0x172c6), just ahead of `mov byte [kHistoryOn], 0`.
+    rec = raw[record - delta:record - delta + 0x4000]
+    gates = {rip_target(raw, delta, record + m.start(), 7)
+             for m in re.finditer(rb"\x80\x3d.{4}\x01", rec, re.S)}
+    check(data_off.get("kInlineActive") in gates and
+          data_off.get("kInlineActive") == data_off.get("kInlineMode", -2) + 1,
+          f"record entry tests {data_off.get('kInlineActive', 0):#x} for 1 before its watchdog, the "
+          f"byte after kInlineMode, which the header calls kInlineActive")
+    seeds = [rip_target(raw, delta, record + m.start(), 10, 4)
+             for m in re.finditer(rb"\xc7\x05.{4}\x00\x00\x00\x00", rec, re.S)
+             for c in [rec.find(b"\xc6\x05", m.start() + 10, m.start() + 0x20)]
+             if c >= 0 and rec[c + 6] == 0
+             and rip_target(raw, delta, record + c, 7) == data_off.get("kHistoryOn")]
+    check(seeds == [data_off.get("kFrameCounter")],
+          f"record entry zeroes {', '.join(f'{v:#x}' for v in seeds) or 'nothing found'} after the "
+          f"warm-up, which the header calls kFrameCounter ({data_off.get('kFrameCounter', 0):#x})")
+    # The worker compares the two engine fields: `mov eax, [rsi+counter]` / `cmp eax, [rsi+check]`.
+    counter = data_off.get("kFrameCounter", 0) - data_off.get("kEngineObject", 0)
+    selfcheck = data_off.get("kSelfCheckFrame", 0) - data_off.get("kEngineObject", 0)
+    pattern = (b"\x8b\x46" + bytes([counter]) + b"\x3b\x86" + struct.pack("<I", selfcheck)
+               if 0 <= counter < 0x80 and selfcheck > 0 else b"")
+    check(bool(pattern) and pattern in raw[text_raw:text_raw + text_vsize],
+          f"the worker compares engine+{counter:#x} with engine+{selfcheck:#x}, which the header "
+          f"calls kFrameCounter and kSelfCheckFrame")
+
     # -- The watchdog's count, and the budget it counts against ----------------------------------
     # Its release stores the job id to kWatchdogJobA (`mov [rip+..], r13d`, 0x1b281) and bumps the
     # counter a few instructions on (`inc dword [rip+..]`, 0x1b297). A wrong kWatchdogFires would
@@ -226,6 +285,11 @@ def main(argv):
     for change in json.loads(spec.read_text())["changes"]:
         off, after = int(change["offset"], 16), bytes.fromhex(change["after"])
         check(raw[off:off + len(after)] == after, f"patch at {change['offset']} applied")
+
+    # -- And d3d12.dll is named where the add-on can rename it -----------------------------------
+    tables = sorted({t for t, name in import_names(raw) if name.lower() == "d3d12.dll"})
+    check(bool(tables), "d3d12.dll is named where the private copy renames it ("
+                        + (", ".join(tables) or "in neither table") + ")")
 
     print("\n" + ("PASS" if not bad else f"FAIL: {len(bad)} check(s)"))
     return 0 if not bad else 1

@@ -145,6 +145,18 @@ struct PanelStatus
     // Lines the route adds under Debug, already worded: the bridge has two processes, two logs and
     // a guide detector whose pick is worth seeing, and none of that is the panel's to interpret.
     std::vector<std::string> routeDiagnostics;
+    // The mochizuki runtime, when amd-nr.ini picks it: 0 not in use, 1 starting or building the
+    // network, 2 running, 3 failed. mochizukiMs is the network's median GPU time.
+    int mochizuki = 0;
+    float mochizukiMs = 0.0f;
+    // The danielblnc runtime once it is loaded: its release, and the network's GPU time for the
+    // last frame with every pass added up (0 until a job has finished).
+    const char *danielblnc = nullptr;
+    float danielblncMs = 0.0f;
+    // The NR runtime (runtime_choice.h): what amd-nr.ini asks for, what this run took when the
+    // network started (-1 before), and which of the two are in the game's folder.
+    int runtimeChosen = 0, runtimeActive = -1;
+    bool runtimeInstalled[2] {};
 };
 
 // What the panel asks for and cannot do itself: the owner of each is on the adapter's side --
@@ -165,6 +177,8 @@ enum class PanelAction : uint32_t
 struct PanelActions
 {
     uint32_t bits = 0;
+    // A new NR runtime for amd-nr.ini, or -1. The adapter writes it; it applies on the next launch.
+    int runtime = -1;
     void Add(PanelAction a) { bits |= static_cast<uint32_t>(a); }
     bool Has(PanelAction a) const { return (bits & static_cast<uint32_t>(a)) != 0; }
 };

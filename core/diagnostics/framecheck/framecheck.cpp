@@ -3,6 +3,8 @@
 // Run in a private directory containing the runtime, weights and amd-nr.ini:
 //   amd-nr-framecheck.exe input.ppm [frames=20]
 //   amd-nr-framecheck.exe --seq <dir> [frames=N] [skip=K] [mv=truth|off] [dump=runtime,composed,...]
+// With NrBackend=mochizuki in amd-nr.ini the directory holds MochizukiNrRuntime.dll and
+// dlssnr-amd\ instead of the danielblnc runtime and its weights.
 // PPM must be binary P6, RGB8, with no comments. Outputs are tightly packed raw
 // textures plus capture.csv (formats/dimensions) and timings.csv (GPU and wall ms).
 //
@@ -222,7 +224,7 @@ void Bring(UINT w, UINT h, bool temporal)
         g.device.As(&g_debugMessages);
     Hr(g.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g.fence)), "pass fence");
     Check(InitPipeline() && EnsureResources(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, g.settings.scale), "pipeline/resources");
-    Check(InitEngine(), "engine initialization");
+    Check(MzSelected() ? MzInit() : InitEngine(), "engine initialization");
 }
 struct Clock
 {
@@ -246,7 +248,7 @@ struct Clock
             WantedPasses(), [&]() { return SubmitPrivatePass(cmd, g.alloc[0].Get()); }), "record network");
         cmd->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
         cmd->ResolveQueryData(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, times.Get(), 0);
-        waited = Submit(runNetwork && g.activePasses != 0);
+        waited = Submit(runNetwork && g.activePasses != 0 && g.runtime != nullptr);
         UINT64 *ticks = nullptr; D3D12_RANGE range {0, 16}, none {0, 0};
         Hr(times->Map(0, &range, reinterpret_cast<void **>(&ticks)), "timestamp map");
         const double gpu = (ticks[1] - ticks[0]) * 1000.0 / frequency;
@@ -256,8 +258,25 @@ struct Clock
 };
 UINT WatchdogJob()
 {
+    if (g.runtime == nullptr)
+        return 0;  // mochizuki: no danielblnc watchdog
     return static_cast<UINT>(InterlockedCompareExchange(
         reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kWatchdogJobB)), 0, 0));
+}
+// The mochizuki runtime builds its network on a thread of its own and lets frames through without
+// it until then; both runners wait for it before they measure anything.
+void AwaitMochizuki(ID3D12Resource *source)
+{
+    for (const auto until = GetTickCount64() + 120000; MzSelected() && g.activePasses == 0;)
+    {
+        Check(GetTickCount64() < until, "the mochizuki network was not built in two minutes");
+        auto *cmd = Begin();
+        Check(RecordNetwork(cmd, source, DXGI_FORMAT_R8G8B8A8_UNORM, nullptr, true,
+            WantedPasses(), [&]() { return SubmitPrivatePass(cmd, g.alloc[0].Get()); }), "record network");
+        Submit();
+        ++g.status.frame;
+        Sleep(100);
+    }
 }
 void Run(const std::filesystem::path &input, int frames)
 {
@@ -272,6 +291,7 @@ void Run(const std::filesystem::path &input, int frames)
     std::ofstream manifest(ExeDirectory() / "capture.csv");
     timing << "frame,gpu_ms,wall_ms,job,accepted,watchdog_job\n";
     manifest << "file,width,height,dxgi_format\n";
+    AwaitMochizuki(source.Get());
     for (int f = 1; f <= frames; ++f)
     {
         const auto start = std::chrono::steady_clock::now();
@@ -350,6 +370,7 @@ void RunSequence(const std::filesystem::path &dir, const std::map<std::string, s
     Bring(w, h, true);
     ComPtr<ID3D12Resource> source, velocity;
     Check(CreateTexture(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, source, "fixture"), "source");
+    AwaitMochizuki(source.Get());
     if (truth)
     {
         Check(std::filesystem::exists(Numbered(dir, "mv", 0, ".f32")), "mv=truth without mv0000.f32");

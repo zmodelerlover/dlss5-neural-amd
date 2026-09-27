@@ -1,4 +1,4 @@
-# x86bridge overlay, protocol v4
+# x86bridge overlay, protocol v5
 
 Generic native D3D9/D3D11 x86 frontend to the original x64 neural engine, with an experimental D3D8 route through the official d3d8to9 translator. This source update adds the ReShade panel **AMD Neural Rendering** while keeping the 32-bit transport isolated from the existing x64 rendering routes.
 
@@ -52,7 +52,7 @@ Timing is a live control and selects the presentation mode: Same frame, or pipel
 
 Incoming finite values clamp to the ranges of the settings table, `settings_fields.inc`; non-finite values reject the whole update. The table is the one list of settings for both routes: each row is a field of `WireSettings`, its ini key, its default and its range. The 64-bit route clamps its ini (LoadSettings) and its panel to the same ranges, which are the widest it ever took from an ini, so the wire never clips a value the other route keeps: Edge Fade goes to 0.49, a per-pass Skin keeps its -1 automatic, and Intensity, Structure, Tone, Skin, Motion Scale and the other keys the 64-bit route never bounded have no bound here either (the table writes 1e9). Inline clamps to 1. The defaults are what the helper is constructed with, so a fresh `amd-nr.ini` and Factory Defaults are the 64-bit ones. Settings/revision and command checks live in `control_state.h`. Initial host snapshot does not normalize or write the existing INI merely because the UI opened.
 
-## Protocol v4
+## Protocol v5
 
 Packed fixed-width little-endian Windows wire data; uint32_t booleans. No COM pointers, HANDLE, size_t or native bool fields. Every struct has size/offset and standard-layout/trivially-copyable assertions.
 
@@ -66,12 +66,12 @@ Packed fixed-width little-endian Windows wire data; uint32_t booleans. No COM po
 | Ack | 48 | generation=24, luidHigh=44 |
 | WireSettings | 236 | passOverride=188 |
 | WireCommand | 16 | code=8 |
-| WireStatus | 116 | depthMin=72, reason=112 |
-| StateSnapshot | 352 | status=236 |
+| WireStatus | 128 | depthMin=72, reason=112, mochizuki=116, danielblnc=120, networkMs=124 |
+| StateSnapshot | 364 | status=236 |
 
-Existing kinds 1..5 remain HELLO/BUILD/FRAME/DROP/QUIT. New kinds 6..11: GET_STATE, SET_STATE, SAVE_SETTINGS, RELOAD_SETTINGS, COMMAND, STATUS. SET_STATE body=236; COMMAND body=16; other controls have no request body. Every control response is the existing 48-byte Ack followed by a fixed 352-byte StateSnapshot, including rejected controls; FRAME replies remain exactly the original Ack. Status uses enum/flags/numbers, not strings. Protocols 1 to 3 reject explicitly through header validation; no accidental compatibility.
+Existing kinds 1..5 remain HELLO/BUILD/FRAME/DROP/QUIT. New kinds 6..11: GET_STATE, SET_STATE, SAVE_SETTINGS, RELOAD_SETTINGS, COMMAND, STATUS. SET_STATE body=236; COMMAND body=16; other controls have no request body. Every control response is the existing 48-byte Ack followed by a fixed 364-byte StateSnapshot, including rejected controls; FRAME replies remain exactly the original Ack. Status uses enum/flags/numbers, not strings. Protocols 1 to 4 reject explicitly through header validation; no accidental compatibility.
 
-Version 4 generates WireSettings from the whole settings table, so FixedSeed, OutputSmooth and OutputSmoothLimit cross the wire (appended after StyleStrength): the 32-bit panel shows Fixed seed and Output smoothing, and Factory Defaults resets them, as on the 64-bit route. WireStatus gains `reason`, why the helper stood down while `unavailable` is set: 0 none, 1 a reason with no code of its own, 2 the D3D12 device was removed, 3 the engine could not be brought up, 4 the working textures could not be created (`StandDown` in `bridge_ipc.h`). The panel words it; `amd-nr-x86-host.log` has the full line either way.
+Version 5 generates WireSettings from the whole settings table, so FixedSeed, OutputSmooth and OutputSmoothLimit cross the wire (appended after StyleStrength): the 32-bit panel shows Fixed seed and Output smoothing, and Factory Defaults resets them, as on the 64-bit route. WireStatus gains `reason`, why the helper stood down while `unavailable` is set: 0 none, 1 a reason with no code of its own, 2 the D3D12 device was removed, 3 the engine could not be brought up, 4 the working textures could not be created (`StandDown` in `bridge_ipc.h`). The panel words it; `amd-nr-x86-host.log` has the full line either way. After it come the three fields version 4 (v0.6.9) added for the status column's runtime line: `mochizuki` (0 when danielblnc runs), `danielblnc` (loaded or not) and `networkMs`, the network's GPU time of whichever runs.
 
 FRAME's last word, reserved and zero until then, is `guideTaken`: bit 0 when the frontend's guide selection took another depth buffer since the last FRAME, or switched between copying it at present and before the game's clears (below), bit 1 another motion buffer, and bit 2 when such a take put one buffer in the place of another that was in use (the slot held one and its Depth or Motion switch is on). The helper then probes the guides again 120 frames later, as the 64-bit route does after its own take, and a motion buffer taken anew is read even when the one before it was given up on as not velocity; with bit 2 it also drops the temporal history, as the 64-bit route does. A value above 7 is refused like any other malformed FRAME. The word came without a version bump, so the header does not catch a mismatch: a helper from before bit 2 refuses 5 to 7 the same way, on the first replaced guide, and the bridge faults. The frontend and the helper ship together.
 
@@ -85,7 +85,7 @@ The D3D11 frame order remains capture -> D3D11 FlushAndWait -> FRAME -> original
 
 ## Local regression test
 
-1. Compile both new binaries and install the pair. Open ReShade panel; confirm Protocol v4, LUID MATCH in log and `result=1 same_frame=1` when NR completes.
+1. Compile both new binaries and install the pair. Open ReShade panel; confirm Protocol v5, LUID MATCH in log and `result=1 same_frame=1` when NR completes.
 2. Change intensity/structure/scale and History individually. Verify visible changes without host restart. Rebind hotkey, test enable/off and alt-tab.
 3. Change Language/StartOn/hotkey, Save; inspect existing INI. Change a value, Reload; confirm all displayed and operational values return to file values.
 4. Test transport-only with existing `AMDNR_X86BRIDGE_TRANSPORT_ONLY=1`; panel must show transport mode and engine controls disabled, result=4. Test resize and helper termination as before.

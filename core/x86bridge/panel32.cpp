@@ -7,6 +7,8 @@
 #include "panel_wire.h"
 #include "../ui/i18n.h"
 #include "../ui/panel.h"
+#include "../shared/runtime_choice.h"
+#include "../addon/runtime_offsets.h"
 
 #include <cstdio>
 #include <cstring>
@@ -14,6 +16,23 @@
 namespace frontend32 {
 
 namespace {
+
+// The helper runs the network and reads NrBackend from the ini beside this add-on when it starts,
+// which is before this panel can first be drawn; so what is read here first is what it took.
+struct Runtime{int active=-1,chosen=0;bool installed[runtime_choice::kCount]{};} runtime;
+std::filesystem::path Here(){
+    HMODULE m{};GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(&Here),&m);
+    wchar_t b[32768]{};GetModuleFileNameW(m,b,32768);return std::filesystem::path(b).parent_path();
+}
+void ReadRuntime(ui::PanelStatus& s){
+    if(runtime.active<0){
+        runtime.active=runtime.chosen=runtime_choice::Read(Here());
+        for(int r=0;r<runtime_choice::kCount;++r)runtime.installed[r]=runtime_choice::Installed(Here(),r);
+    }
+    s.runtimeActive=runtime.active;s.runtimeChosen=runtime.chosen;
+    for(int r=0;r<runtime_choice::kCount;++r)s.runtimeInstalled[r]=runtime.installed[r];
+}
 
 ui::PanelStatus BridgeStatus(){
     const auto& w=controls.status;
@@ -56,6 +75,10 @@ ui::PanelStatus BridgeStatus(){
     if(NativeD3D9())s.routeDiagnostics.push_back("D3D9 route: colour only; no depth path on this API; motion estimated: no game MV path on this API");
     else for(std::string& candidate:GuideCandidates())s.routeDiagnostics.push_back(std::move(candidate));
     s.routeDiagnostics.push_back("Logs: amd-nr-x86.log / amd-nr-x86-host.log");
+    ReadRuntime(s);
+    s.mochizuki=w.mochizuki;
+    if(w.mochizuki!=0)s.mochizukiMs=w.networkMs;
+    if(w.danielblnc!=0){s.danielblnc=rt::kVersion;s.danielblncMs=w.networkMs;}
     return s;
 }
 
@@ -72,6 +95,10 @@ void PostRequests(const ui::PanelActions& actions){
     // The scan itself runs on the present path: this callback is not called every frame, and a scan
     // that only advanced inside it never outlived the cancel timer. The button only arms it.
     if(actions.Has(ui::PanelAction::ToggleHotkeyCapture))controls.capture.Toggle();
+    // Not a helper setting: it only matters when the helper next starts, and it reads the file then.
+    if(actions.runtime>=0&&actions.runtime<runtime_choice::kCount){
+        runtime.chosen=actions.runtime;runtime_choice::Write(Here(),runtime.chosen);
+    }
 }
 
 } // namespace

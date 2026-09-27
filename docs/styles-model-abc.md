@@ -14,7 +14,7 @@ Everything below about the grading vector stands, byte for byte. What was wrong 
   derived skin/structure pair. Measured at runtime on NVIDIA: `n = 3`, so the network takes
   0, 1 and 2 -- exactly Model A, B, C -- as controls 0, 0.0078125 and 0.015625. Anything else,
   negative included, silently becomes 2.
-- **The AMD runtime does not have that slot -- corrected 22/09.** For one day (builds 21/09
+- **The AMD runtime did not have that slot on v0.3.0 -- corrected 22/09.** For one day (builds 21/09
   22:24 to 22/09 00:04) this document and the add-on said it did: the worker (`sub_180018670`,
   `0x180019070..0x1800190E5`) builds four control floats at `0x96F98..0x96FA4` (tone, structure
   raw, skinEff, structEff) and copies `97b3c` -- the ini key `Scale`, default `0.03125` -- into
@@ -27,8 +27,17 @@ Everything below about the grading vector stands, byte for byte. What was wrong 
   every frame reported processed -- and cut Models B and C to a quarter and a half. The add-on
   writes the runtime's default `1/32` again, refuses values near zero, and measures the residual
   every 1800 frames so this class of failure is reported instead of found by eye.
-  **On AMD a Model is its grade and nothing else.** The network half has no input to reach: the
-  original conclusion of this document stands for this runtime.
+  **On AMD a Model is its grade and nothing else.** On v0.3.0 the network half has no input to
+  reach, and the original conclusion of this document stands for that runtime. From v0.3.3 the
+  runtime has a fifth lane ahead of tone and feeds it `Style`/128 from its own ini key `Style`
+  (worker `0x1bb6f` on v0.3.3, `0x1be8f` on v0.4.0). It reaches the output: framecheck on its
+  synthetic frame, v0.4.0 with the pin below taken out, moves by a mean 0.008 at `Style=2`
+  (residual mean 0.0303 to 0.0321); how that looks in a game is not measured. The runtime reads
+  that key from `dlssnr_on_amd.ini` in DllMain, and the standalone runtime's own overlay writes it
+  back there, so a game folder that once had the standalone can carry `Style=1` or `2`. This
+  add-on pins the field to 0 after loading the runtime (`ArmRuntime`, `rt::kStyle`), which is
+  v0.3.0's zero, so a Model here is still its grade whatever that ini says; with the pin, that
+  run gives the same bytes as `Style=0`.
 - Measured on NVIDIA hardware (ETS2, D3D11 via RenoDX's D3D12 proxy, RTX 3050, driver 610.62;
   `docs/handoffs/RESULTADO-nvidia-preset-style-ets2-20260921.md`): switching Model writes **only**
   `DLSSNR.Style` plus a one-frame `DLSSNR.Reset` pulse. Tone, Structure, Skin, Intensity, AutoMask
@@ -374,8 +383,10 @@ For one day (21/09 22:24 to 22/09 00:04) this section was marked superseded, on 
 `97b3c` was the network's style control. It is the post kernel's output scale; see the correction
 at the top. The runtime cannot carry the **grading vector** (its kernels are precompiled GCN code
 objects whose appearance-path parameter structs are 32 bytes total against 56 bytes of style
-vector, with no source), and its network takes four controls with no style among them. The grade
-sits after the network, on our side, and that is all a Model is here.
+vector, with no source). On v0.3.0 its network takes four controls with no style among them;
+from v0.3.3 a fifth lane carries the runtime's own ini `Style`/128, which this add-on pins to 0
+over whatever the ini says. The grade sits after the network, on our side, and that is all a Model
+is here.
 
 The original text follows. The operations above sit after
 the network, on our side of it.

@@ -3,7 +3,7 @@
 Este é o mapa, não o manual. Ele **aponta onde pesquisar**; o detalhe está no código e nos handoffs
 de sessão. Mande este quando o assunto for "vou mexer no projeto" sem saber ainda em quê.
 
-Última revisão: 22/09/2026.
+Última revisão: 26/09/2026 (runtime v0.4.1, publicado no v0.6.9).
 
 ---
 
@@ -12,7 +12,7 @@ de sessão. Mande este quando o assunto for "vou mexer no projeto" sem saber ain
 Add-on do ReShade que roda **DLSS-5 Neural Rendering em GPU AMD**.
 
 O add-on captura o quadro apresentado, entrega a um runtime de terceiro
-(`dlssnr_amd_pass1.dll`, projeto "DLSS-NR-on-AMD" v0.3.0, que roda a rede em kernels HIP
+(`dlssnr_amd_pass1.dll`, projeto "DLSS-NR-on-AMD" v0.4.1, que roda a rede em kernels HIP
 pré-compilados), e compõe a resposta de volta na tela. Um efeito ReShade companheiro
 (`DLSS5_Neural_Feed.fx`) fornece movimento e profundidade.
 
@@ -94,6 +94,7 @@ não sobrevive ao fechar.
 | kernels HIP, pesos, engenharia reversa | `dossie.../LEIA-PRIMEIRO.md` | `tools/carve_amd_kernels.py`, `read_amd_weights.py` |
 | o que já foi tentado e fechado | `handoffs/README.md` (explica a cadeia) | — |
 | instalar / empacotar | `docs/install.md` | `tools/package-release.ps1` |
+| runtime mochizuki (Vulkan) | README, seção "The mochizuki runtime"; no opti, `handoff/mochizuki-backend.md` | `core/addon/mochizuki.inc` |
 
 ---
 
@@ -134,6 +135,15 @@ Reinstalar exige o jogo fechado — a DLL está carregada.
 
 - **NR Preset** — a DLL tem um conjunto de pesos só; o combo não faz nada nem na NVIDIA.
 - **Model A/B/C entrar na rede pela rota atual** — o vetor de condicionamento vive só em LDS.
+  *Reaberto em parte pelo v0.4.0:* o próprio runtime lê a chave `Style` do ini dele e manda
+  `Style/128` para a lane 10 (lido nos kernels). Chega na saída: no framecheck (quadro
+  sintético), sem o pino, `Style=2` move a saída em 0,008 de média; no jogo não foi medido. O
+  overlay do runtime standalone grava `Style` de volta nesse ini, então a pasta de um jogo pode
+  trazer 1 ou 2. O `ArmRuntime` fixa o campo em 0 (`rt::kStyle`) por cima do ini, que é o zero
+  do v0.3.0; `ToneCurve` e `ToneLift` ficam fixos nos padrões pelo mesmo motivo. Com os pinos,
+  um ini com tudo isso dá a mesma saída byte a byte
+  (`daniel-runtime/analysis-reshade/fix2/lt/`). Qualquer outro valor, ou mostrar na UI, exige
+  medição no jogo antes (regra 4).
 - **Kernel custom com ROCm pra levar controle à rede** — mesma razão, por construção.
 - **Embarcar hiprtc** — 111,8 MiB pra economizar 60 ms.
 - **Textura D3D12 compartilhada pro kernel** — zera em silêncio devolvendo `hipSuccess`.
@@ -143,12 +153,41 @@ Reinstalar exige o jogo fechado — a DLL está carregada.
 
 ## 8. O que está aberto, em ordem de valor
 
-1. Mapear `VarParams` no `k_swin_var<32,true>`, o kernel que realmente embarca.
-2. Descobrir o que é a lane 10 — o quinto input de condicionamento que o port prega em zero.
-   Style ou `UICorrection`? Decidir antes de mexer.
-3. Comparação A/B com a máquina NVIDIA na mesma cena.
-4. RDR1 em D3D12 — a rota nunca foi exercitada.
-5. `DepthInverted` num jogo com depth real.
+1. **A saída da rede no v0.4.0 não é a do v0.3.0, e a causa não foi achada.** No framecheck
+   (quadro sintético 960x540, mesmas configurações, RX 9070 XT) o |resíduo| médio do v0.4.0 é
+   1,18x o do v0.3.0 no 1º quadro, 1,15x no 12º e 1,24x no 20º, com a mesma estrutura (correlação
+   0,985 a 0,989). Já aparece no 1º quadro, que não tem histórico. Não são os kernels novos de
+   gfx12 (`DLSSNR_NO_REG=1` dá saída idêntica bit a bit) nem `UseGameExposure`/`Residual`. Não
+   bloqueia mais: o A/B no jogo contra o v0.3.0 (GTA IV, ponte 32-bit) foi aprovado em 26/09, e o
+   v0.6.7 saiu no mesmo dia, junto com o AMD-NR-ReShade-Installer v0.6.1, que trocou o runtime, o
+   add-on e a ponte no payload. Scripts e medições em
+   `daniel-runtime/analysis-reshade/loadtest/`. Próximo passo: bisectar com v0.3.1/v0.3.3; os
+   endereços deles foram lidos na mesma análise (`map-options-code/map_all.json`,
+   `map-data-state/datamap_*.pkl`, `map-patches/patch_sites.json`), mas não foram conferidos.
+2. Mapear `VarParams` no `k_swin_var<32,true>`, o kernel que realmente embarca. No v0.4.0 a
+   lane 10 é `VarParams+0x5c`; em gfx12 o caminho padrão virou `k_reg_swin32<20>`.
+3. Lane 10 — o quinto input de condicionamento. Lido no v0.4.0: é o `Style/128` do ini do runtime
+   (no v0.3.0 era zero fixo). No framecheck, sem o pino, muda a saída; o add-on fixa em 0. Falta
+   medir o efeito na imagem de um jogo antes de qualquer controle.
+4. Comparação A/B com a máquina NVIDIA na mesma cena.
+5. RDR1 em D3D12 — a rota nunca foi exercitada.
+6. `DepthInverted` num jogo com depth real.
+7. **Runtime mochizuki pelo ReShade.** Lançado no v0.6.8 (26/09) com o instalador v0.6.2, que o
+   instala quando a caixa mochizuki da ficha está marcada. Escolha no combo "NR runtime" do painel,
+   que grava `NrBackend` no `amd-nr.ini` e vale no próximo início (`core/shared/runtime_choice.h`; na
+   ponte 32-bit o frontend grava e o helper lê). No framecheck: passes 1 a 3 custam 6,8/11,7/17,3 ms
+   em 960x540, resíduo médio 0,029 contra 0,030 do danielblnc, com estrutura diferente (correlação
+   0,22) e um tom de cor próprio que Colour Strength 0 tira. Em jogo: aprovado depois de um teste no
+   ETS2 (D3D11). Falta medir: o caminho temporal com vetores do jogo, a rota D3D12 (o `submitPass`
+   dela espera a fila do jogo na CPU a cada quadro) e a ponte 32-bit (GTA IV instalado, sem retorno).
+   O instalador v0.6.2 nunca mostrou a caixa na rota ReShade (ela estava dentro do painel do
+   OptiScaler, e a versão escolhida do GitHub perdia os releases do OptiScaler); o v0.6.3 corrige.
+8. **Runtime danielblnc v0.4.1** no v0.6.9 (26/09). Mapeado a partir do v0.4.0 em
+   `daniel-runtime/analysis-opti` (`map_layout_040_041.txt`, `datamap_040_041.txt`). A coluna de
+   status mostra "danielblnc 0.4.1: rede X ms" (`rt::kVersion`, `rt::kNetworkMs` = 0xaa2b0, o
+   "ms network on the GPU" do log do runtime; o float ao lado, 0xaa2ac, é a espera pela captura).
+   A ponte 32-bit passou ao protocolo v4 (`WireStatus` com a linha do runtime), então a linha do
+   mochizuki também aparece no painel 32-bit.
 
 ---
 

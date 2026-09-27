@@ -47,7 +47,7 @@ struct Host {
     WireStatus ExportStatus(){
         WireStatus s;s.connected=1;s.transportOnly=transport;
         s.processed=g.status.frame;s.skipped=g.status.skipped;  // JobGate's count, as the 64-bit panel reads it
-        s.engineReady=!transport&&g.runtime!=nullptr&&!g.status.unavailable&&!g.status.failed;
+        s.engineReady=!transport&&(g.runtime!=nullptr||mz.session!=nullptr)&&!g.status.unavailable&&!g.status.failed;
         s.unavailable=g.status.unavailable;s.failed=g.status.failed;
         s.outWidth=spec.colour.width;s.outHeight=spec.colour.height;s.netWidth=g.netWidth;s.netHeight=g.netHeight;
         s.loadedPasses=PassesAvailable();s.activePasses=g.activePasses;
@@ -56,7 +56,10 @@ struct Host {
         s.depthMin=g.probeDepthMin.load();s.depthMax=g.probeDepthMax.load();s.motionMean=g.probeMotionMean.load();s.motionMax=g.probeMotionMax.load();s.stillPct=g.probeStillPct.load();
         s.stage=g.stage.load();s.events=g.events;s.noBridge=g.noBridge.load();s.noBackBuffer=g.noBackBuffer.load();
         s.scaleCap=g.scaleCap.load();
-        s.reason=static_cast<uint32_t>(!g.status.unavailable?StandDown::None:g.loggedDeviceLost?StandDown::DeviceLost:standDown);return s;
+        s.reason=static_cast<uint32_t>(!g.status.unavailable?StandDown::None:g.loggedDeviceLost?StandDown::DeviceLost:standDown);
+        ui::PanelStatus p;MzStatus(p);
+        s.mochizuki=p.mochizuki;s.danielblnc=p.danielblnc!=nullptr;s.networkMs=p.mochizuki!=0?p.mochizukiMs:p.danielblncMs;
+        return s;
     }
     void Snapshot(Kind kind,Result result=Result::Ready){
         StateSnapshot s{ExportSettings(),ExportStatus()};Reply(kind,result);
