@@ -60,6 +60,7 @@ void RearmGuideProbe(bool replaced)
 
 void DemoteMotion(double meanPx);  // core/temporal/motion_feed.inc
 float FeedCap();
+void NoteFlicker(const void *in, const void *out, UINT rowPitch, UINT nw, UINT nh, bool first);  // stats.inc
 void DrainReadbacks(UINT nw, UINT nh)
 {
     if (g.pendingGuides)
@@ -248,13 +249,6 @@ void DrainReadbacks(UINT nw, UINT nh)
         {
             for (int spin = 0; spin < 2000 && f->GetCompletedValue() < 1; ++spin)
                 Sleep(1);
-            auto half = [](uint16_t h) {
-                const int e = (h >> 10) & 0x1f;
-                const int m = h & 0x3ff;
-                const float v = e == 0 ? m / 1024.0f * 6.103515625e-5f
-                                       : std::ldexpf(1.0f + m / 1024.0f, e - 15);
-                return (h & 0x8000) ? -v : v;
-            };
             const UINT fw = g.flowWidth, fh = g.flowHeight;
             const UINT lumaPitch = (fw * 2 + 255) & ~255u;
             const UINT flowPitch = (fw * 4 + 255) & ~255u;
@@ -269,7 +263,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                                                                    static_cast<size_t>(y) * lumaPitch);
                     for (UINT x = 0; x < fw; ++x)
                     {
-                        const double v = half(row[x]);
+                        const double v = HalfToFloat(row[x]);
                         lo = std::min(lo, v);
                         hi = std::max(hi, v);
                         sum += v;
@@ -288,7 +282,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                                                                    static_cast<size_t>(y) * flowPitch);
                     for (UINT x = 0; x < fw; ++x)
                     {
-                        const double dx = half(row[x * 2]), dy = half(row[x * 2 + 1]);
+                        const double dx = HalfToFloat(row[x * 2]), dy = HalfToFloat(row[x * 2 + 1]);
                         if (dx == 0.0 && dy == 0.0)
                             ++zero;
                         if (std::abs(dx) >= 12.0 || std::abs(dy) >= 12.0)
@@ -364,17 +358,10 @@ void DrainReadbacks(UINT nw, UINT nh)
                                                                   static_cast<size_t>(y) * rowPitch);
                     for (UINT x = 0; x < nw * 4; x += 4)
                     {
-                        auto half = [](uint16_t h) {
-                            const int e = (h >> 10) & 0x1f;
-                            const int m = h & 0x3ff;
-                            float v = e == 0 ? m / 1024.0f * 6.103515625e-5f
-                                             : std::ldexpf(1.0f + m / 1024.0f, e - 15);
-                            return (h & 0x8000) ? -v : v;
-                        };
-                        // An fp16 exponent of all ones is inf or NaN, which half() reads as 65536+.
+                        // An fp16 exponent of all ones is inf or NaN, which HalfToFloat reads as 65536+.
                         nonFinite += (pb[x] & 0x7c00) == 0x7c00 || (pb[x + 1] & 0x7c00) == 0x7c00 ||
                                      (pb[x + 2] & 0x7c00) == 0x7c00;
-                        const double d = std::abs(half(pa[x]) - half(pb[x]));
+                        const double d = std::abs(HalfToFloat(pa[x]) - HalfToFloat(pb[x]));
                         sum += d;
                         if (d > peak)
                             peak = d;
@@ -400,15 +387,8 @@ void DrainReadbacks(UINT nw, UINT nh)
                     bool have = false;
                     for (UINT x = 0; x < nw * 4; x += 4)
                     {
-                        auto half = [](uint16_t hh) {
-                            const int e = (hh >> 10) & 0x1f;
-                            const int m = hh & 0x3ff;
-                            float v = e == 0 ? m / 1024.0f * 6.103515625e-5f
-                                             : std::ldexpf(1.0f + m / 1024.0f, e - 15);
-                            return (hh & 0x8000) ? -v : v;
-                        };
-                        const double in = half(pa[x]);
-                        const double res = half(pb[x]) - in;
+                        const double in = HalfToFloat(pa[x]);
+                        const double res = HalfToFloat(pb[x]) - in;
                         meanBase += std::abs(in);
                         ++nb;
                         if (have)
@@ -437,6 +417,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                     const double meanRes = n ? sum / n : 0.0;
                     const bool first = !g.measured;
                     g.measured = true;
+                    NoteFlicker(a, b, rowPitch, nw, nh, first);
                     // Whether the runtime emits them at all is unproven, and only OutputSmooth=0 says:
                     // this reads netColour after the output smooth, which replaces them wherever it
                     // runs, so with it on a 0 proves nothing. At most once in 1800 frames.

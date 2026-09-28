@@ -332,6 +332,12 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   bridge to keep down. The guide probe says what share of the motion the feed is about to zero,
   as longer than the raster (or `MotionMaxPx`), inf or NaN. `NoBackBuffer=1` now works on D3D12
   too, where it was ignored: the frame goes out as the game drew it.
+- **The residual measurement measures flicker too.** A full measurement (at frame 240, on **Measure
+  residual**, or Ctrl+PageDown) now also reads the next evaluated frame, and says how far the
+  network's answer moved where the picture did not: `measure, flicker between two evaluations where
+  the input held still (89% of the samples): mean 0.00064, p99 0.0039, over 1/255 12.0%, over 4/255
+  0.30%`, the same ruler the recorded-play measurements use, on every route and in the 32-bit
+  helper's log.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 

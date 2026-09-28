@@ -2,9 +2,12 @@
 // running totals the add-on keeps (core/addon/stats.inc). Pure, so tools/stats_check.py runs it.
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 // presents: through JobGate, which every route passes once a present. evaluated: the engine took at
 // least one pass. skipped: the network sat the present out because the GPU still had the last one,
@@ -80,4 +83,45 @@ inline std::string FormatTemporal(const TemporalState& t) {
                   count(t.handed), t.passes, smooth, t.seedPinned ? "pinned" : "free", t.motion,
                   t.depth ? "handed" : "not handed");
     return line;
+}
+
+// The flicker between two evaluations, as tools/temporal_metrics.py measures recorded play: how far
+// the output moved where the input held still, the largest of R, G and B. Held still is a move of
+// 1/255 or less at the sample itself, where the ruler asks it of a 5x5 window. The samples are RGB
+// triples in the network's own encoding, the earlier evaluation's first.
+struct Flicker {
+    double stillShare = 0.0; // of the samples, the ones whose input held still
+    double mean = 0.0, p99 = 0.0, over1 = 0.0, over4 = 0.0; // over those: over 1/255, over 4/255
+};
+
+inline Flicker FlickerStats(const std::vector<float>& in0, const std::vector<float>& out0,
+                            const std::vector<float>& in1, const std::vector<float>& out1) {
+    const size_t n = std::min({in0.size(), out0.size(), in1.size(), out1.size()}) / 3;
+    std::vector<float> moved; // the output's move at each still sample
+    for (size_t i = 0; i < n; ++i) {
+        float in = 0.0f, out = 0.0f;
+        for (size_t c = i * 3; c < i * 3 + 3; ++c) {
+            in = std::max(in, std::abs(in1[c] - in0[c]));
+            out = std::max(out, std::abs(out1[c] - out0[c]));
+        }
+        if (in <= 1.0f / 255.0f)
+            moved.push_back(out);
+    }
+    Flicker f;
+    if (moved.empty())
+        return f;
+    f.stillShare = static_cast<double>(moved.size()) / static_cast<double>(n);
+    for (const float v : moved) {
+        f.mean += v;
+        f.over1 += v > 1.0f / 255.0f ? 1.0 : 0.0;
+        f.over4 += v > 4.0f / 255.0f ? 1.0 : 0.0;
+    }
+    const double count = static_cast<double>(moved.size());
+    f.mean /= count;
+    f.over1 /= count;
+    f.over4 /= count;
+    const auto at = moved.begin() + static_cast<std::ptrdiff_t>((moved.size() - 1) * 99 / 100);
+    std::nth_element(moved.begin(), at, moved.end());
+    f.p99 = *at;
+    return f;
 }

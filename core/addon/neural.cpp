@@ -2886,10 +2886,10 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // for a setup that is actually fine. Keep trying every 240 frames until the input has
     // something in it, then stop.
     // Once in full at frame 240 (or on request), then silently every 1800 frames for the inert
-    // watchdog, which only speaks when its verdict changes.
+    // watchdog, which only speaks when its verdict changes, and once more after a full one: flicker.
     if (g.activePasses != 0 &&
         ((!g.measured && (g.settings.measureNow.exchange(false) || (g.status.frame >= 240 && g.status.frame % 240 == 0))) ||
-         (g.measured && g.status.frame % 1800 == 0)))
+         (g.measured && (g.status.frame % 1800 == 0 || FlickerPending()))))
     {
         const UINT rowPitch = (nw * 8 + 255) & ~255u;
         const UINT64 size = static_cast<UINT64>(rowPitch) * nh;

@@ -14,6 +14,9 @@ core/shared/frame_stats.h). Both are compiled here with g++, against a clock thi
   - a refused pass says why (not ready, four in flight, or neither), and the line adds up the
     watchdog's fires over every module, a count a staging rebuild zeroed included, and ends on each
     module's last job and how many it retired;
+  - flicker is the output's move, largest channel, over the samples whose input held still, with
+    its p99 and shares over 1/255 and 4/255; a first reading keeps its samples for the next
+    evaluated one, which is compared and logged once, and a raster change in between drops it;
   - the temporal line reads the engine's bytes back, ORs a window's evaluations (a skip that
     dropped one pass's history does not flip it), is logged when it changes and only then, and says
     nothing for a window with no evaluation.
@@ -51,6 +54,7 @@ HARNESS = r"""
 #include <windows.h>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -81,6 +85,11 @@ alignas(4) uint8_t module[32] {};
 template <class T> T &At(HMODULE h, size_t rva) { return *reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(h) + rva); }
 HMODULE RuntimeFor(UINT) { return reinterpret_cast<HMODULE>(module); }
 int Outstanding(HMODULE m) { return static_cast<int>(At<UINT>(m, 8) - At<UINT>(m, 12)); }
+float HalfToFloat(uint16_t h) {  // probes.inc's
+    const int e = (h >> 10) & 0x1f, m = h & 0x3ff;
+    const float v = e == 0 ? m / 1024.0f * 6.103515625e-5f : std::ldexp(1.0f + m / 1024.0f, e - 15);
+    return (h & 0x8000) ? -v : v;
+}
 bool mochizuki = false;
 bool MzSelected() { return mochizuki; }
 std::string logged;
@@ -215,6 +224,42 @@ int main() {
     Expect(g_stats.line.find(" | timeouts 1 |") != std::string::npos, "a count a staging rebuild zeroed is new fires");
     g.runtimes[0] = nullptr;
 
+    // Flicker is the output's move where the input held still: a sample whose input moved is left
+    // out, a still one counts by its largest channel, and the shares are of the still samples.
+    std::vector<float> in0(300, 0.5f), out0(300, 0.5f), in1 = in0, out1 = out0;
+    for (int i = 0; i < 10; ++i) in1[i * 3] += 0.1f;          // ten samples moved: not flicker
+    for (int i = 10; i < 20; ++i) out1[i * 3 + 2] += 2.0f / 255.0f;  // ten still ones moved 2/255
+    for (int i = 0; i < 10; ++i) out1[i * 3] += 1.0f;         // the moved ones' output moved a lot
+    out1[20 * 3 + 1] -= 5.0f / 255.0f;                        // and one still one 5/255
+    const Flicker f = FlickerStats(in0, out0, in1, out1);
+    Expect(std::abs(f.stillShare - 0.9) < 1e-9 && std::abs(f.over1 - 11.0 / 90.0) < 1e-9 &&
+               std::abs(f.over4 - 1.0 / 90.0) < 1e-9 && std::abs(f.p99 - 2.0 / 255.0) < 1e-6 &&
+               std::abs(f.mean - (10 * 2.0 + 5.0) / 255.0 / 90.0) < 1e-6,
+           "flicker counts the still samples only, by their largest channel");
+    Expect(FlickerStats(in0, out0, in0, out0).mean == 0.0 && FlickerStats(in0, out0, in0, out0).stillShare == 1.0,
+           "two identical evaluations have no flicker");
+    std::vector<float> allMoved = in0;
+    for (float &v : allMoved) v += 0.1f;
+    Expect(FlickerStats(in0, out0, allMoved, out1).stillShare == 0.0, "nothing still, nothing to call flicker");
+
+    // The pair: a first reading keeps its samples and asks for the next; that one is logged and let go;
+    // a raster that changed between them drops the pair.
+    alignas(4) uint16_t pin[8 * 4 * 4] {}, pout[8 * 4 * 4] {};   // 8x4 RGBA16F, a row pitch of 64 bytes
+    for (uint16_t &v : pout) v = 0x3800;                          // 0.5
+    NoteFlicker(pin, pout, 64, 8, 4, true);
+    Expect(FlickerPending() && g_flicker.in.size() == 2 * 3, "a first reading keeps every fourth pixel of every fourth row");
+    logs = 0;
+    pout[0] = 0x3809;                                             // 0.5 + 9/2048: over 1/255
+    NoteFlicker(pin, pout, 64, 8, 4, false);
+    Expect(!FlickerPending() && logs == 1 && logged.find("measure, flicker between two evaluations") == 0 &&
+               logged.find("over 1/255 50.0%") != std::string::npos,
+           "the next reading is compared and logged, once");
+    NoteFlicker(pin, pout, 64, 8, 4, false);
+    Expect(logs == 1, "a reading with no pair held says nothing");
+    NoteFlicker(pin, pout, 64, 8, 4, true);
+    NoteFlicker(pin, pout, 64, 4, 4, false);
+    Expect(!FlickerPending() && logs == 1, "a raster that changed in between drops the pair");
+
     { auto free = LockForHook(); }
     Expect(g_stats.bindWaits == 0, "a free lock is no wait");
     g.lock.lock();
@@ -307,6 +352,9 @@ if "static_cast<unsigned long long>(g_stats.now.refused), RefusalReason(r));" no
 change = re.search(r"if \(change\)\s*\{[^}]*history starts again[^}]*\}", body(runtimes, "bool BringUpEngines("))
 if not change or "g.loggedPassDetail = false;" not in change.group(0):
     bad.append("runtimes.inc: a new pass count does not print each pass's job ids again")
+if "NoteFlicker(a, b, rowPitch, nw, nh, first);" not in read("core/addon/probes.inc") or \
+        "(g.measured && (g.status.frame % 1800 == 0 || FlickerPending()))" not in record:
+    bad.append("the residual measurement does not take the flicker pair, or RecordNetwork does not arm its second reading")
 if "st.motionSource = g_stats.motion;" not in panel:
     bad.append("panel64.inc: the motion source is not the last evaluation's")
 
@@ -323,4 +371,4 @@ if bad:
     sys.exit(1)
 print("PASS the stats line: " + out + "; one tick a present, refused apart from skipped, both panels' "
       "processed without the skips, Diagnostics as bits, every bind hook counted; the temporal line once "
-      "an evaluation, from the runtime's own bytes, on a change only")
+      "an evaluation, from the runtime's own bytes, on a change only; the flicker pair where the input held still")

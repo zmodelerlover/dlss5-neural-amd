@@ -1,8 +1,9 @@
 // The per-second stats: what the presents of each second did, counted where it happens and read as
 // one line (core/shared/frame_stats.h), logged with Diagnostics=2; and the temporal line, what the
 // evaluations handed the engine, logged when it changes. Both are under the 64-bit panel's Debug
-// whatever Diagnostics says. Part of the core's unity build, included by neural.cpp before
-// runtimes.inc, whose JobGate ticks it once a present on every route.
+// whatever Diagnostics says. Then the flicker line, taken with the residual measurement. Part of
+// the core's unity build, included by neural.cpp before runtimes.inc, whose JobGate ticks it once
+// a present on every route.
 
 #include "../shared/frame_stats.h"
 
@@ -137,4 +138,54 @@ void TickStats()
     g_stats.at = now;
     if (g.settings.diagnostics & 2)
         Log("%s", g_stats.line.c_str());
+}
+
+// The flicker line. A first reading of the residual measurement (at frame 240, on Measure residual,
+// or Ctrl+PageDown) keeps its samples, every fourth pixel of every fourth row, and while they are
+// held RecordNetwork measures the next evaluated frame too; that one is compared and logged. One
+// pair per first reading, dropped if the raster changed between the two.
+struct FlickerPair
+{
+    std::vector<float> in, out;
+    UINT width = 0, height = 0;
+};
+FlickerPair &g_flicker = *new FlickerPair;  // never destroyed, as g is
+
+bool FlickerPending() { return !g_flicker.in.empty(); }
+
+void NoteFlicker(const void *in, const void *out, UINT rowPitch, UINT nw, UINT nh, bool first)
+{
+    if (!first && (!FlickerPending() || g_flicker.width != nw || g_flicker.height != nh))
+    {
+        std::vector<float>().swap(g_flicker.in);
+        std::vector<float>().swap(g_flicker.out);
+        return;
+    }
+    std::vector<float> a, b;
+    for (UINT y = 0; y < nh; y += 4)
+    {
+        auto *pa = reinterpret_cast<const uint16_t *>(static_cast<const char *>(in) + static_cast<size_t>(y) * rowPitch);
+        auto *pb = reinterpret_cast<const uint16_t *>(static_cast<const char *>(out) + static_cast<size_t>(y) * rowPitch);
+        for (UINT x = 0; x < nw; x += 4)
+            for (UINT c = x * 4; c < x * 4 + 3; ++c)
+            {
+                a.push_back(HalfToFloat(pa[c]));
+                b.push_back(HalfToFloat(pb[c]));
+            }
+    }
+    if (first)
+    {
+        g_flicker = { std::move(a), std::move(b), nw, nh };
+        return;
+    }
+    const Flicker f = FlickerStats(g_flicker.in, g_flicker.out, a, b);
+    std::vector<float>().swap(g_flicker.in);
+    std::vector<float>().swap(g_flicker.out);
+    if (f.stillShare == 0.0)
+        Log("measure, flicker: no sample held still between the two evaluations, so there is no "
+            "flicker to tell from motion.");
+    else
+        Log("measure, flicker between two evaluations where the input held still (%.0f%% of the "
+            "samples): mean %.5f, p99 %.4f, over 1/255 %.1f%%, over 4/255 %.2f%%",
+            100.0 * f.stillShare, f.mean, f.p99, 100.0 * f.over1, 100.0 * f.over4);
 }
