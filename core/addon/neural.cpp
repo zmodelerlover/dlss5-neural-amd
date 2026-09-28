@@ -356,9 +356,7 @@ void Barrier(ID3D12GraphicsCommandList *c, ID3D12Resource *r, D3D12_RESOURCE_STA
     c->ResourceBarrier(1, &v);
 }
 
-// Every address written into the runtime lives in this header, and nowhere else. It used to be
-// four copies across neural.cpp, vk_route.inc, host64.cpp and framecheck.cpp; a version bump
-// updated two of them and the 32-bit bridge crashed on its first frame.
+// Every address written into the runtime lives in this header and nowhere else; its top says why.
 #include "runtime_offsets.h"
 
 template <class T> T &At(HMODULE h, size_t rva)
@@ -379,8 +377,10 @@ struct Packet
     UINT exposureState;
     float scaleX, scaleY;
     UINT pad4c;
+    UINT renderWidth, renderHeight; // read since v0.4.1, as the jitter below always is (names as the
+    float jitterX, jitterY;         // OptiScaler fork's): zero here, no longer whatever the stack held
 };
-static_assert(sizeof(Packet) == 0x50 && offsetof(Packet, scaleX) == 0x44);
+static_assert(sizeof(Packet) == 0x60 && offsetof(Packet, scaleX) == 0x44 && offsetof(Packet, jitterX) == 0x58);
 
 using InitFn = bool(__fastcall *)(void *, const std::string *);
 using RecordFn = void(__fastcall *)(Packet *);
