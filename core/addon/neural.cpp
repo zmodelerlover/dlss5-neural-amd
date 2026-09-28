@@ -1647,52 +1647,6 @@ void AdoptFeedEffect()
 
 void RenderEffectsAheadOfNetwork(device *dev, resource back);
 
-bool InitHip()
-{
-    if (g.hipSet != nullptr)
-        return true;
-    HMODULE hip = LoadLibraryExW(L"amdhip64_7.dll", nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-    if (hip == nullptr)
-    {
-        Log("HIP: amdhip64_7.dll failed to load (error %lu). AMD HIP 7 is required.", GetLastError());
-        return false;
-    }
-    auto count = reinterpret_cast<int (*)(int *)>(GetProcAddress(hip, "hipGetDeviceCount"));
-    auto props = reinterpret_cast<int (*)(void *, int)>(GetProcAddress(hip, "hipGetDevicePropertiesR0600"));
-    g.hipSet = reinterpret_cast<HipSetFn>(GetProcAddress(hip, "hipSetDevice"));
-    if (count == nullptr || props == nullptr || g.hipSet == nullptr)
-    {
-        Log("HIP: R0600 API unavailable.");
-        g.hipSet = nullptr;
-        return false;
-    }
-    int n = 0;
-    if (count(&n) != 0 || n == 0)
-    {
-        Log("HIP: no devices enumerated.");
-        g.hipSet = nullptr;
-        return false;
-    }
-    const auto luid = g.device->GetAdapterLuid();
-    for (int i = 0; i < n; ++i)
-    {
-        alignas(16) std::vector<unsigned char> p(8192, 0);
-        if (props(p.data(), i) == 0 && std::memcmp(p.data() + 272, &luid, 8) == 0)
-        {
-            g.hipDevice = i;
-            Log("HIP: adapter %s matches the game's D3D12 device.", reinterpret_cast<char *>(p.data()));
-            break;
-        }
-    }
-    if (g.hipDevice < 0 || g.hipSet(g.hipDevice) != 0)
-    {
-        Log("HIP: no device matches the D3D12 LUID.");
-        g.hipSet = nullptr;
-        return false;
-    }
-    return true;
-}
-
 #include "runtime_files.inc"
 
 // Hand a freshly loaded module the device, the queue and the switches, then let it load the
