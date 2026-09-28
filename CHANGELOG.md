@@ -11,7 +11,7 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
 **Released together with AMD-NR-ReShade-Installer v0.6.7**, which moves its add-on, bridge and runtime
 pins to this release and to the patched v0.4.3 build (12,749,824 bytes, `f3d9f2e5…`), offers the 0.5.0
 supporter build from the person's own files, and no longer lists add-on releases before this one: they
-refuse the v0.4.3 runtime.
+refuse the v0.4.3 runtime. Tested in game on the Vulkan route (RPCS3) with the patched v0.4.3.
 
 ### What changes when you update
 
