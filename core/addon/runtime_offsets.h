@@ -35,7 +35,19 @@
 // kSelfCheckFrame, kInlineActive, kJobCounter, kWaitBudgetMax, kWatchdogFires and kJobId: those
 // were mapped straight from v0.3.0 to v0.4.1 by the anchors quoted there, and are v0.4.1's.
 //
-// When the runtime moves again: re-derive, edit only this file, and run the checker.
+// v0.4.2 moved the data block in three pieces: +0x51c0 up to kHistoryOn, +0x51d0 from kReady to
+// kWatchdogFires, +0x51d8 from kCpuWait on; the engine members this add-on writes kept engine+0x3c
+// and +0x104. Mapped twice, with no delta taken as proof: by the anchor of each address in the
+// v0.4.2 binary (integracao-v042/ida/REMAP-v0.4.2.md, outside the repository), and against the
+// OptiScaler fork's own layout (AmdLayout.h, kAmd042), which agree on every field both name. The
+// two only this add-on uses were derived again on their own: kCpuWait from the ini reader's store
+// (now a checker rule), kNetworkMs from the worker's write and the log's read, the same pair of
+// instructions 0x108 apart on both builds. It adds two ini keys the add-on leaves alone: Quality
+// (fast by default, reference on a GPU without the fast kernels) and NoiseHandoff (see seed.inc).
+// Code addresses quoted in the comments below are v0.4.1's.
+//
+// When the runtime moves again: add its build to kBuilds and its patches to runtime-patches.json,
+// and run the checker against the patched file.
 
 #pragma once
 
@@ -210,6 +222,56 @@ inline constexpr Build kBuilds[] = {
         .kNotifyFn = 0x9d80,
         .kRecordFn = 0x14c40,
         .kInitFn = 0x26130,
+    },
+    {
+        .kVersion = "0.4.2",
+        .kSize = 12981760,
+        .kSha256 = "f9aa21a2fb56971895dbe4a35cd832074941cc8079069d03b44523250390949d",
+        .kDevice = 0xaeaa0,
+        .kQueue = 0xaeaa8,
+        .kEngineObject = 0xaeab8,
+        .kFrameCounter = 0xaeaf4,
+        .kSelfCheckFrame = 0xaebbc,
+        .kHistory = 0xaec00,
+        .kHistoryOn = 0xaec08,
+        .kReady = 0xaef18,
+        .kNativeFailure = 0xaef1a,
+        .kInlineMode = 0xaf420,
+        .kInlineActive = 0xaf421,
+        .kJobCounter = 0xaf454,
+        .kNetworkMs = 0xaf480,
+        .kWaitBudgetMax = 0xaf568,
+        .kWatchdogJobA = 0xaf5e8,
+        .kWatchdogJobB = 0xaf5ec,
+        .kWatchdogFires = 0xaf618,
+        .kCpuWait = 0xaf650,
+        .kInterop = 0xaf678,
+        .kListMarker = 0xaf758,
+        .kJobId = 0xaf764,
+        .kDepthInverted = 0xaf808,
+        .kFsrFlagsSeen = 0xaf80c,
+        .kEnabled = 0xaf814,
+        .kTemporal = 0xaf815,
+        .kUseFsrInputs = 0xaf816,
+        .kUseDepth = 0xaf817,
+        .kTonemap = 0xaf818,
+        .kLocalTone = 0xaf828,
+        .kLocalStructure = 0xaf82c,
+        .kSkinStructure = 0xaf830,
+        .kScale = 0xaf834,
+        .kUseAutoMask = 0xaf838,
+        .kToneChannels = 0xaf83c,
+        .kStyle = 0xaf840,
+        .kToneCurve = 0xaf844,
+        .kToneLift = 0xaf848,
+        .kHipDevice = 0xaf938,
+        .kFloatDumpFirst = 0xaf820,
+        .kFloatDumpLast = 0xaf83c,
+        .kByteDumpFirst = 0xaf808,
+        .kByteDumpLast = 0xaf81f,
+        .kNotifyFn = 0x9db0,
+        .kRecordFn = 0x15040,
+        .kInitFn = 0x28170,
     },
 };
 

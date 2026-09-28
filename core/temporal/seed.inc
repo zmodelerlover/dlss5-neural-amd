@@ -7,6 +7,11 @@
 // (native_game_oneshot.h:179). FixedSeed=1 does what the reference does. The worker's one-time
 // self-check fires on the count it is set to, which starts at 0, so once the first job has run it is
 // moved out of reach; otherwise a pinned count would read the pre-block back on every frame.
+//
+// v0.4.2's NoiseHandoff (ini, off by default, read once per process) hands the pre-block a noise
+// buffer made from the same count, and has the worker make the next job's ahead of time. Pinned,
+// the count is back at 0 when the next job starts, so the buffer is made again for 0 before the
+// pre-block runs: the noise still holds still, at the cost of that one extra launch per job.
 
 void PinSeed(HMODULE r)
 {

@@ -304,6 +304,19 @@ def main(argv):
           f"InlineWaitMs is read with a default of 200, clamped to 50..5000 and stored to {budget:#x}, "
           f"which the header calls kWaitBudgetMax ({data_off.get('kWaitBudgetMax', 0):#x})")
 
+    # CpuWait, which the add-on pins to 0 so the notify entry never blocks the presenting thread:
+    # `lea rdx, "CpuWait"` in the same reader, and the first `mov [rip+..], eax` after it.
+    key = raw.find(b"CpuWait\0")
+    key_rva = key - rdata_raw + rdata_va if key >= 0 else -1
+    reader = [m.start() for m in re.finditer(rb"\x48\x8d\x15", text)
+              if rip_target(raw, delta, text_va + m.start(), 7, 0) == key_rva]
+    window = text[reader[0]:reader[0] + 0x40] if len(reader) == 1 else b""
+    store = window.find(b"\x89\x05")
+    cpu_wait = rip_target(raw, delta, text_va + reader[0] + store, 6, 0) if window and store >= 0 else -1
+    check(cpu_wait == data_off.get("kCpuWait"),
+          f"CpuWait is stored to {cpu_wait:#x}, which the header calls kCpuWait "
+          f"({data_off.get('kCpuWait', 0):#x})")
+
     # -- And the DLL went through patch_runtime.py -----------------------------------------------
     for change in patched[got]["changes"]:
         off, after = int(change["offset"], 16), bytes.fromhex(change["after"])
