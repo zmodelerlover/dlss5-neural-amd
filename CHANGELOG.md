@@ -288,9 +288,11 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   - A key missing from `amd-nr.ini` reads as its default on a Reload too, where it used to keep the
     value from before; one set to nan or inf reads as its default instead of being taken.
   - `SerialPasses` is saved.
-- **The mochizuki runtime shares the danielblnc path's rules:** a new pass count starts the
-  history again, the panel offers every pass, and it runs through the same run-or-skip decision,
-  device checks and stand-downs on every route.
+- **The mochizuki runtime shares the danielblnc path's rules:** a new pass count starts the history
+  again, a game that keeps changing size (PCSX2, Xenosaga 2) keeps one raster, where with mochizuki
+  every size it flapped through rebuilt the raster and started history again, the panel offers every
+  pass, and it runs through the same run-or-skip decision, device checks and stand-downs on every
+  route.
 - **The danielblnc runtime is recognised from a table of the builds this add-on knows**
   (`core/addon/runtime_offsets.h`), by the hash of `dlssnr_amd_pass1.dll`, and every address goes
   through the build found. A file that is none of them is refused as before, and the log names the

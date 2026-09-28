@@ -146,6 +146,9 @@ bool MzInit() {
     }
     mz.session = s;
     mz.device = g.device.Get();
+    // Up, as InitEngine says for danielblnc's: the raster pin (EnsureResources) holds only then, and
+    // without it every size a game flaps through re-rasters and drops the history.
+    g.engineReady = true;
     Log("mochizuki: session ready. The first frames go out without the network while it is "
         "built; the first time in each game that takes up to a minute (pipeline compilation).");
     return true;

@@ -12,7 +12,9 @@ fed the sizes the games were logged presenting, so the rule is run, not read:
   - the edges of the rule, each held 300 presents: 1920 to 1880 columns (width only) and 1080 to
     1058 lines (22 * 50 > 1080, just over 2%) re-raster once after 120 presents, and 1080 to 1059
     lines (21 * 50 <= 1080, just under) never does.
-And read from the text: EnsureResources asks g.rasterPin.Keep in its pin, and nothing else.
+And read from the text: EnsureResources asks g.rasterPin.Keep in its pin, and nothing else, once
+the engine is up, which both runtimes say: danielblnc's InitEngine and mochizuki's MzInit (with
+mochizuki selected the pin never held, and PCSX2's flaps re-rastered and dropped history).
 
     python tools/raster_pin_check.py
 
@@ -87,6 +89,13 @@ elif ('#include "../shared/raster_pin.h"' not in neural
         or not re.search(r"!scaleChanged &&\s+g\.rasterPin\.Keep\(nw, nh, g\.netWidth, g\.netHeight\)\)", ensure)
         or "nw != g.netWidth || nh != g.netHeight" in ensure):
     bad.append("EnsureResources: the pin does not ask g.rasterPin.Keep, or still compares sizes on its own")
+elif not re.search(r"if \(g\.engineReady && g\.netWidth != 0 && !scaleChanged &&\s+g\.rasterPin\.Keep\(", ensure):
+    bad.append("EnsureResources: the pin is not keyed on the engine being up")
+mz = (ROOT / "core/addon/mochizuki.inc").read_text(encoding="utf-8")
+for name, text in (("InitEngine", neural), ("MzInit", mz)):
+    at = text.find(f"\nbool {name}()")
+    if at < 0 or "g.engineReady = true;" not in text[at:text.index("\n}\n", at)]:
+        bad.append(f"{name}: brings its runtime up without saying so, and the raster pin never holds")
 
 with tempfile.TemporaryDirectory() as tmp:
     src, exe = Path(tmp) / "raster_pin.cpp", Path(tmp) / "raster_pin.exe"
