@@ -42,7 +42,7 @@ The panel is `core/ui/`, one implementation shared with the 64-bit add-on. `pane
 - Performance: Timing; Resolution Scale; Pass Count; Taper later passes; all three per-pass overrides; Bicubic Residual Upsample.
 - Guides: Read Guides From The Game; Depth; History; Motion Vectors; Motion Scale; Flow Contrast Gate; Flow Accept Ratio; actual host probes.
 - Debug: Debug View; Measure Residual Again.
-- Engine: Character Mask; Temporal; Fixed seed; Tonemap; Tone Channels; Engine Scale; Reset to 1/32; original informational Model A/B/C text.
+- Engine: Network precision (danielblnc 0.4.2 and 0.5.0, which have Quality); Character Mask; Temporal; Fixed seed; Tonemap; Tone Channels; Engine Scale; Reset to 1/32; original informational Model A/B/C text.
 - Advanced: Local Tone Strength; read-only startup diagnostics.
 - Experimental: Network Output, still strictly current-frame on this bridge.
 - Status: connected/enabled/engine status, frames and skipped frames counted as on the 64-bit routes, dimensions, runnable/active passes, actual guide state, frontend candidates, protocol and transport mode.

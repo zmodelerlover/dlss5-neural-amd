@@ -49,8 +49,9 @@ enum Opt : uint32_t
     kOptMeasure      = 1u << 22,
     kOptSmooth       = 1u << 23,
     kOptSeed         = 1u << 24,
+    kOptQuality      = 1u << 25,
 };
-constexpr uint32_t kOptAll = (1u << 25) - 1u;
+constexpr uint32_t kOptAll = (1u << 26) - 1u;
 
 constexpr int kMaxPasses = 3;
 
@@ -136,6 +137,9 @@ struct PanelStatus
     // to hand over: D3D12 has only its pre-clear copy, and Vulkan, OpenGL and a 32-bit D3D9 game
     // have neither, so Depth there would be a switch with nothing behind it.
     bool hasGameGuides = false, hasDepth = false;
+    // The danielblnc build running has the runtime's Quality (rt::Build::kQuality): 0.4.2 and
+    // 0.5.0, not 0.4.1 or mochizuki, where Network precision would be a control for nothing.
+    bool hasQuality = false;
     std::string feedStatus;       // what the companion effect is handing over, when it is
     // The engine runs in a helper process: only here is Timing drawn, as the bridge's pipelining
     // switch (the engine is same-frame everywhere), the ini and the logs are the helper's, and

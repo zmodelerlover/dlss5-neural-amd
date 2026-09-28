@@ -286,6 +286,7 @@ void MzStatus(PanelStatus& st) {
     if (!selected && g.runtime != nullptr) {
         st.danielblnc = rt::B->kVersion;
         st.danielblncMs = DanielblncMs();
+        st.hasQuality = rt::B->kQuality != 0;
     }
     if (!selected)
         return;

@@ -78,6 +78,32 @@ void Seed(PanelSettings &s)
          "mesmo quadro parado dá a mesma resposta bit a bit.");
 }
 
+// The runtime's Quality, which only danielblnc 0.4.2 and 0.5.0 have (PanelStatus::hasQuality).
+// Two choices, fast first: the settings value is 1 for fast, the runtime's own default.
+void Quality(PanelSettings &s)
+{
+    int reference = s.quality == 0 ? 1 : 0;
+    if (ImGui::Combo(T("Network precision", "Precisão da rede"), &reference,
+                     T("Fast (default)\0Reference (NVIDIA's exact math)\0",
+                       "Rápida (padrão)\0Referência (contas exatas da NVIDIA)\0")))
+        s.quality = reference == 1 ? 0 : 1;
+    Help("The arithmetic the network runs in, the runtime's own Quality. Fast uses cheaper math -- "
+         "f32 accumulation, approximate square roots and reciprocals -- and is about 13-15% "
+         "faster on an RX 9000, with a difference that is barely visible. Reference is NVIDIA's "
+         "exact arithmetic.\n\n"
+         "Applies at once, from the next frame, and starts the temporal history over. This "
+         "setting is used instead of the Quality in the runtime's own dlssnr_on_amd.ini. On "
+         "0.4.2 a GPU without the fast kernels runs Reference whatever this says.",
+
+         "A aritmética em que a rede roda, o Quality do próprio runtime. Rápida usa contas mais "
+         "baratas -- acumulação em f32, raiz quadrada e recíproca aproximadas -- e fica cerca de "
+         "13-15% mais rápida numa RX 9000, com uma diferença que mal se vê. Referência são as "
+         "contas exatas da NVIDIA.\n\n"
+         "Vale na hora, a partir do próximo quadro, e recomeça o histórico temporal. Esta opção "
+         "vale no lugar do Quality do dlssnr_on_amd.ini do próprio runtime. No 0.4.2, uma GPU "
+         "sem os kernels rápidos roda Referência seja o que for escolhido aqui.");
+}
+
 void Tonemap(PanelSettings &s)
 {
     int tone = s.tonemap;
@@ -191,6 +217,8 @@ void DrawEngine(PanelSettings &s, const PanelStatus &status)
                                "o leitor de ini do runtime, não de chute -- mas um offset ser real "
                                "não diz nada sobre o que escrever nele faz. Todo padrão aqui é o do "
                                "próprio motor, então esta seção intocada não muda nada."));
+    if (status.hasQuality && Shown(s, kOptQuality))
+        Quality(s);
     if (Shown(s, kOptMask))
         Mask(s);
     if (Shown(s, kOptTemporal))

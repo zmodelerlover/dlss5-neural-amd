@@ -54,9 +54,9 @@ X(float, engineScale, "EngineScale", 0.03125, 0, 1e9)
 // runtime, which lives in the frontend process, so the helper has nothing to do with the flag.
 X(uint32_t, depthInverted, "DepthInverted", 1, 0, 1)
 X(uint32_t, depthNormalise, "DepthNormalise", 0, 0, 1)
-// One bit per optional control, saved as HiddenShown. The high bound is kOptAll, 25 bits; this
+// One bit per optional control, saved as HiddenShown. The high bound is kOptAll, 26 bits; this
 // macro takes a literal, so it is spelled out. LoadSettings masks it rather than clamping it.
-X(uint32_t, optional, "HiddenShown", 0, 0, 33554431)
+X(uint32_t, optional, "HiddenShown", 0, 0, 67108863)
 X(int32_t, style, "Style", 0, 0, 2)
 X(float, styleStrength, "StyleStrength", 1, 0, 1)
 // The temporal-stability controls (core/temporal/seed.inc, smooth.inc), on the wire since v5.

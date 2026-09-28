@@ -12,95 +12,14 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
 
 namespace {
 
-std::vector<std::string> g_drawn; // "w:" widgets, "h:" headers, "t:" text
-std::set<std::string> g_click;    // labels that report a click this frame
-bool g_openMore = false;          // whether the More settings tree is open
-bool g_disabledSeen = false;
-std::string g_last;
-
-bool Hit(const char* label, const char* kind) {
-    g_last = label;
-    g_drawn.push_back(std::string(kind) + label);
-    return g_click.count(label) != 0;
-}
-void Txt(const char* fmt, va_list args) {
-    char buf[2048];
-    std::vsnprintf(buf, sizeof(buf), fmt, args);
-    g_drawn.push_back(std::string("t:") + buf);
-}
-
-imgui_function_table Recorder() {
-    imgui_function_table t{};
-    t.GetFontSize = [] { return 13.0f; };
-    t.PushStyleColor = [](ImGuiCol, ImU32) {};
-    t.PushStyleColor2 = [](ImGuiCol, const ImVec4&) {};
-    t.PopStyleColor = [](int) {};
-    t.PushTextWrapPos = [](float) {};
-    t.PopTextWrapPos = [] {};
-    t.GetContentRegionAvail = [] { return ImVec2(400, 800); };
-    t.GetCursorPosX = [] { return 0.0f; };
-    t.SetCursorPosX = [](float) {};
-    t.Separator = [] {};
-    t.SameLine = [](float, float) {};
-    t.NewLine = [] {};
-    t.PushID = [](const char*) {};
-    t.PushID4 = [](int) {};
-    t.PopID = [] {};
-    t.TextV = [](const char* f, va_list a) { Txt(f, a); };
-    t.TextColoredV = [](const ImVec4&, const char* f, va_list a) { Txt(f, a); };
-    t.TextDisabledV = [](const char* f, va_list a) { Txt(f, a); };
-    t.TextWrappedV = [](const char* f, va_list a) { Txt(f, a); };
-    t.TextUnformatted = [](const char* s, const char*) {
-        g_drawn.push_back(std::string("t:") + s);
-    };
-    t.SeparatorText = [](const char* s) { g_drawn.push_back(std::string("t:") + s); };
-    t.Button = [](const char* l, const ImVec2&) { return Hit(l, "w:"); };
-    t.SmallButton = [](const char* l) { return Hit(l, "w:"); };
-    t.Checkbox = [](const char* l, bool* v) {
-        if (!Hit(l, "w:"))
-            return false;
-        *v = !*v;
-        return true;
-    };
-    t.Combo = [](const char* l, int*, const char* const[], int, int) { return Hit(l, "w:"); };
-    t.Combo2 = [](const char* l, int*, const char*, int) { return Hit(l, "w:"); };
-    t.SliderFloat = [](const char* l, float*, float, float, const char*, ImGuiSliderFlags) {
-        return Hit(l, "w:");
-    };
-    t.SliderInt = [](const char* l, int*, int, int, const char*, ImGuiSliderFlags) {
-        return Hit(l, "w:");
-    };
-    t.TreeNode = [](const char* l) {
-        Hit(l, "h:");
-        return (std::string(l) != "More settings" && std::string(l) != "Mais ajustes") ||
-               g_openMore;
-    };
-    t.TreePop = [] {};
-    t.CollapsingHeader = [](const char* l, ImGuiTreeNodeFlags) {
-        Hit(l, "h:");
-        return true;
-    };
-    t.CollapsingHeader2 = [](const char* l, bool*, ImGuiTreeNodeFlags) {
-        Hit(l, "h:");
-        return true;
-    };
-    t.BeginTooltip = [] { return false; };
-    t.EndTooltip = [] {};
-    t.BeginDisabled = [](bool d) { g_disabledSeen |= d; };
-    t.EndDisabled = [] {};
-    t.IsItemHovered = [](ImGuiHoveredFlags) { return false; };
-    // A drag that ends on this frame: active and deactivated both answer for the clicked label.
-    t.IsItemActive = [] { return g_click.count(g_last) != 0; };
-    t.IsItemDeactivated = [] { return g_click.count(g_last) != 0; };
-    t.CalcTextSize = [](const char*, const char*, bool, float) { return ImVec2(10, 13); };
-    return t;
-}
+#include "recorder.inc"
 
 int g_failures = 0;
 #define CHECK(cond, ...)                                                                           \
@@ -116,6 +35,7 @@ int g_failures = 0;
 ui::PanelStatus Status64() {
     ui::PanelStatus st;
     st.hasFeedEffect = st.hasGameGuides = st.hasDepth = true; // the D3D11 route
+    st.hasQuality = true; // on danielblnc 0.4.2 or 0.5.0
     st.hotkeyName = "Ctrl+END";
     return st;
 }
@@ -470,6 +390,51 @@ void RuntimeLine() {
           "danielblnc line without the runtime");
 }
 
+// Network precision is there only for a danielblnc build with Quality (not 0.4.1, not mochizuki),
+// and says all it says -- label, both choices and its (?) -- in both languages.
+void QualityRow() {
+    ui::PanelStatus st = Status64();
+    ui::PanelSettings s = Base();
+    s.optional = ui::kOptQuality;
+    CHECK(Draw(s, st).count("w:Network precision"), "Network precision missing with Quality");
+    st.hasQuality = false;
+    CHECK(!(ui::AvailableOpts(st) & ui::kOptQuality), "the cascade offers Network precision "
+                                                      "for a runtime without Quality");
+    CHECK(!Draw(s, st).count("h:Engine"), "Engine header drawn for Network precision alone, "
+                                          "on a runtime without Quality");
+    s.optional |= ui::kOptMask; // another Engine row keeps the header up
+    CHECK(!Draw(s, st).count("w:Network precision"),
+          "Network precision drawn for a runtime without Quality");
+    s.optional = ui::kOptQuality;
+    st.hasQuality = true;
+    g_hover = true;
+    struct {
+        int language;
+        const char* label;
+        const char* fast;
+        const char* reference;
+        const char* help;
+    } langs[]{
+        {0, "Network precision", "Fast (default)", "Reference (NVIDIA's exact math)", "at once"},
+        {1, "Precisão da rede", "Rápida (padrão)", "Referência (contas exatas da NVIDIA)",
+         "na hora"},
+    };
+    for (const auto& l : langs) {
+        s.language = l.language;
+        g_items.clear();
+        const std::set<std::string> seen = Draw(s, st, nullptr, true);
+        CHECK(seen.count(std::string("w:") + l.label), "'%s' not drawn", l.label);
+        CHECK((g_items[l.label] == std::vector<std::string>{l.fast, l.reference}),
+              "'%s' does not offer '%s' and '%s'", l.label, l.fast, l.reference);
+        bool help = false;
+        for (const std::string& x : seen)
+            help |= x.find(l.help) != std::string::npos &&
+                    x.find("dlssnr_on_amd.ini") != std::string::npos;
+        CHECK(help, "'%s' has no (?) saying it applies %s", l.label, l.help);
+    }
+    g_hover = false;
+}
+
 } // namespace
 
 int main() {
@@ -487,6 +452,7 @@ int main() {
     Route32();
     RouteCaps();
     RuntimeLine();
+    QualityRow();
     if (g_failures) {
         std::printf("panel_check: %d failure(s)\n", g_failures);
         return 1;

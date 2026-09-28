@@ -1206,7 +1206,7 @@ void LoadSettings()
 #undef X
     // Advanced=1 was the single switch this replaced; honour it once as "show all of them".
     // kOptAll lives beside enum Opt, so a new bit widens both the mask and this in one edit. Read as
-    // an integer: 25 bits do not survive float. Masked, so a bit a newer build saved is dropped.
+    // an integer: 26 bits do not survive float. Masked, so a bit a newer build saved is dropped.
     g.settings.optional.store(static_cast<uint32_t>(GetPrivateProfileIntW(L"amd-nr", L"HiddenShown",
         static_cast<INT>(flag(L"Advanced", false) ? kOptAll : g.settings.optional.load()), ini.c_str())) & kOptAll);
     {

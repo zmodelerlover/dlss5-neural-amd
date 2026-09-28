@@ -81,7 +81,9 @@ ui::PanelStatus BridgeStatus(){
     ReadRuntime(s);
     s.mochizuki=w.mochizuki;
     if(w.mochizuki!=0)s.mochizukiMs=w.networkMs;
-    if(w.danielblnc!=0&&w.danielblnc<=std::size(rt::kBuilds)){s.danielblnc=rt::kBuilds[w.danielblnc-1].kVersion;s.danielblncMs=w.networkMs;}
+    // The wire names the build (its index + 1), and the build says whether it has Quality.
+    if(w.danielblnc!=0&&w.danielblnc<=std::size(rt::kBuilds)){s.danielblnc=rt::kBuilds[w.danielblnc-1].kVersion;s.danielblncMs=w.networkMs;
+        s.hasQuality=rt::kBuilds[w.danielblnc-1].kQuality!=0;}
     return s;
 }
 

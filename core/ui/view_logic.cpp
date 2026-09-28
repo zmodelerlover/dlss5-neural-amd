@@ -30,6 +30,7 @@ const OptRow kOpts[] {
     { kOptOutputScale,  kGrpEngine, "Output scale",      "Escala de saída" },
     { kOptSmooth,       kGrpImage,  "Output smoothing",  "Suavização da saída" },
     { kOptSeed,         kGrpEngine, "Fixed seed",        "Semente fixa" },
+    { kOptQuality,      kGrpEngine, "Network precision", "Precisão da rede" },
 };
 const int kOptCount = static_cast<int>(sizeof(kOpts) / sizeof(kOpts[0]));
 
@@ -46,7 +47,8 @@ uint32_t AvailableOpts(const PanelStatus &status)
     // claimed by it -- which is also what the All button writes.
     const uint32_t lacks = (status.hasFeedEffect ? 0u : kOptFeed) |
                            (status.hasGameGuides ? 0u : kOptGameGuides) |
-                           (status.hasDepth ? 0u : kOptDepth | kOptDepthInv | kOptDepthStretch);
+                           (status.hasDepth ? 0u : kOptDepth | kOptDepthInv | kOptDepthStretch) |
+                           (status.hasQuality ? 0u : kOptQuality);
     uint32_t bits = 0;
     for (int i = 0; i < kOptCount; ++i)
         if ((kOpts[i].bit & lacks) == 0)
