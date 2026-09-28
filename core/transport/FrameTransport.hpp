@@ -17,11 +17,14 @@ struct FrameTransport {
     // What this route can hand the network besides colour. The same ini asks every route for depth
     // and the game's motion; a route without the path says so once in the log (PrimaryRoute), and
     // the panel draws no control for what it cannot reach (RouteCaps). Motion is estimated
-    // wherever kGameGuides is off.
+    // wherever kGameGuides is off. The last two are start-up diagnostics the route reads, so the
+    // same line can say when the ini sets one this route does not.
     enum Cap : uint32_t {
         kDepth = 1u << 0,      // some depth guide: the game's buffer, or a copy taken before a clear
         kGameGuides = 1u << 1, // the game's own depth and motion buffers (Read from the game)
         kFeed = 1u << 2,       // AMD_Neural_Feed.fx reaches the network
+        kStage = 1u << 3,      // Stage=1 or 2 stops the route part-way
+        kBridge = 1u << 4,     // a D3D12 device of the route's own, which NoBridge=1 keeps down
     };
     virtual uint32_t Caps() const { return 0; }
     virtual void Present(reshade::api::device* dev, reshade::api::command_queue* queue,

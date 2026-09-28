@@ -43,7 +43,10 @@ never submits through ReShade, so its InfoQueue sees none of it:
   - the panel's capability bits (Feed.fx, Read from the game, depth) are the primary route's own
     Caps(), never a constant, and PrimaryRoute logs what each route reaches when it takes over;
   - the Vulkan and OpenGL routes' Stop keeps the port's contract: the add-on is unavailable, and the
-    panel has the reason.
+    panel has the reason;
+  - every route honours NoBackBuffer, a route claims Stage (kStage) exactly when it reads it and a
+    bridge (kBridge) exactly when NoBridge keeps one down, and RouteReach says when the ini sets one
+    the route does not read.
 
     python tools/transport_check.py
 """
@@ -230,6 +233,23 @@ for route in ("vulkan/vk_crossing.inc", "opengl/gl_crossing.inc"):
     stop = re.search(r"void Stop\(const char \*why\)\s*\{([^}]*)\}", (ROOT / "core/transport" / route).read_text(encoding="utf-8"))
     if not stop or "g.status.unavailable = true;" not in stop.group(1) or "g.status.reason = why;" not in stop.group(1):
         bad.append(f"{route}: Stop stands the route down without telling the panel (FrameTransport.hpp's contract)")
+routes = {"D3D12": ["d3d12/D3D12Transport.inc", "d3d12/D3D12Guides.inc"],
+          "D3D11": ["d3d11/D3D11Transport.inc", "d3d11/D3D11Guides.inc"],
+          "Vulkan": ["vulkan/VulkanTransport.inc", "vulkan/vk_route.inc", "vulkan/vk_crossing.inc"],
+          "OpenGL": ["opengl/OpenGLTransport.inc", "opengl/gl_route.inc", "opengl/gl_frame.inc"]}
+for name, parts in routes.items():
+    text = "".join((ROOT / "core/transport" / p).read_text(encoding="utf-8") for p in parts)
+    caps = re.search(r"uint32_t Caps\(\) const override \{ return ([^;]*); \}", text)
+    caps = caps.group(1) if caps else ""
+    if "g.noBackBuffer.load()" not in text:
+        bad.append(f"{name}: NoBackBuffer is not honoured")
+    if ("g.stage.load()" in text) != ("kStage" in caps):
+        bad.append(f"{name}: kStage ({caps or 'no Caps'}) does not say whether the route reads Stage")
+    if ("g.noBridge.load()" in text or "CrossingReady(" in text) != ("kBridge" in caps):
+        bad.append(f"{name}: kBridge ({caps or 'no Caps'}) does not say whether NoBridge keeps a bridge down")
+reach = body(FACTORY.read_text(encoding="utf-8"), "RouteReach")
+if "!(caps & FrameTransport::kStage)" not in reach or "!(caps & FrameTransport::kBridge)" not in reach:
+    bad.append("RouteReach: a Stage or NoBridge the route does not read is not said")
 if "RouteReach(*transport)" not in body(FACTORY.read_text(encoding="utf-8"), "PrimaryRoute"):
     bad.append("PrimaryRoute: a route taking over does not say what it reaches")
 

@@ -41,6 +41,21 @@ assert odd[2:4].tolist() == [[3.5, -2.0], [1306, 0]], "real vectors, up to the r
 assert odd[4].tolist() == [0, 0], "past the raster is not motion"
 assert not feed([[5, 5], [np.inf, 1]], False, cap).any(), "no source this frame: zero, never stale"
 
+
+def probe_zeroed(v16, cap):
+    """probes.inc: a half with all ones in its exponent (inf, NaN), or longer than FeedCap()."""
+    h = np.asarray(v16, np.float16)
+    with np.errstate(invalid="ignore"):
+        return (((h.view(np.uint16) & 0x7C00) == 0x7C00) | (np.abs(h.astype(np.float32)) > cap)).any(axis=-1)
+
+
+# The guide probe's count of what the feed will zero is the feed's own rule, on the field as it came.
+field = np.array([[65504, 0], [-65504, 3], [np.inf, 0], [np.nan, 1], [3.5, -2.0], [1306, 0],
+                  [1307, 0], [0, -1307], [-0.0, 0], [0, 0]], np.float16)
+shader = ((field.astype(np.float32).view(np.uint32) & 0x7FFFFFFF) > np.float32(cap).view(np.uint32)).any(axis=-1)
+assert probe_zeroed(field, cap).tolist() == shader.tolist() == [True] * 4 + [False, False, True, True, False, False], \
+    "the probe's zeroed share is not the feed's rule"
+
 inc = (ROOT / "core/temporal/motion_feed.inc").read_text()
 cpp = (ROOT / "core/addon/neural.cpp").read_text()
 probes = (ROOT / "core/addon/probes.inc").read_text()
@@ -55,6 +70,11 @@ fails = [why for ok, why in [
     (not re.search(r"if\s*\(haveMotion\)\s*\n\s*FeedMotion", cpp), "neural.cpp: FeedMotion is gated on haveMotion again"),
     (re.search(r"^\s+DemoteMotion\(", probes, re.M) is not None,
      "probes.inc: the probe no longer demotes a field longer than the raster"),
+    ("const float cap = FeedCap();" in probes
+     and "return (h & 0x7c00) == 0x7c00 || std::abs(HalfToFloat(h)) > cap;" in probes
+     and "past += zeroed(row[x * 2]) || zeroed(row[x * 2 + 1]) ? 1 : 0;" in probes,
+     "probes.inc: the share the feed will zero is not counted by the feed's rule"),
+    ("const float maxPx = FeedCap();" in inc, "motion_feed.inc: the feed and the probe do not share one cap"),
     ("!g.guideMotion.failed" in host, "host64.cpp: a demoted motion guide is still read on the x86 bridge"),
     (flow and all(re.fullmatch(r"AMDNR_WITH_FFX \? \w+ : 0", s) for s in flow)
      and not re.search(r"\.opticalFlow\s*=[^=]", src),

@@ -53,6 +53,10 @@ std::string RouteReach(const FrameTransport& route) {
                 : "no depth path on this API; motion estimated: no game MV path on this API";
     line += caps & FrameTransport::kFeed ? "; Feed.fx can hand over its own"
                                          : "; Feed.fx does not reach the network here";
+    if (g.stage.load() != 3 && !(caps & FrameTransport::kStage))
+        line += "; Stage=" + std::to_string(g.stage.load()) + " is not read on this route";
+    if (g.noBridge.load() && !(caps & FrameTransport::kBridge))
+        line += "; NoBridge=1 is not read on this route, which has no bridge";
     return line;
 }
 

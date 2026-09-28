@@ -8,6 +8,7 @@ namespace vkroute {
 // from Vulkan is opaque and D3D12 cannot open it.
 struct Transport final : FrameTransport {
     const char* Name() const override { return "Vulkan"; }
+    uint32_t Caps() const override { return kBridge; }
     void Present(device* dev, command_queue* queue, swapchain* sc) override {
         const auto native = reinterpret_cast<VkDevice>(dev->get_native());
         if (Foreign(g_route.device != nullptr && native != g_route.device, "VkDevice"))

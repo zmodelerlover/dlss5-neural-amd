@@ -325,6 +325,13 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   stats line also adds up how often the runtime's watchdog let the game's queue go (`timeouts`, over
   every pass's copy of the runtime) and ends on each copy's work (`module 1 job 816 retired 816`),
   and after a `Passes` change the log gives each pass's job ids again, for the new count.
+- **The log says what will not be used.** The `settings:` line carries the lab keys (`lab flow 0
+  maxpx 0 guard 0`: OpticalFlow, MotionMaxPx and HistoryGuard) where it said `inline 1`, which it
+  always is now. The route's line says when the ini sets `Stage` or `NoBridge` on a route that does
+  not read it: `Stage` stops only D3D11, OpenGL and the 32-bit helper part-way, and D3D12 has no
+  bridge to keep down. The guide probe says what share of the motion the feed is about to zero,
+  as longer than the raster (or `MotionMaxPx`), inf or NaN. `NoBackBuffer=1` now works on D3D12
+  too, where it was ignored: the frame goes out as the game drew it.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 

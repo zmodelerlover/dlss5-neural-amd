@@ -43,10 +43,17 @@ void DemoteMotion(double meanPx)
         "Giving up on it; the estimator takes the motion over.", meanPx);
 }
 
-void FeedMotion(ID3D12GraphicsCommandList *cmd, bool haveMotion)
+// The longest vector the feed lets through: MotionMaxPx, or the raster when that is 0. The guide
+// probe asks too, to say how much of a field the feed is about to zero.
+float FeedCap()
 {
     const float set = g.settings.motionMaxPx.load();
-    const float maxPx = set > 0.0f ? set : static_cast<float>(std::max(g.netWidth, g.netHeight));
+    return set > 0.0f ? set : static_cast<float>(std::max(g.netWidth, g.netHeight));
+}
+
+void FeedMotion(ID3D12GraphicsCommandList *cmd, bool haveMotion)
+{
+    const float maxPx = FeedCap();
     if (g.netMotion == nullptr || (g_motionFeed == nullptr &&
         !CompileShader(kMotionFeedShader, sizeof(kMotionFeedShader), "motion feed", g_motionFeed)))
         return;

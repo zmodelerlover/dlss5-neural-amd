@@ -7,6 +7,7 @@ namespace glroute {
 // default framebuffer rather than a texture and there is nothing to copy.
 struct Transport final : FrameTransport {
     const char* Name() const override { return "OpenGL"; }
+    uint32_t Caps() const override { return kStage | kBridge; }  // Stage below 3: transport only
     void Present(device*, command_queue* queue, swapchain* sc) override {
         if (CrossingReady(sc))
             glroute::Present(queue, sc);

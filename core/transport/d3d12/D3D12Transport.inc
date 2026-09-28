@@ -14,7 +14,7 @@ struct Transport final : FrameTransport {
     // copy is the game's buffer, so GameGuides=0 (ini only on this route: the panel's Read from the
     // game is D3D11's) stops it and the tally behind it, as it stops the D3D11 route looking at all;
     // the copy already taken goes stale after two presents and is no longer handed over.
-    uint32_t Caps() const override { return kDepth; }
+    uint32_t Caps() const override { return kDepth; }  // no bridge, and no Stage ladder
     void OnTargetsBound(device*, uint32_t, const resource_view*, resource depth) override {
         if (g.settings.useGameGuides.load())
             TallyBoundDepth(depth);
@@ -125,7 +125,7 @@ struct Transport final : FrameTransport {
         // back no immediate list after a mid-pass flush, which it never does.
         if (cmd_list == nullptr)
             return;
-        if (ok && CompositionIsFresh(runNetwork)) {
+        if (ok && CompositionIsFresh(runNetwork) && !g.noBackBuffer.load()) {
             {
                 resource_usage a = resource_usage::shader_resource, b = resource_usage::copy_dest;
                 cmd_list->barrier(1, &backRes, &a, &b);
@@ -141,8 +141,9 @@ struct Transport final : FrameTransport {
                 cmd_list->barrier(1, &backRes, &a, &b);
             }
         } else {
-            // Skipped or failed frame: the game's own image goes out untouched. The back buffer was
-            // put into shader_resource on the way in and has to reach present either way.
+            // Skipped or failed frame, or NoBackBuffer: the game's own image goes out untouched.
+            // The back buffer was put into shader_resource on the way in and has to reach present
+            // either way.
             resource_usage a = resource_usage::shader_resource, b = resource_usage::present;
             cmd_list->barrier(1, &backRes, &a, &b);
         }

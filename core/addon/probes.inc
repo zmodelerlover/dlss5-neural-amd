@@ -59,6 +59,7 @@ void RearmGuideProbe(bool replaced)
 }
 
 void DemoteMotion(double meanPx);  // core/temporal/motion_feed.inc
+float FeedCap();
 void DrainReadbacks(UINT nw, UINT nh)
 {
     if (g.pendingGuides)
@@ -139,7 +140,11 @@ void DrainReadbacks(UINT nw, UINT nh)
                                    "or the guide picked the wrong resource."
                                  : "  <-- varies, so this is a real depth buffer.");
 
-                UINT64 zero = 0, n = 0;
+                // What the feed will zero (motion_feed.inc): all ones in the exponent is inf or NaN,
+                // which HalfToFloat reads as 65536 and up, and the rest past the cap.
+                const float cap = FeedCap();
+                const auto zeroed = [&](uint16_t h) { return (h & 0x7c00) == 0x7c00 || std::abs(HalfToFloat(h)) > cap; };
+                UINT64 zero = 0, n = 0, past = 0;
                 double mag = 0.0, biggest = 0.0;
                 for (UINT y = 0; y < nh; ++y)
                 {
@@ -150,6 +155,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                         const double dx = HalfToFloat(row[x * 2]), dy = HalfToFloat(row[x * 2 + 1]);
                         if (dx == 0.0 && dy == 0.0)
                             ++zero;
+                        past += zeroed(row[x * 2]) || zeroed(row[x * 2 + 1]) ? 1 : 0;
                         mag += std::abs(dx) + std::abs(dy);
                         biggest = std::max(biggest, std::abs(dx) + std::abs(dy));
                         ++n;
@@ -162,11 +168,12 @@ void DrainReadbacks(UINT nw, UINT nh)
                 // readings of "8% still" mean nothing unless it is known which of the three
                 // things producing the field was running for each.
                 Log("guide probe, motion %ux%u (%s): %llu%% exactly still, mean |d| %.3f px, "
-                    "max %.3f px%s", nw, nh,
+                    "max %.3f px, %llu%% past the feed's %.0f px, so zeroed%s", nw, nh,
                     g.guideMotion.external  ? "from the effect"
                     : g.gameMotionActive    ? "the game's own"
                                             : "estimated",
                     static_cast<unsigned long long>(100 * zero / n), mag / (2.0 * n), biggest,
+                    static_cast<unsigned long long>(100 * past / n), static_cast<double>(cap),
                     zero == n ? "  <-- ALL ZERO. Either nothing is moving, or the guide picked a "
                                 "buffer the engine does not write velocity into."
                               : "");

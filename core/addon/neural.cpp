@@ -1275,15 +1275,15 @@ void LoadSettings()
     }
     g.settings.diagnostics = static_cast<int>(num(L"Diagnostics", 0.0f));
 
-    Log("settings: scale %.2f passes %d intensity %.2f structure %.2f skin %.2f tone %.2f "
-        "inline %d bicubic %d motion %d history %d gate %.3f ratio %.2f debug %d temporal %d seed %d smooth %.2f/%.0f",
+    Log("settings: scale %.2f passes %d intensity %.2f structure %.2f skin %.2f tone %.2f bicubic %d motion %d "
+        "history %d gate %.3f ratio %.2f debug %d temporal %d seed %d smooth %.2f/%.0f lab flow %d maxpx %.0f guard %d",
         static_cast<double>(g.settings.scale.load()), g.settings.passes.load(),
         static_cast<double>(g.settings.intensity.load()), static_cast<double>(g.settings.structure.load()),
-        static_cast<double>(g.settings.skin.load()), static_cast<double>(g.settings.tone.load()),
-        g.settings.inlineMode.load() ? 1 : 0, g.settings.bicubic.load() ? 1 : 0, g.settings.useMotion.load() ? 1 : 0,
-        g.settings.useHistory.load() ? 1 : 0, static_cast<double>(g.settings.flowGate.load()),
+        static_cast<double>(g.settings.skin.load()), static_cast<double>(g.settings.tone.load()), g.settings.bicubic.load() ? 1 : 0,
+        g.settings.useMotion.load() ? 1 : 0, g.settings.useHistory.load() ? 1 : 0, static_cast<double>(g.settings.flowGate.load()),
         static_cast<double>(g.settings.flowRatio.load()), g.settings.debugView.load(), g.settings.temporalMode.load(),
-        g.settings.fixedSeed.load(), static_cast<double>(g.settings.outputSmooth.load()), static_cast<double>(g.settings.outputSmoothLimit.load()));
+        g.settings.fixedSeed.load(), static_cast<double>(g.settings.outputSmooth.load()), static_cast<double>(g.settings.outputSmoothLimit.load()),
+        g.settings.opticalFlow.load(), static_cast<double>(g.settings.motionMaxPx.load()), g.settings.historyGuard.load());
     Log("compose: %s, guard %.2f%s, colour strength %.2f, residual limit %.3f, edge fade %.3f, "
         "later passes %s",
         g.settings.ratioGuard.load() > 0.0f ? "ratio" : "additive",
