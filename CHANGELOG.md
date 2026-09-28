@@ -2,14 +2,32 @@
 
 ## Unreleased
 
-Planned as **v0.7.0**. Built on v0.6.9, on the same pinned **DLSS-NR-on-AMD v0.4.1** runtime
-(`c8808716…`) and the same weights, so an update replaces the add-on and nothing else. On 32-bit
-games `amd-nr.addon32` and `amd-nr-host64.exe` go together (bridge protocol v5), and a mismatched
-pair is refused at the header, as before. Both runtimes, danielblnc and mochizuki, go through
-everything below.
+Planned as **v0.7.0**. Built on v0.6.9. It moves to **DLSS-NR-on-AMD v0.4.2** (patched
+`f9aa21a2…`) and still runs v0.4.1 (`c8808716…`), with the same weights for both, so a by-hand
+update that keeps the old `dlssnr_amd_pass1.dll` still works. On 32-bit games `amd-nr.addon32` and
+`amd-nr-host64.exe` go together (bridge protocol v5), and a mismatched pair is refused at the
+header, as before. Both runtimes, danielblnc and mochizuki, go through everything below.
 
 ### What changes when you update
 
+- **DLSS-NR-on-AMD v0.4.2, with v0.4.1 still accepted.** Upstream measures v0.4.2 15% faster than
+  v0.4.1 at 1080p on RX 9000 in its new Fast mode, the default, and brings the temporal history
+  filter and one network block closer to NVIDIA's. The data block moved again in three pieces;
+  every address was mapped by its own anchor in the v0.4.2 binary and agrees with the OptiScaler
+  fork's own map on every field both name, and the two only this add-on uses (CpuWait, the
+  network's GPU time) were derived a second time on their own. The two patches moved to `0x655d`
+  and `0x91d2`. Its two new ini keys are left as the person has them: `Quality` (`fast`, or
+  `reference` for NVIDIA's exact arithmetic) and `NoiseHandoff` (off by default; with it on, Fixed
+  seed still holds the noise still, at one more kernel launch per job). The status column names the
+  build that runs ("danielblnc 0.4.2: network X ms"), on the 32-bit panel too.
+- **danielblnc's 0.5.0 supporter build runs too, if you have it.** It is not distributed, by this
+  project or by the installer: danielblnc gives it to his supporters, so you supply your own
+  `version.dll` or its setup. The installer checks it, patches it and installs it for you; by hand,
+  `tools/patch_runtime.py` does the same (`tools/extract_runtime.py` first, for the setup). Its
+  addresses were mapped the same two ways as v0.4.2's and agree. It adds RDNA3 (RX 7000) kernels
+  beside the RDNA4 ones; on RDNA3 it keeps a half-precision copy of the weights, about 280 MB more
+  per pass, and on RDNA4 it allocates nothing new. Its own overlay stays off: it draws only from
+  the Present hooks the first patch keeps the runtime from installing.
 - **New: Fixed seed and Output smoothing, and with Temporal On they are the defaults** on every
   route, the steadiest set measured on recorded play. **Fixed seed** (Engine) holds the network's
   noise pattern still, as the reference does: on a still frame with nothing temporal on,
@@ -133,6 +151,10 @@ everything below.
 
 ### Image
 
+- **The runtime is handed the whole packet it reads.** Since v0.4.1 its record entry reads 0x60
+  bytes, 16 more than the add-on passed, among them a jitter pair it reads on every frame; those
+  came from whatever was on the stack. They are zero now, as the OptiScaler fork passes them.
+  Whether the stack bytes ever moved the picture was not measured.
 - **Lighting no longer flickers in motion where the game's motion buffer is not really motion**, as
   in Tomb Raider 2013 on the 32-bit bridge. The motion handed to the network is checked on every
   frame and every route: a vector longer than the raster, inf or NaN becomes no motion. Tomb
@@ -258,6 +280,13 @@ everything below.
 - **The mochizuki runtime shares the danielblnc path's rules:** a new pass count starts the
   history again, the panel offers every pass, and it runs through the same run-or-skip decision,
   device checks and stand-downs on every route.
+- **The danielblnc runtime is recognised from a table of the builds this add-on knows**
+  (`core/addon/runtime_offsets.h`), by the hash of `dlssnr_amd_pass1.dll`, and every address goes
+  through the build found. A file that is none of them is refused as before, and the log names the
+  builds it takes. `tools/runtime-patches.json` lists each build's patches and patched hash;
+  `tools/patch_runtime.py` picks the build from the file it is given and checks what it writes, and
+  `tools/runtime_offsets_check.py` proves the build it is handed, and without one refuses a build
+  that leaves an address out.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 

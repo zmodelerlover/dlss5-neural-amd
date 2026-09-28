@@ -28,11 +28,17 @@ Check them against `tools/SHA256SUMS.txt` before using them. The add-on hashes t
 and refuses anything that is not the exact build it was written against, because every offset in it
 is a hardcoded address into that one binary.
 
-**This release moved to the v0.4.1 runtime.** If you are upgrading, replace
-`dlssnr_amd_pass1.dll` — the v0.4.0 one is refused and the log says so by name. The weights did
-not change, so leave `dlssnr_on_amd_weights.bin` where it is. If you build the runtime yourself
-from the upstream setup, the setup carries the DLL inside the installer rather than after it (since
-v0.3.3); `tools/extract_runtime.py` finds it either way.
+**This release runs the v0.4.2 runtime, and still the v0.4.1 one.** If you are upgrading,
+replacing `dlssnr_amd_pass1.dll` with v0.4.2's is worth it but not needed; any other build is
+refused and the log names the ones it takes. The weights did not change, so leave
+`dlssnr_on_amd_weights.bin` where it is. If you build the runtime yourself from the upstream setup,
+the setup carries the DLL inside the installer rather than after it (since v0.3.3);
+`tools/extract_runtime.py` finds it either way, and `tools/patch_runtime.py version.dll
+tools/runtime-patches.json dlssnr_amd_pass1.dll` applies this add-on's two patches.
+
+**danielblnc's 0.5.0 supporter build runs too, and is not distributed.** Nobody hands it out here:
+if you have it, the same two commands turn your own `version.dll` (or its setup) into the
+`dlssnr_amd_pass1.dll` the add-on accepts.
 
 ## Installing
 

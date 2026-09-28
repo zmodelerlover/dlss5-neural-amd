@@ -94,6 +94,26 @@ The panel shows fifteen controls, fourteen on a 64-bit game, which has no Timing
 else it can do is one tick away under **More settings** at the bottom, and all of it is
 editable in `amd-nr.ini` either way.
 
+## Which danielblnc runtime
+
+The add-on runs **DLSS-NR-on-AMD v0.4.2**, which the installer puts in, and still runs **v0.4.1**,
+so a folder that keeps the older `dlssnr_amd_pass1.dll` goes on working. It tells the builds apart
+by hash and refuses any other; the status column says which one runs.
+
+It also runs **0.5.0**, the build danielblnc gives his supporters. **It is not distributed**, by this
+project or by the installer: if you have it, you supply your own `version.dll` or its
+`dlssnr_on_amd_setup.exe`. In the installer, pick **0.5.0 — supporter build, your own files** in the
+game's panel and choose the file; it checks the file, patches it for the add-on and keeps a copy
+for your other games. By hand:
+
+```
+python tools/extract_runtime.py dlssnr_on_amd_setup.exe version.dll      (only for the setup)
+python tools/patch_runtime.py version.dll tools/runtime-patches.json dlssnr_amd_pass1.dll
+```
+
+The weights are the same file for all three. On an RDNA3 card 0.5.0 keeps a half-precision copy of
+them, about 280 MB more VRAM per pass; on RDNA4 it needs nothing more than v0.4.2.
+
 ## The mochizuki runtime (experimental)
 
 The add-on can also run the network through `MochizukiNrRuntime.dll`, the runtime the
