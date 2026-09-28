@@ -13,22 +13,25 @@ void View(PanelSettings &s)
 {
     int dbg = s.debugView;
     if (ImGui::Combo(T("View", "Visão"), &dbg,
-                     T("Off\0Network input\0Network output\0Residual x8\0Motion\0Depth x500\0",
-                       "Desligado\0Entrada da rede\0Saída da rede\0Resíduo x8\0Movimento\0Profundidade x500\0")))
+                     T("Off\0Network input\0Network output\0Residual x8\0Motion\0Depth (auto-scaled)\0",
+                       "Desligado\0Entrada da rede\0Saída da rede\0Resíduo x8\0Movimento\0Profundidade (auto)\0")))
         s.debugView = dbg;
     Help("Replaces the screen with one stage of the pipeline.\n\n"
          "Residual x8 is the one that answers \"is it doing anything\": the correction alone "
          "against mid grey. Flat grey means the network changed nothing; structure following "
          "edges and texture means it is working.\n\n"
          "Network input black means nothing downstream can work. Network output identical to "
-         "the input means the network handed back what it was given.",
+         "the input means the network handed back what it was given.\n\n"
+         "Depth is scaled to the range the guide probe last measured, times Intensity.",
 
          "Substitui a tela por um estágio do pipeline.\n\n"
          "Resíduo x8 é a que responde \"está fazendo alguma coisa\": a correção sozinha "
          "contra cinza médio. Cinza chapado significa que a rede não mudou nada; estrutura "
          "seguindo arestas e textura significa que está funcionando.\n\n"
          "Entrada da rede preta significa que nada depois disso pode funcionar. Saída da rede "
-         "idêntica à entrada significa que a rede devolveu o que recebeu.");
+         "idêntica à entrada significa que a rede devolveu o que recebeu.\n\n"
+         "A profundidade é escalada para a faixa que a sonda de guias mediu por último, vezes a "
+         "Intensidade.");
 }
 
 void Limits(PanelSettings &s)

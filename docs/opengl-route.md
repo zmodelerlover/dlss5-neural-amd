@@ -337,7 +337,7 @@ reads both layouts and says which one it found.
 `amd-nr.ini` for a scripted session:
 
 ```ini
-[dlss5]
+[amd-nr]
 StartOn=1        ; no hotkey needed
 Stage=2          ; transport only; 3 runs the network
 Scale=0.5

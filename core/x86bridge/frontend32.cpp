@@ -96,7 +96,7 @@ struct Front {
     x86bridge::Handle process,pipe,job;DWORD hostPid=0;LUID luid{};
     swapchain* active=nullptr;bool settings=false,enabled=false,failed=false,built=false,reset=true,hidden=false,keyDown=false,transport=false;
     int toggleKey=VK_END,toggleMods=1;bool disableAltTab=false;uint64_t generation=0,frame=0;uint32_t guideTaken=0;
-    // Pipelined presentation, off unless the ini asks. When on, a frame is posted at the end of one
+    // Pipelined presentation, on unless the ini has Async=0. When on, a frame is posted at the end of one
     // present and its answer collected at the start of the next, so the helper works while the game
     // builds its next frame instead of while the game waits. pendingFrame is what the outstanding
     // answer belongs to, and the raster it was captured at, because an answer that outlived a resize
@@ -904,7 +904,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     x86bridge::Ack pendingAck{};bool havePending=false;
     if(!CollectPending(pendingAck,havePending)){Fault("pipelined frame reply failed or mismatched");return;}
     const double collectMs=probe.Split();
-    if(!SyncControls()){Fault("control protocol v2 synchronization failed");return;}
+    if(!SyncControls()){Fault("control protocol synchronization failed");return;}
     if(!g.enabled){g.reset=true;return;}
     ComPtr<ID3D11Texture2D> bb;ComPtr<IDirect3DSurface9> bb9;
     UINT width=0,height=0;DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
@@ -989,7 +989,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
         if(!x86bridge::Post(g.pipe.value,g.process.value,x86bridge::Kind::Frame,&f,sizeof(f))){Fault("pipelined frame post failed");return;}
         g.pendingFrame=f;g.pendingWidth=width;g.pendingHeight=height;g.pending=true;
     }
-    if(g.frame<=3||g.frame%120==0)Log("x86bridge frame=%llu result=%u same_frame=1 depth=%u motion=%u",f.id,static_cast<unsigned>(a.result),f.depthValid,f.motionValid);
+    if(g.frame<=3||g.frame%120==0)Log("x86bridge frame=%llu result=%d same_frame=%d depth=%u motion=%u",f.id,answered?static_cast<int>(a.result):-1,g.async?0:1,f.depthValid,f.motionValid);
     if(probe.Due()){
         const double n=static_cast<double>(probe.frames);
         Log("x86bridge stage probe over %u frames: input+prepare %.2f ms, host %.2f ms, output %.2f ms, bridge total %.2f ms (%s, %s)",

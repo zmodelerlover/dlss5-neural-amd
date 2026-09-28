@@ -343,6 +343,10 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   (`HOSTCHECK_FRAMES` in the capture add-on), and it prints each API's still-frame flicker and
   whether each pair of APIs agrees within their own noise. `--addon32` adds the 32-bit bridge's
   D3D9 and D3D11. `--selftest` checks its verdicts without a GPU.
+- The Debug view's depth entry is **Depth (auto-scaled)**, which it has been since the guide probe
+  started setting its scale from the range it measured; it still said x500, the PS2's. The 32-bit
+  frontend's frame line says `same_frame=0` when presentation is pipelined, where it always said 1,
+  and `result=-1` when no answer came back with that present.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 
