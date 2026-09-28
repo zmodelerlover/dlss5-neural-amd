@@ -1,5 +1,6 @@
 // The runtime's file before it loads: which build it is, its own ini, and the copy that imports
-// the private D3D12 instead of the system one. Included by neural.cpp where they used to be.
+// the private D3D12 instead of the system one; and the probe that says who called into null once
+// it runs. Included by neural.cpp where they used to be.
 
 // The engine reads dlssnr_on_amd.ini from DllMain, so it has to exist before LoadLibrary.
 // Without the key its InlineWaitMs is 200 ms, clamped to 50..5000 (ini reader, v0.3.0 and v0.4.0
@@ -223,4 +224,48 @@ const rt::Build *IdentifyRuntime(const std::filesystem::path &file)
     Log("dlssnr_amd_pass1.dll is the size of a known build but not one: SHA-256 starts %.16s..., and "
         "this add-on knows %s. Refused.", hex, KnownRuntimes().c_str());
     return nullptr;
+}
+
+// Who jumped to null, and from where.
+//
+// A call through a null pointer faults with ExceptionAddress == 0, and the engine's own handler
+// prints exactly that and nothing else, which names the victim and not the culprit. The return
+// address a `call` pushes is still sitting at RSP, so one read of it says which instruction in
+// the runtime made the call, as an offset from the module base -- and that is a line in IDA.
+//
+// First-chance and read-only: this returns CONTINUE_SEARCH always, so it changes no behaviour.
+PVOID g_probe = nullptr;  // removed at DETACH: an unload mid-process must not leave it dangling
+LONG CALLBACK NullJumpProbe(EXCEPTION_POINTERS *e)
+{
+    static LONG reported = 0;
+    if (e == nullptr || e->ExceptionRecord == nullptr || e->ContextRecord == nullptr)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION ||
+        e->ExceptionRecord->ExceptionAddress != nullptr)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedExchange(&reported, 1) != 0)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    const uintptr_t rsp = static_cast<uintptr_t>(e->ContextRecord->Rsp);
+    for (int i = 0; i < 8; ++i)
+    {
+        uintptr_t slot = 0;
+        if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void *>(rsp + i * 8), &slot,
+                              sizeof(slot), nullptr) == 0)
+            continue;
+        HMODULE owner {};
+        char name[MAX_PATH] {};
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(slot), &owner) &&
+            GetModuleFileNameA(owner, name, MAX_PATH) != 0)
+        {
+            const char *leaf = std::strrchr(name, '\\');
+            Log("fault probe: jumped to null; stack+%d returns to %s+0x%llx%s", i * 8,
+                leaf ? leaf + 1 : name,
+                static_cast<unsigned long long>(slot - reinterpret_cast<uintptr_t>(owner)),
+                owner == g.runtime ? "   <<< THE RUNTIME" : "");
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
 }
