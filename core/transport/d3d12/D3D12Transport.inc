@@ -10,14 +10,18 @@ namespace d3d12route {
 
 struct Transport final : FrameTransport {
     const char* Name() const override { return "D3D12"; }
-    // Depth only as SnapshotBeforeClear's copy, which the Depth switch alone gates: no velocity
-    // tally, and no Feed.fx, here yet.
+    // Depth only as SnapshotBeforeClear's copy: no velocity tally, and no Feed.fx, here yet. The
+    // copy is the game's buffer, so GameGuides=0 (ini only on this route: the panel's Read from the
+    // game is D3D11's) stops it and the tally behind it, as it stops the D3D11 route looking at all;
+    // the copy already taken goes stale after two presents and is no longer handed over.
     uint32_t Caps() const override { return kDepth; }
     void OnTargetsBound(device*, uint32_t, const resource_view*, resource depth) override {
-        TallyBoundDepth(depth);
+        if (g.settings.useGameGuides.load())
+            TallyBoundDepth(depth);
     }
     void OnDepthCleared(command_list* cmd, device* dev, resource_view dsv) override {
-        SnapshotBeforeClear(cmd, dev, dsv);
+        if (g.settings.useGameGuides.load())
+            SnapshotBeforeClear(cmd, dev, dsv);
     }
     // g.device and the runtime hold references, so the old device outlives this and a new one never
     // takes its address: without this event, the compare in Present still skips the new one.

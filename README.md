@@ -86,7 +86,9 @@ The main controls:
 The defaults are a reasonable starting point. For a steady picture they turn on **Temporal**
 (`Temporal=2`), **Fixed seed** (`FixedSeed=1`) and **Output smoothing** at 0.80 with a 10/255
 limit (`OutputSmooth=0.8`, `OutputSmoothLimit=10`), the steadiest set measured on recorded play.
-An `amd-nr.ini` you already have keeps every value it sets. To go back, set Temporal to Auto,
+An `amd-nr.ini` you already have keeps every value it sets, with one exception made once: one
+from before v0.7.0 that holds `Temporal=0`, the default then, moves to `Temporal=2`, and the log
+says so. To go back, set Temporal to Auto,
 untick Fixed seed and slide Output smoothing to off, or write `Temporal=0`, `FixedSeed=0` and
 `OutputSmooth=0` in `amd-nr.ini`.
 

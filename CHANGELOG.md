@@ -36,10 +36,12 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   previous answer, moved by the motion, by up to 0.80 where the two agree and less as they differ,
   and leaves differences of 10/255 or more alone (`OutputSmoothLimit`, ini only). A fresh
   `amd-nr.ini` is written with `Temporal=2`, `FixedSeed=1`, `OutputSmooth=0.8` and
-  `OutputSmoothLimit=10`, and Factory Defaults restores them on both panels. An existing
-  `amd-nr.ini` is not rewritten and keeps every key it has, so it keeps its `Temporal`; no earlier
-  release wrote `FixedSeed` or `OutputSmooth`, so those two read as on. To go back, set Temporal
-  to Auto, untick Fixed seed and slide Output smoothing to off, or put `Temporal=0`,
+  `OutputSmoothLimit=10`, and Factory Defaults restores them on both panels. An `amd-nr.ini` from
+  an earlier release that holds `Temporal=0`, the default then, is moved once to `Temporal=2`, with
+  `FixedSeed=1`, `OutputSmooth=0.8` and `OutputSmoothLimit=10` written as they already read, and the
+  log says so; one that holds another Temporal keeps it, and reads Fixed seed and Output smoothing
+  as on, since no earlier release wrote them. A `Temporal=0` set after that stays. To go back, set
+  Temporal to Auto, untick Fixed seed and slide Output smoothing to off, or put `Temporal=0`,
   `FixedSeed=0` and `OutputSmooth=0` in `amd-nr.ini`.
 - **D3D12 games: every frame goes through the network.** Same-frame only made the GPU wait for the
   previous evaluation, so with frames in flight every present during that wait went out as the
@@ -223,7 +225,8 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   candidate line says `before_clear=1`. On D3D12 the pre-clear copy is handed over only while it is
   of the buffer the depth pick holds and at most two presents old: a game that stops clearing, or a
   newly picked buffer, now gives no depth instead of an old frame's, and the Status column no
-  longer names the snapshot as the depth source then.
+  longer names the snapshot as the depth source then. `GameGuides=0` (ini only on D3D12) now stops
+  that copy and the depth pick behind it, as it stops the D3D11 route looking at all.
 - **The temporal history is dropped by one rule on every route**, and the log says why
   (`temporal history dropped: <reason> (<n> so far)`, a line each time the reason changes). It goes
   when a raster of a new size is built, when Scale, DepthInverted, History, Temporal, Motion, Depth,

@@ -1119,47 +1119,21 @@ void LoadSettings();
 bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat);
 void SaveSettings(bool quiet = false);
 
+#include "ini_migrate.inc"
+
 // Returns whether it read the settings itself, which it does only on the run that writes the file.
 // The caller uses that to skip a second read: on a first run this used to parse the ini twice and
 // print the same two "settings:" and "compose:" lines twice, describing one state.
-// v0.6.5 renamed the add-on's files. Somebody upgrading has a dlss5-neural.ini they spent time
-// on, and a rename that silently resets every setting to default is a worse first impression than
-// any rebrand is worth -- so the old file is carried over once, section header and all, and left
-// in place rather than deleted. If both exist the new one wins and nothing is touched.
-//
-// ponytail: a copy and one string replace. The keys did not change, only the section they sit in
-// and the name of the file holding them.
-void MigrateLegacyIni()
-{
-    const auto here = ExeDirectory();
-    const auto now = here / L"amd-nr.ini", was = here / L"dlss5-neural.ini";
-    std::error_code ec;
-    if (std::filesystem::exists(now, ec) || !std::filesystem::exists(was, ec))
-        return;
-
-    std::ifstream in(was, std::ios::binary);
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    in.close();
-    if (text.empty())
-        return;
-    if (const size_t at = text.find("[dlss5]"); at != std::string::npos)
-        text.replace(at, 7, "[amd-nr]");
-
-    std::ofstream out(now, std::ios::binary);
-    if (!out)
-        return;
-    out << text;
-    out.close();
-    Log("carried dlss5-neural.ini over to amd-nr.ini; the old file is left where it was.");
-}
-
 bool EnsureNeuralIni()
 {
     MigrateLegacyIni();
     const auto ini = ExeDirectory() / L"amd-nr.ini";
     std::error_code ec;
     if (std::filesystem::exists(ini, ec))
+    {
+        MigrateTemporalDefault(ini);
         return false;
+    }
 
     std::ofstream f(ini, std::ios::binary);
     if (!f)
