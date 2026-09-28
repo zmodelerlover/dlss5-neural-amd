@@ -23,6 +23,20 @@ struct Transport final : FrameTransport {
         if (g.settings.useGameGuides.load())
             SnapshotBeforeClear(cmd, dev, dsv);
     }
+    // What this route holds of the game's depth. depthBest holds a reference of its own, so it has to
+    // be let go here as well as remembered. Holding a reference on a resource the game owns across its
+    // own teardown is the same shape as the bug that broke this add-on's swapchain resize once
+    // already: the game cannot finish releasing what we are still pointing at. The next bind
+    // re-finds it.
+    void ReleaseSwapchainSized() override {
+        g_d12DepthTally.clear();
+        g_d12DepthCold = 0;
+        g.depthBest.Reset();
+        g.snapshotOf = nullptr; // nor is the snapshot of the pick any more
+        g.depthWidth = g.depthHeight = 0;
+        g.depthFormat = DXGI_FORMAT_UNKNOWN;
+        g.depthBinds = g.depthBestBinds = 0;
+    }
     // g.device and the runtime hold references, so the old device outlives this and a new one never
     // takes its address: without this event, the compare in Present still skips the new one.
     void OnDestroyDevice(device* dev) override {

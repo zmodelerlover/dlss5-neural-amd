@@ -32,9 +32,9 @@ owners = [("addon/neural.cpp", "g"), ("transport/opengl/gl_crossing.inc", "g_rou
           ("transport/vulkan/vk_crossing.inc", "g_route"), ("temporal/optical_flow.inc", "g_flow"),
           ("temporal/smooth.inc", "g_filters"), ("temporal/motion_feed.inc", "g_motionFeed"),
           ("addon/neural.cpp", "g_depthTally"), ("addon/neural.cpp", "g_motionTally"),
-          ("addon/neural.cpp", "g_d12DepthTally")]
+          ("transport/d3d12/D3D12Guides.inc", "g_d12DepthTally")]
 for rel, name in owners:
-    if not re.search(rf"^\S.*&{name} = \*new ", (ROOT / "core" / rel).read_text(encoding="utf-8"), re.M):
+    if not re.search(rf"^\S.*&\s?{name} = \*new ", (ROOT / "core" / rel).read_text(encoding="utf-8"), re.M):
         bad.append(f"core/{rel}: {name} is not a never-destroyed reference")
 # And no new one by value, in the sources the add-on is built from.
 for part in ("addon", "transport", "temporal", "shared"):

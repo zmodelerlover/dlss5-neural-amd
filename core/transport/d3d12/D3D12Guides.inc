@@ -4,6 +4,124 @@
 
 namespace d3d12route {
 
+// The D3D11 route's bind tally (guide_choice.h), for D3D12 depth, which had none: it picked by
+// size alone. Separate because these are ID3D12Resource and because depth here is decided on
+// clears as well as binds -- the buffer the game clears every frame is the one it draws the scene
+// into.
+struct D12Depth {
+    ComPtr<ID3D12Resource> res;
+    UINT binds = 0, clears = 0;
+    UINT width = 0, height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+};
+auto& g_d12DepthTally = *new std::unordered_map<void*, D12Depth>; // never destroyed, as g is
+UINT g_d12DepthCold = 0;
+
+// One candidate's entry, created on first sight. Binds and clears both come through here, because
+// a clear is evidence in its own right: an engine is allowed to clear a buffer it has not bound
+// yet this present, and counting that only when the resource happened to be bound first left the
+// buffer the game clears every frame looking like one it never clears.
+D12Depth& TallyD12Depth(ID3D12Resource* native, const D3D12_RESOURCE_DESC& d) {
+    D12Depth& slot = g_d12DepthTally[native];
+    if (slot.res == nullptr) {
+        slot.res = native; // ComPtr: takes a reference
+        slot.width = static_cast<UINT>(d.Width);
+        slot.height = d.Height;
+        slot.format = d.Format;
+    }
+    return slot;
+}
+
+// Screen-shaped: the aspect within 3% of the swapchain's, and at least a ninth of its area.
+//
+// This is what "largest wins" was missing. A 2048x2048 R16 shadow map is larger than the scene
+// depth of a game rendering 1129x706 into a 1920x1200 swapchain, and it won every time. An
+// unknown swapchain size decides nothing rather than accepting everything, which is how a 1x1
+// buffer used to get through the floor before the raster was known.
+bool ScreenShaped(UINT64 w, UINT h, UINT screenW, UINT screenH) {
+    if (w < kGuideFloor || h < kGuideFloor)
+        return false;
+    // The swapchain size is only known once the effect has been enabled once, and the default is
+    // to start switched off. Rejecting everything until then would mean a fresh install never
+    // finds a guide at all, which is the very thing the observation code says it exists to avoid.
+    // The floor above is what keeps a 1x1 out; shape can only be judged once there is a shape to
+    // judge against.
+    if (screenW == 0 || screenH == 0)
+        return true;
+    const double aspect = static_cast<double>(w) / static_cast<double>(h);
+    const double screen = static_cast<double>(screenW) / static_cast<double>(screenH);
+    if (std::abs(aspect - screen) > 0.03 * screen)
+        return false;
+    return static_cast<double>(w) * static_cast<double>(h) >=
+           static_cast<double>(screenW) * static_cast<double>(screenH) / 9.0;
+}
+
+// Which D3D12 buffer is the scene depth, decided once per present.
+//
+// Three things went wrong with "largest wins", all measured on Cyberpunk 2077 at 1129x706 into a
+// 1920x1200 swapchain: it took a 2048x2048 shadow map; with a shape filter added it took a
+// 1920x1200 buffer the game drew into 7 times a frame over the scene depth it drew into ~2,400
+// times; and when two buffers were the same size it settled on the one the game never clears, so
+// the pre-clear snapshot froze on a stale frame.
+//
+// So: count binds, count clears, and when anything screen-shaped was cleared this present, only
+// cleared buffers are eligible. A challenger needs a clear margin over the incumbent, and with no
+// incumbent three presents are added up first -- the same rule, and the same reason, as
+// SettleGuide. Caller holds g.lock. OnPresent calls it on every route, as it always has: the tally
+// holds references to the game's buffers, and settling is what lets go of them each present.
+void SettleD3D12Depth() {
+    bool anyCleared = false;
+    for (const auto& entry : g_d12DepthTally)
+        if (entry.second.clears > 0) {
+            anyCleared = true;
+            break;
+        }
+
+    const D12Depth* best = nullptr;
+    for (const auto& entry : g_d12DepthTally) {
+        if (anyCleared && entry.second.clears == 0)
+            continue;
+        if (best == nullptr || entry.second.binds > best->binds)
+            best = &entry.second;
+    }
+    if (best == nullptr) {
+        g_d12DepthTally.clear();
+        return;
+    }
+
+    if (best->res.Get() == g.depthBest.Get()) {
+        g.depthBestBinds = best->binds;
+        g_d12DepthCold = 0;
+        g_d12DepthTally.clear();
+        return;
+    }
+    if (g.depthBest == nullptr) {
+        if (++g_d12DepthCold < 3)
+            return; // deliberately not cleared: three presents of binds add up
+        g_d12DepthCold = 0;
+    } else if (best->binds <= g.depthBestBinds + g.depthBestBinds / 4) {
+        g_d12DepthTally.clear(); // no margin, so the incumbent keeps the slot
+        return;
+    }
+
+    RearmGuideProbe(g.depthBest != nullptr && g.settings.useDepth.load()); // incumbent still set
+    g.depthBest = best->res;
+    g.depthWidth = best->width;
+    g.depthHeight = best->height;
+    g.depthFormat = best->format;
+    g.depthBinds = g.depthBestBinds = best->binds;
+    // The snapshot is deliberately NOT released here. A dispatch recorded into the game's command
+    // list still reads it, and D3D12 does not keep a resource alive because an in-flight list
+    // references it -- the rule EnsureResources spells out, and it waits for the queue before it
+    // drops anything. This runs at the top of present with no such wait, and a job routinely spans
+    // several presents. It is only no longer read: the next clear of the new buffer copies over it
+    // (rebuilt if the size or format changed), and until then the network gets no depth.
+    g.snapshotOf = nullptr;
+    Log("depth (D3D12): taking %ux%u format %d, bound %u times a present and cleared %u",
+        best->width, best->height, static_cast<int>(best->format), best->binds, best->clears);
+    g_d12DepthTally.clear();
+}
+
 void TallyBoundDepth(resource res) {
     if (res.handle == 0)
         return;

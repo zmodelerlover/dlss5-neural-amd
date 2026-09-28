@@ -291,7 +291,8 @@ src = {rel: (root / rel).read_text(encoding="utf-8-sig") for rel in (
     "core/addon/neural.cpp", "core/addon/probes.inc", "core/x86bridge/host64.cpp",
     "core/x86bridge/panel32.cpp", "core/ui/view_logic.cpp", "core/shared/d3d11_guides.h",
     "core/shared/guide_choice.h", "core/transport/d3d11/D3D11Transport.inc",
-    "core/x86bridge/frontend32.cpp", "core/transport/d3d12/D3D12Guides.inc", "core/addon/panel64.inc")}
+    "core/x86bridge/frontend32.cpp", "core/transport/d3d12/D3D12Guides.inc", "core/addon/panel64.inc",
+    "core/transport/d3d12/D3D12Transport.inc")}
 neural, probes, panel = src["core/addon/neural.cpp"], src["core/addon/probes.inc"], src["core/addon/panel64.inc"]
 fails = []
 
@@ -381,13 +382,15 @@ need("bool SnapshotFresh() const { return snapshotOf != nullptr && status.frame 
      "neural.cpp: a stale D3D12 snapshot, or one of another buffer, is still handed over")
 need(re.search(r"st\.depthSource = !g\.gameDepthActive && !g\.SnapshotFresh\(\)\s+\? GuideSource::None", panel),
      "panel64.inc: the panel names a snapshot as the source that RecordNetwork does not hand over")
-settle = neural[neural.index("void SettleD3D12Depth()"):]
+d12src = src["core/transport/d3d12/D3D12Guides.inc"]
+settle = d12src[d12src.index("void SettleD3D12Depth()"):]
 settle = settle[:settle.index("\n}\n")]
 need(settle.index("g.depthBest = best->res;") < settle.index("g.snapshotOf = nullptr;"),
-     "neural.cpp: the D3D12 take keeps the old buffer's snapshot as this one's")
-need(re.search(r"g\.depthBest\.Reset\(\);\s*g\.snapshotOf = nullptr;", neural)
-     and neural.count("g.depthBest = ") == 1 and neural.count("g.depthBest.Reset()") == 1,
-     "neural.cpp: the pick changes somewhere that does not drop the snapshot's provenance")
+     "D3D12Guides.inc: the D3D12 take keeps the old buffer's snapshot as this one's")
+picks = neural + d12src + src["core/transport/d3d12/D3D12Transport.inc"]
+need(re.search(r"g\.depthBest\.Reset\(\);\s*g\.snapshotOf = nullptr;", picks)
+     and picks.count("g.depthBest = ") == 1 and picks.count("g.depthBest.Reset()") == 1,
+     "the D3D12 pick changes somewhere that does not drop the snapshot's provenance")
 
 if fails:
     print("FAIL\n  " + "\n  ".join(fails))

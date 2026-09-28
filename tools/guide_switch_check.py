@@ -195,11 +195,12 @@ need(rearm is not None and re.search(r"if \(replaced\)\s*ResetTemporal\(", rearm
 
 neural = src("core/addon/neural.cpp")
 need("probeGuides.store(true)" not in neural, "neural.cpp: re-arms the probe by hand, not RearmGuideProbe")
-d12 = neural[neural.index("void SettleD3D12Depth()"):]
+d12 = src("core/transport/d3d12/D3D12Guides.inc")
+d12 = d12[d12.index("void SettleD3D12Depth()"):]
 d12 = d12[:d12.index("\n}\n")]
 d12_take = "RearmGuideProbe(g.depthBest != nullptr && g.settings.useDepth.load());"
 need(d12_take in d12 and d12.index(d12_take) < d12.index("g.depthBest = best->res;"),
-     "neural.cpp: the D3D12 depth take does not re-probe, or asks once the incumbent is gone")
+     "D3D12Guides.inc: the D3D12 depth take does not re-probe, or asks once the incumbent is gone")
 feed = neural[neural.index("void AdoptFeedEffect()"):]
 need("if (!first)\n        RearmGuideProbe(false);" in feed[:feed.index("\n}\n")],
      "neural.cpp: the effect's feed changing hands does not re-probe")
