@@ -140,10 +140,11 @@ jobs:
         run: python3 tools/line_limit_check.py
 
       # The rest of tools/gates.ps1 that needs no GPU, no runtime binary and no windows.h: the depth
-      # gate and pick, the motion feed, unload, the job gate, the history resets, and the raster pin
-      # (compiled with this g++).
+      # gate and pick, the motion feed, unload, the job gate, the history resets, the raster pin
+      # (compiled with this g++), and the cross-API comparison's verdicts on made-up captures.
       - name: The depth, motion, job, history and raster rules
         run: |
           for t in depth_gate_check d3d12_depth_pick_check motion_feed_check unload_check job_gate_check temporal_reset_check raster_pin_check; do
             python3 "tools/$t.py" || { echo "$t failed"; exit 1; }
           done
+          python3 tools/host_check.py --selftest

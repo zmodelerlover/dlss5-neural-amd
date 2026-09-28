@@ -6,6 +6,8 @@
 // buffer itself.
 //
 // HOSTCHECK_OUT names the file (raw RGBA8 rows, top to bottom); a .txt beside it gets the size.
+// HOSTCHECK_FRAMES=N saves N presents in a row from there instead, as HOSTCHECK_OUT.000 and on:
+// the same still frame composed N times, which is its flicker (tools/host_check.py --cross).
 #include <reshade.hpp>
 
 #include <windows.h>
@@ -24,8 +26,8 @@ using namespace reshade::api;
 
 effect_runtime *g_runtime = nullptr;
 ULONGLONG g_start = 0;
-unsigned g_frames = 0;
-bool g_done = false;
+unsigned g_frames = 0, g_taken = 0;
+bool g_done = false, g_ok = true;
 
 bool ReadGl(uint32_t w, uint32_t h, std::vector<uint8_t> &px)
 {
@@ -64,24 +66,35 @@ void OnPresent(command_queue *, swapchain *, const rect *, const rect *, uint32_
     // never do, so after 45 s a handful of frames is enough, and that capture is only as
     // comparable as its frame count.
     const bool late = GetTickCount64() - g_start >= 45000;
-    if (!(++g_frames == 600 || (g_frames < 600 && late && g_frames >= 5)))
+    if (g_taken == 0 && !(++g_frames == 600 || (g_frames < 600 && late && g_frames >= 5)))
         return;
-    g_done = true;
     const char *out = std::getenv("HOSTCHECK_OUT");
-    if (out == nullptr)
+    const char *n = std::getenv("HOSTCHECK_FRAMES");
+    const unsigned want = n != nullptr && std::atoi(n) > 1 ? static_cast<unsigned>(std::atoi(n)) : 1;
+    if (out == nullptr) {
+        g_done = true;
         return;
+    }
     uint32_t w = 0, h = 0;
     g_runtime->get_screenshot_width_and_height(&w, &h);
     std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
     const bool ok = w != 0 && (g_runtime->get_device()->get_api() == device_api::opengl
                                    ? ReadGl(w, h, px)
                                    : g_runtime->capture_screenshot(px.data()));
-    if (FILE *f = std::fopen(out, "wb")) {
+    g_ok = g_ok && ok;
+    char index[8];
+    std::snprintf(index, sizeof(index), ".%03u", g_taken);
+    if (FILE *f = std::fopen((std::string(out) + (want > 1 ? index : "")).c_str(), "wb")) {
         std::fwrite(px.data(), 1, ok ? px.size() : 0, f);
         std::fclose(f);
     }
+    // The host quits once the .txt is there, so it comes after the last of them.
+    if (++g_taken < want)
+        return;
+    g_done = true;
     if (FILE *f = std::fopen((std::string(out) + ".txt").c_str(), "w")) {
-        std::fprintf(f, "width=%u\nheight=%u\nok=%d\nframes=%u\n", w, h, ok ? 1 : 0, g_frames);
+        std::fprintf(f, "width=%u\nheight=%u\nok=%d\nframes=%u\ncount=%u\n", w, h, g_ok ? 1 : 0,
+                     g_frames, g_taken);
         std::fclose(f);
     }
 }

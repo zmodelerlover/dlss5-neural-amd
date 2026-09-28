@@ -338,6 +338,11 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   the input held still (89% of the samples): mean 0.00064, p99 0.0039, over 1/255 12.0%, over 4/255
   0.30%`, the same ruler the recorded-play measurements use, on every route and in the 32-bit
   helper's log.
+- **`tools/host_check.py --cross`** holds one build against itself across the APIs, at a fresh
+  ini's settings: each API's host presents the same still frame, `--frames` of them are kept
+  (`HOSTCHECK_FRAMES` in the capture add-on), and it prints each API's still-frame flicker and
+  whether each pair of APIs agrees within their own noise. `--addon32` adds the 32-bit bridge's
+  D3D9 and D3D11. `--selftest` checks its verdicts without a GPU.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 
