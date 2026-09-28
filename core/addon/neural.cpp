@@ -697,6 +697,7 @@ struct State
         std::atomic<int> historyGuard { 0 };  // Lab: the reference's history filters, core/temporal/smooth.inc
         std::atomic<float> outputSmooth, outputSmoothLimit;
         std::atomic<int> fixedSeed;  // Lab: the pre-block's noise seed pinned, core/temporal/seed.inc
+        std::atomic<int> quality;    // the runtime's Quality, 1 fast, 0 reference (kQuality)
         // DepthInverted. 1 is both runtimes' own default; RenoDX writes 0 explicitly on its
         // Present route (ETS2 trace, where its depth was a dummy, so that 0 says nothing about any
         // game's real buffer). Exposed so the two can be told apart on a game with real depth; no run
@@ -2689,6 +2690,9 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         At<float>(r, rt::B->kLocalTone) = tune.tone;
         At<float>(r, rt::B->kLocalStructure) = tune.structure;
         At<float>(r, rt::B->kSkinStructure) = tune.skin;
+        // Quality, on a build that has it: the add-on's own setting wins over dlssnr_on_amd.ini's.
+        if (rt::B->kQuality != 0)
+            At<uint8_t>(r, rt::B->kQuality) = g.settings.quality.load() != 0 ? 1 : 0;
 
         Packet packet {};
         packet.list = cmd;

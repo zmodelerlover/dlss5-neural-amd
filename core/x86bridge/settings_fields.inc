@@ -63,3 +63,6 @@ X(float, styleStrength, "StyleStrength", 1, 0, 1)
 X(int32_t, fixedSeed, "FixedSeed", 1, 0, 1)
 X(float, outputSmooth, "OutputSmooth", 0.8, 0, 1)
 X(float, outputSmoothLimit, "OutputSmoothLimit", 10, -1e9, 1e9)
+// The runtime's Quality, on a danielblnc build that has one (runtime_offsets.h, kQuality): 1 fast,
+// its own default, 0 reference, NVIDIA's exact arithmetic. Written over its dlssnr_on_amd.ini.
+X(int32_t, quality, "Quality", 1, 0, 1)

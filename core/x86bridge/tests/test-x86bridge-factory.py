@@ -48,12 +48,13 @@ int main(){
  std::ofstream("amd-nr.ini")<<"[amd-nr]\\nColourStrength=0.75\\nUserText=untouched\\n";auto original=file();
  Host host;host.CaptureFactoryDefaults();auto captured=host.factoryDefaults;
  auto custom=host.ExportSettings();custom.settings_revision=2;custom.colourStrength=.9f;custom.structure=2;custom.skin=2;custom.passes=3;custom.optional=7;custom.scale=1.5f;custom.tone=2;
- custom.temporalMode=0;custom.fixedSeed=0;custom.outputSmooth=0;custom.outputSmoothLimit=20;
+ custom.temporalMode=0;custom.fixedSeed=0;custom.outputSmooth=0;custom.outputSmoothLimit=20;custom.quality=0;
  custom.enabled=1;custom.startOn=1;custom.toggleKey=65;custom.toggleMods=5;custom.language=1;custom.disableOnAltTab=1;custom.useHistory=0;custom.useDepth=0;
  assert(host.ApplySettings(custom));g.historyValid.value=true;g.historyValid.writes=0;
  host.RestoreFactoryDefaults();auto result=host.ExportSettings();
  assert(result.colourStrength==1&&result.structure==1&&result.skin==-1&&result.passes==1&&result.inlineMode==1&&result.scale==1); // the 64-bit route's
  assert(result.temporalMode==2&&result.fixedSeed==1&&result.outputSmooth==.8f&&result.outputSmoothLimit==10); // the measured-best temporal set
+ assert(result.quality==1); // the runtime's own default, fast
  auto expected=FactorySettings(captured,custom);assert(std::memcmp(&result,&expected,sizeof(result))==0);
  assert(result.enabled==1&&result.startOn==1&&result.toggleKey==65&&result.toggleMods==5&&result.language==1&&result.disableOnAltTab==1);
  assert(result.optional==7); // a panel arrangement is a preference, not tuning
@@ -69,4 +70,4 @@ with tempfile.TemporaryDirectory(prefix='factory-test-') as d:
  subprocess.run([str(p/'test')],cwd=p,check=True)
 assert 'CaptureFactoryDefaults();EnsureNeuralIni();LoadSettings();' in h and 'EnsureX86Ini' not in h and 'L"0.25"' not in h
 assert 'controls.factory=true' in adapter and 'Kind::Command,&c,sizeof(c),true' in front
-print('PASS factory: captured the settings table defaults (Colour Strength 1.0, Scale 1.0, Temporal On, Fixed seed, Output smoothing 0.8/10, as on the 64-bit route), preferences preserved, history reset once, INI byte-identical, snapshot updated, replay rejected; actual host methods compiled/executed with engine atomics doubled')
+print('PASS factory: captured the settings table defaults (Colour Strength 1.0, Scale 1.0, Temporal On, Fixed seed, Output smoothing 0.8/10, Quality fast, as on the 64-bit route), preferences preserved, history reset once, INI byte-identical, snapshot updated, replay rejected; actual host methods compiled/executed with engine atomics doubled')

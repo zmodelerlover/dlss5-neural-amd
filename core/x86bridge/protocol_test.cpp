@@ -25,11 +25,12 @@ int main(){
     settings.scale=99;settings.toggleMods=99;settings.enabled=42;settings.tonemap=-90;settings.motionScale=-99;settings.inlineMode=0;
     assert(NormalizeSettings(settings));assert(settings.scale==2&&settings.toggleMods==7&&settings.enabled==1&&settings.inlineMode==1&&settings.skin==-1);
     // The wire keeps what the 64-bit route keeps (settings_fields.inc): no bound where it has none, its
-    // wider Edge Fade, a per-pass Skin at the -1 automatic, and the temporal rows at their own ranges.
+    // wider Edge Fade, a per-pass Skin at the -1 automatic, and the temporal rows and Quality at
+    // their own ranges.
     assert(settings.tonemap==-90&&settings.motionScale==-99);
-    settings.residualFade=.4f;settings.intensity=5;settings.passSkin[0]=-1;settings.passStructure[1]=5;settings.outputSmooth=1.5f;settings.outputSmoothLimit=40;settings.fixedSeed=3;
+    settings.residualFade=.4f;settings.intensity=5;settings.passSkin[0]=-1;settings.passStructure[1]=5;settings.outputSmooth=1.5f;settings.outputSmoothLimit=40;settings.fixedSeed=3;settings.quality=-2;
     assert(NormalizeSettings(settings));assert(settings.residualFade==.4f&&settings.intensity==5&&settings.passSkin[0]==-1&&settings.passStructure[1]==5);
-    assert(settings.outputSmooth==1&&settings.outputSmoothLimit==40&&settings.fixedSeed==1);
+    assert(settings.outputSmooth==1&&settings.outputSmoothLimit==40&&settings.fixedSeed==1&&settings.quality==0);
     settings.residualFade=.6f;assert(NormalizeSettings(settings)&&settings.residualFade==.49f);
     settings.tone=std::numeric_limits<float>::quiet_NaN();assert(!NormalizeSettings(settings));
     settings.tone=1;settings.passSkin[0]=std::numeric_limits<float>::infinity();assert(!NormalizeSettings(settings));
@@ -47,6 +48,6 @@ int main(){
     // The codes are the wire's: a frontend reads them as numbers, so they are never renumbered.
     assert(static_cast<uint32_t>(StandDown::FenceWait)==5&&static_cast<uint32_t>(StandDown::TooSlow)==6&&static_cast<uint32_t>(StandDown::NotSameFrame)==7);
     status.mochizuki=2;status.danielblnc=0;status.networkMs=6.8f;std::memcpy(&statusCopy,&status,sizeof(status));assert(statusCopy.reason==2&&statusCopy.mochizuki==2&&statusCopy.networkMs==6.8f);
-    printf("PASS protocol v5 WireSettings=236 WireStatus=128 StateSnapshot=364 WireCommand=16; roundtrips, table ranges, NaN/Inf, old-version rejection, revisions, command dedup, stand-down code, runtime line\n");
+    printf("PASS protocol v5 WireSettings=240 WireStatus=128 StateSnapshot=368 WireCommand=16; roundtrips, table ranges, NaN/Inf, old-version rejection, revisions, command dedup, stand-down code, runtime line\n");
     printf("PASS fixed-width layouts Header=16 Hello=16 Texture=24 Build=104 Frame=32 Ack=48; malformed/version/old-frame/generation rejected; transport is explicit; pointer_bits=%zu\n",sizeof(void*)*8);
 }

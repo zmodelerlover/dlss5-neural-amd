@@ -58,7 +58,7 @@ for path in sorted((ROOT / "core").rglob("*")):
 
 keys = read("core/shared/history_keys.h")
 for field in ("scale", "depthInverted", "useHistory", "temporalMode", "useMotion", "useDepth",
-              "useGameGuides", "motionScale", "flowGate", "flowRatio"):
+              "useGameGuides", "motionScale", "flowGate", "flowRatio", "quality"):
     if f"a.{field} != b.{field}" not in keys:
         bad.append(f"history_keys.h: {field} is not in SettingsInvalidateHistory")
 
