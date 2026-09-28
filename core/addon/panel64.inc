@@ -34,9 +34,7 @@ PanelStatus ReadPanelStatus()
                      : !g.depthUsable.load()                     ? GuideSource::Unusable
                      : g.gameDepthActive && g.guideDepth.external ? GuideSource::Effect
                      : g.gameDepthActive ? GuideSource::Game       : GuideSource::Snapshot;
-    st.motionSource = g.guideMotion.external && g.gameMotionActive ? GuideSource::Effect
-                      : g.gameMotionActive                         ? GuideSource::Game
-                                                                   : GuideSource::Estimated;
+    st.motionSource = g_stats.motion;  // the last evaluation's (motion_sources.inc); none before one
     st.gameMotionActive = g.gameMotionActive;
     st.stillPct = g.probeStillPct.load();
     st.depthMin = g.probeDepthMin.load();
@@ -47,8 +45,9 @@ PanelStatus ReadPanelStatus()
     st.noBackBuffer = g.noBackBuffer.load();
     st.hotkeyName = HotkeyName();
     RouteCaps(st);  // Feed.fx, Read from the game and depth, as far as this route reaches them
-    if (!g_stats.line.empty())
-        st.routeDiagnostics.push_back(g_stats.line);
+    for (const std::string *line : { &g_stats.line, &g_stats.temporalLine })
+        if (!line->empty())
+            st.routeDiagnostics.push_back(*line);
     st.feedStatus = g.feedStatus;
     MzStatus(st);
     return st;

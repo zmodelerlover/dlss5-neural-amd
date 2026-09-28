@@ -1716,7 +1716,6 @@ LONG CALLBACK NullJumpProbe(EXCEPTION_POINTERS *e)
         return EXCEPTION_CONTINUE_SEARCH;
 
     const uintptr_t rsp = static_cast<uintptr_t>(e->ContextRecord->Rsp);
-    const uintptr_t base = reinterpret_cast<uintptr_t>(g.runtime);
     for (int i = 0; i < 8; ++i)
     {
         uintptr_t slot = 0;
@@ -1737,7 +1736,6 @@ LONG CALLBACK NullJumpProbe(EXCEPTION_POINTERS *e)
                 owner == g.runtime ? "   <<< THE RUNTIME" : "");
         }
     }
-    (void) base;
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -2965,6 +2963,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         g.lastJobAt = GetTickCount64();
         g.jobRunning = true;
         ++g_stats.now.evaluated;
+        NoteTemporal(haveMotion ? motionFrom : GuideSource::None);
     }
     if (nativeFailure)
         return false;

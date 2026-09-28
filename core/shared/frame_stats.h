@@ -35,3 +35,35 @@ inline std::string FormatStats(const FrameCounts& d, double seconds, uint64_t jo
         std::snprintf(line + n, sizeof(line) - n, "%llu ms", u(jobMs));
     return line;
 }
+
+// What one window's evaluations handed the engine, for the 'temporal:' line. Bit i of handed and
+// smoothed is pass i + 1, of the passes the last evaluation ran.
+struct TemporalState {
+    int temporal = 0, setting = 0; // the byte the engine read, and the Temporal= that asked for it
+    bool sameFrame = false, seedPinned = false, depth = false;
+    unsigned passes = 0, handed = 0, smoothed = 0;
+    float smooth = 0.0f, smoothLimit = 0.0f;
+    const char* motion = "none";
+};
+
+inline std::string FormatTemporal(const TemporalState& t) {
+    const auto count = [&](unsigned bits) {
+        int n = 0;
+        for (bits &= (1u << t.passes) - 1; bits != 0; bits &= bits - 1)
+            ++n;
+        return n;
+    };
+    char smooth[64] = "not smoothed (OutputSmooth=0)";
+    if (t.smooth > 0.0f)
+        std::snprintf(smooth, sizeof(smooth), "smoothed %d/%u at %.2f under %.0f/255",
+                      count(t.smoothed), t.passes, static_cast<double>(t.smooth),
+                      static_cast<double>(t.smoothLimit));
+    char line[320];
+    std::snprintf(line, sizeof(line),
+                  "temporal: byte %d (Temporal=%d), engine %s, history handed %d/%u, %s, seed %s, "
+                  "motion %s, depth %s",
+                  t.temporal, t.setting, t.sameFrame ? "same-frame" : "NOT same-frame",
+                  count(t.handed), t.passes, smooth, t.seedPinned ? "pinned" : "free", t.motion,
+                  t.depth ? "handed" : "not handed");
+    return line;
+}

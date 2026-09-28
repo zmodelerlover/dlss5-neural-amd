@@ -93,6 +93,7 @@ enum class GuideSource
     Snapshot,   // depth copied before the game cleared it
     Estimated,  // motion only: this add-on's own block matcher
     Unusable,   // depth only: there, but the guide probe read it as JUNK or FLAT, so not fed
+    Flow,       // motion only: FidelityFX optical flow, in a lab build
 };
 
 // What the panel only shows. Where the two routes really differ, the difference is a field here,

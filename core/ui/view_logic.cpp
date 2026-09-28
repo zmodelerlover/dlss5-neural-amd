@@ -88,6 +88,7 @@ const char *GuideSourceName(GuideSource source)
     case GuideSource::Snapshot:  return T("snapshot", "snapshot");
     case GuideSource::Estimated: return T("estimated", "estimado");
     case GuideSource::Unusable:  return T("unusable", "inutilizável");
+    case GuideSource::Flow:      return T("optical flow", "fluxo óptico");
     case GuideSource::None:      break;
     }
     return T("none", "nenhuma");

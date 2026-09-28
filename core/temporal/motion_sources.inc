@@ -1,7 +1,10 @@
 // Where this frame's motion comes from: the game's own vectors, optical flow, or the estimator.
 // Part of the core's unity build, included by neural.cpp inside RecordNetwork: it records into
-// that function's `cmd` with its descriptors, sets its `haveMotion` and g_motionSinceEvaluation
-// (read by DropStaleHistory), and records the flow probe's readback copies that probes.inc reads.
+// that function's `cmd` with its descriptors, sets its `haveMotion`, `motionFrom` (which of the
+// three, for the temporal line) and g_motionSinceEvaluation (read by DropStaleHistory), and records
+// the flow probe's readback copies that probes.inc reads.
+
+    GuideSource motionFrom = GuideSource::Estimated;
 
     // The game's own velocity buffer, when there is one. This is the input the estimator below
     // exists to replace: an engine knows where every surface was because it has the previous
@@ -32,6 +35,7 @@
         Barrier(cmd, g.netMotion.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         haveMotion = true;
+        motionFrom = g.guideMotion.external ? GuideSource::Effect : GuideSource::Game;
         if (!g.loggedGameMotion)
         {
             g.loggedGameMotion = true;
@@ -45,7 +49,7 @@
         }
     }
     else if (flow != 0 && OpticalFlowReady(w, h))
-        haveMotion = FlowMotion(cmd, colourSrc, colourFmt);
+        haveMotion = FlowMotion(cmd, colourSrc, colourFmt), motionFrom = GuideSource::Flow;
     else if (g.settings.useMotion.load() && g.flowSmall != nullptr)
     {
         // Swapped per estimator run, not per present: with the network sitting out every other

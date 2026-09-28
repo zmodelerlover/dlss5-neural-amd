@@ -162,4 +162,5 @@ void SmoothOutput(ID3D12GraphicsCommandList *cmd, UINT slot)
     std::memcpy(&k[2], &threshold, sizeof(threshold));
     std::memcpy(&k[3], &strength, sizeof(strength));
     DispatchOn(cmd, g_filters.smooth.Get(), base, g.netColour.Get(), k, 4, w, h);
+    g_stats.smoothed |= 1u << slot;  // the temporal line (stats.inc)
 }

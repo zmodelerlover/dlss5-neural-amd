@@ -303,6 +303,13 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   still the Ctrl+Home and Ctrl+PageDown keys, so 3 is both. A refused pass no longer counts as a
   skipped frame, and the skipped share on both panels is of the frames presented; it counted each
   skipped frame twice, so it read low.
+- **A `temporal:` line says what the engine was handed**, on every route, when it changes and at
+  most once a second: `temporal: byte 1 (Temporal=2), engine same-frame, history handed 1/1,
+  smoothed 1/1 at 0.80 under 10/255, seed pinned, motion estimated, depth not handed`. It is read
+  back out of the runtime rather than from the settings, so it says whether history, Output
+  smoothing and depth really reached the network, and which motion did. It is under **Debug** on
+  the 64-bit panel too, and the Status column's motion source is now the one the network last got:
+  `none` with Motion off, where it said `estimated`, and `optical flow` in a lab build.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 
