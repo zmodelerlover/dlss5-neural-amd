@@ -423,15 +423,14 @@ bool BringUpEngines(UINT &wanted)
         }
         timeouts = 0;
     }
+    UINT refused = 0;  // the pass whose copy did not come up on this call
     for (UINT slot = 1; load && slot < next; ++slot)
         if (g.runtimes[slot] == nullptr)
         {
             if (!LoadExtraRuntime(slot))
             {
                 g_passLimit = slot;
-                Log("passes %u: held at %u. Pass %u's copy of the runtime did not come up (the "
-                    "lines above say why) and is not tried again this session.", wanted, slot,
-                    slot + 1);
+                refused = slot + 1;
             }
             break;
         }
@@ -439,7 +438,11 @@ bool BringUpEngines(UINT &wanted)
     // The copies still to load come on the next presents; this one runs on those up.
     while (load && g.runtimes[next - 1] == nullptr)
         --next;
-    if (change)
+    if (refused != 0)
+        Log("passes: asked for %u, running %u. Pass %u's copy of the runtime did not come up (the "
+            "lines above say why) and is not tried again this session.", wanted, next, refused);
+    // A copy that did not come up can leave the count where it was, and then nothing was taken.
+    if (change && next != live)
     {
         Log("passes %u -> %u, taken with every module drained; history starts again.", live, next);
         ResetTemporal("Passes changed");

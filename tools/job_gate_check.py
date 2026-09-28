@@ -42,7 +42,9 @@ JobGate; the 32-bit host's SET_STATE only stores the request. So:
   - one copy a call, since the 32-bit helper's frame has 5 s and a drain with two copies can outlast
     it: the latch is compiled here with g++ against stubs and run, and 1 -> 3 goes through 2 over
     two presents (a first bring-up at 3 too), a lower count and a higher one again load nothing, and
-    a copy that fails holds the count at 1 for 50 presents with no second try;
+    a copy that fails (pass 2's, or pass 3's with pass 2 up) holds the count below it for 50
+    presents with no second try, says once what was asked, what runs and which pass did not load,
+    and, the count not having moved, takes nothing and keeps the history;
   - no route decides the count itself: each hands WantedPasses to BringUpEngines once and stores
     only its answer in g.loadedPasses, and both panels are told PassesAvailable, which is what their
     note on a pass that could not load compares Passes with.
@@ -166,7 +168,7 @@ latch = code(bring)
 drain = latch.find("GetTickCount64() + 2000;")
 stuck = re.search(r"if \(RuntimeBusy\(\)\)\s*\{(.*?)\n        \}", latch, re.S)
 loads = re.search(r"if \(g\.runtimes\[slot\] == nullptr\)\s*\{\s*if \(!LoadExtraRuntime\(slot\)\)\s*\{([^}]*)\}\s*break;", latch)
-taken = re.search(r"if \(change\)\s*\{[^}]*ResetTemporal\(\"Passes changed\"\);[^}]*\}\s*live = next;", latch)
+taken = re.search(r"if \(change && next != live\)\s*\{[^}]*ResetTemporal\(\"Passes changed\"\);[^}]*\}\s*live = next;", latch)
 if not (all(s in latch for s in ("PassesAvailable()", "timeouts >= 3 && !fresh", "timeouts = 0;",
                                  "asked = wanted;", "wanted = live;"))
         and stuck and all(s in stuck.group(1) for s in ("++timeouts", "wanted = live;", "return true;"))
@@ -256,11 +258,23 @@ int main(int argc, char **argv) {
         const UINT a = Present(3), b = Present(3);
         Expect(a == 2 && b == 3 && loads == 2, "a first bring-up at 3 loads a copy a present too");
     } else {
-        refuse = 1;
+        // Pass 2's copy fails (scenario 2), or pass 3's once pass 2 is up (scenario 3).
+        refuse = scenario == 2 ? 1 : 2;
+        const UINT held = refuse;
         Present(1);
+        if (scenario == 3)
+            Expect(Present(3) == 2 && resets == 1, "1 -> 2 on the way to a copy that fails");
+        said.clear();
+        const int before = resets;
         for (int i = 0; i < 50; ++i)
-            Expect(Present(3) == 1, "a count past a copy that failed is not held at 1");
-        Expect(loads == 1, "a copy that failed is tried again");
+            Expect(Present(3) == held, "a count past a copy that failed is not held below it");
+        Expect(loads == static_cast<int>(held), "a copy that failed is tried again");
+        char line[160];
+        std::snprintf(line, sizeof line, "passes: asked for 3, running %u. Pass %u's copy", held,
+                      held + 1);
+        Expect(said.size() == 1 && said[0].rfind(line, 0) == 0,
+               "the failure is not said once, as asked for, running and the pass that failed");
+        Expect(resets == before, "a count that did not move is taken, with the history dropped");
     }
     if (!fails) std::printf("ok\n");
     return fails;
@@ -283,7 +297,7 @@ else:
         if built.returncode != 0:
             bad.append("BringUpEngines did not compile on its own:\n" + built.stderr[-2000:])
         else:
-            for scenario in ("0", "1", "2"):
+            for scenario in ("0", "1", "2", "3"):
                 ran = subprocess.run([str(exe), scenario], capture_output=True, text=True, timeout=30)
                 if ran.returncode != 0:
                     bad.append(f"pass latch, scenario {scenario}: " + (ran.stdout.strip() or ran.stderr.strip()))

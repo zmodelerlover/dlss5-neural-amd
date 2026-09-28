@@ -349,7 +349,7 @@ if not ("GuideSource motionFrom = GuideSource::Estimated;" in motion
     bad.append("motion_sources.inc: a branch does not say which source it is")
 if "static_cast<unsigned long long>(g_stats.now.refused), RefusalReason(r));" not in record:
     bad.append("neural.cpp: a refused pass does not say why")
-change = re.search(r"if \(change\)\s*\{[^}]*history starts again[^}]*\}", body(runtimes, "bool BringUpEngines("))
+change = re.search(r"if \(change && next != live\)\s*\{[^}]*history starts again[^}]*\}", body(runtimes, "bool BringUpEngines("))
 if not change or "g.loggedPassDetail = false;" not in change.group(0):
     bad.append("runtimes.inc: a new pass count does not print each pass's job ids again")
 if "NoteFlicker(a, b, rowPitch, nw, nh, first);" not in read("core/addon/probes.inc") or \

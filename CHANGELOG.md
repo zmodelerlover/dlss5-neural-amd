@@ -51,13 +51,14 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   more frames, lower Scale.
 - **`Passes` applies live in both directions**, on both routes. Each extra pass loads its own copy
   of the runtime (about 150 MB of VRAM) the first time a count needs it, one copy a frame at one
-  long frame each, so going from 1 to 3 runs 2 for a frame on the way and a 32-bit game no longer
-  waits on two copies in one frame, which could run past the 5 s it gives the helper. A copy stays
-  loaded until the game exits. A copy that fails to load is no longer tried again on every frame:
-  the count is held at the passes that did load, the log says why once, and the panel names the
-  pass. A change waits until no copy has a job in flight, up to 2 s, and then starts history again,
-  so a pass that sat out is no longer handed a frame from before. If the runtime does not drain
-  three times running, the count is kept and the next change tries again.
+  long frame each, so going from 1 to 3 runs 2 for a frame on the way, and a 32-bit game never waits
+  on two copies in one frame, which could run past the 5 s it gives the helper. A copy stays loaded
+  until the game exits. A copy that fails to load is no longer tried again on every frame: the count
+  is held at the passes that did load, the log says once what was asked for, how many run and which
+  pass did not load, and the panel names the pass. A change waits until no copy has a job in flight,
+  up to 2 s, and then starts history again, so a pass that sat out is no longer handed a frame from
+  before. If the runtime does not drain three times running, the count is kept and the next change
+  tries again.
 - **Removed: Async timing on 64-bit games.** The network runs same-frame on every route. In async
   the runtime never reports a job as finished, so the effect only ran about twice a second. An
   `Inline=0` left in `amd-nr.ini` is ignored and the log says so, and Timing leaves the 64-bit
