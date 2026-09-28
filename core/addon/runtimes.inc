@@ -361,7 +361,9 @@ bool LoadExtraRuntime(UINT slot);
 // A copy loads the first time a count needs it and stays for the session, about 150 MB of VRAM and
 // a worker polling with Sleep(0) each: its worker and its HIP engine would still be running code an
 // unload took away. So a lower count leaves it loaded and a higher one again takes it at once. A
-// copy that fails clamps the count to what did come up, says why once, and is not tried again.
+// copy that fails clamps the count to what did come up, says why once, and is not tried again. One
+// copy a call: the 32-bit helper answers each frame within the IPC's 5 s, which a drain and two
+// copies in one request can outlast. So 1 -> 3 climbs a pass a present, each step a change.
 //
 // A change is taken on a present with no job in flight in any module, and history starts again:
 // a pass that sat out holds an old frame, and the chain ends on another pass. Copies load inside
@@ -422,14 +424,21 @@ bool BringUpEngines(UINT &wanted)
         timeouts = 0;
     }
     for (UINT slot = 1; load && slot < next; ++slot)
-        if (g.runtimes[slot] == nullptr && !LoadExtraRuntime(slot))
+        if (g.runtimes[slot] == nullptr)
         {
-            g_passLimit = slot;
-            Log("passes %u: held at %u. Pass %u's copy of the runtime did not come up (the lines "
-                "above say why) and is not tried again this session.", wanted, slot, slot + 1);
+            if (!LoadExtraRuntime(slot))
+            {
+                g_passLimit = slot;
+                Log("passes %u: held at %u. Pass %u's copy of the runtime did not come up (the "
+                    "lines above say why) and is not tried again this session.", wanted, slot,
+                    slot + 1);
+            }
             break;
         }
     next = std::min(wanted, PassesAvailable());
+    // The copies still to load come on the next presents; this one runs on those up.
+    while (load && g.runtimes[next - 1] == nullptr)
+        --next;
     if (change)
     {
         Log("passes %u -> %u, taken with every module drained; history starts again.", live, next);

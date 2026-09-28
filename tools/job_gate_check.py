@@ -39,14 +39,23 @@ JobGate; the 32-bit host's SET_STATE only stores the request. So:
   - a missing copy loads only there, after that drain: LoadExtraRuntime is called once in the core,
     in BringUpEngines, and a copy that fails latches g_passLimit, so it is not tried again and the
     count never exceeds PassesAvailable;
+  - one copy a call, since the 32-bit helper's frame has 5 s and a drain with two copies can outlast
+    it: the latch is compiled here with g++ against stubs and run, and 1 -> 3 goes through 2 over
+    two presents (a first bring-up at 3 too), a lower count and a higher one again load nothing, and
+    a copy that fails holds the count at 1 for 50 presents with no second try;
   - no route decides the count itself: each hands WantedPasses to BringUpEngines once and stores
     only its answer in g.loadedPasses, and both panels are told PassesAvailable, which is what their
     note on a pass that could not load compares Passes with.
 
     python tools/job_gate_check.py
+
+The latch needs a C++20 g++: the one CXX names, else g++ on PATH.
 """
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -156,12 +165,12 @@ latch = code(bring)
 # change); copies load only past the drain; history starts again once the new count is taken.
 drain = latch.find("GetTickCount64() + 2000;")
 stuck = re.search(r"if \(RuntimeBusy\(\)\)\s*\{(.*?)\n        \}", latch, re.S)
-loads = re.search(r"if \(g\.runtimes\[slot\] == nullptr && !LoadExtraRuntime\(slot\)\)\s*\{([^}]*)\}", latch)
+loads = re.search(r"if \(g\.runtimes\[slot\] == nullptr\)\s*\{\s*if \(!LoadExtraRuntime\(slot\)\)\s*\{([^}]*)\}\s*break;", latch)
 taken = re.search(r"if \(change\)\s*\{[^}]*ResetTemporal\(\"Passes changed\"\);[^}]*\}\s*live = next;", latch)
 if not (all(s in latch for s in ("PassesAvailable()", "timeouts >= 3 && !fresh", "timeouts = 0;",
                                  "asked = wanted;", "wanted = live;"))
         and stuck and all(s in stuck.group(1) for s in ("++timeouts", "wanted = live;", "return true;"))
-        and loads and all(s in loads.group(1) for s in ("g_passLimit = slot;", "break;"))
+        and loads and "g_passLimit = slot;" in loads.group(1)
         and taken and 0 <= drain < stuck.start() < loads.start() < taken.start()):
     bad.append("runtimes.inc: BringUpEngines does not drain for 2 s, load missing copies after the "
                "drain, latch a failed one and reset history on a Passes change")
@@ -179,6 +188,105 @@ for path, wiring in (("core/addon/panel64.inc", "st.passesAvailable = PassesAvai
                      ("core/ui/sections/performance.cpp", "s.passes) > status.passesAvailable")):
     if wiring not in code((ROOT / path).read_text(encoding="utf-8")):
         bad.append(f"{path}: the panel is not told what the loaded copies can run ({wiring})")
+
+# The latch itself, run: g_passLimit through BringUpEngines, against stubs that record every load.
+HARNESS = r"""
+#include <algorithm>
+#include <atomic>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
+using UINT = unsigned;
+using UINT64 = unsigned long long;
+using HMODULE = void *;
+struct State { static constexpr UINT kMaxPasses = 3; };
+struct {
+    struct { std::atomic<bool> serialPasses { true }; } settings;
+    HMODULE runtime = nullptr, runtimes[State::kMaxPasses] {};
+    bool loggedPassDetail = false;
+} g;
+int modules[State::kMaxPasses], loads = 0, resets = 0;
+UINT refuse = 0;  // the slot whose copy does not come up, 0 for none
+std::vector<std::string> said;
+bool MzSelected() { return false; }
+bool MzInit() { return false; }
+bool InitPipeline() { return true; }
+bool InitEngine() { g.runtime = g.runtimes[0] = &modules[0]; return true; }
+bool LoadExtraRuntime(UINT slot) {
+    ++loads;
+    if (slot == refuse) return false;
+    g.runtimes[slot] = &modules[slot];
+    return true;
+}
+bool RuntimeBusy() { return false; }
+bool DeviceLost() { return false; }
+UINT64 GetTickCount64() { return 0; }
+void Sleep(UINT) {}
+void ResetTemporal(const char *) { ++resets; }
+void Log(const char *fmt, ...) {
+    char line[512];
+    va_list a;
+    va_start(a, fmt);
+    std::vsnprintf(line, sizeof line, fmt, a);
+    va_end(a);
+    said.push_back(line);
+}
+PASS_LATCH
+int fails = 0;
+void Expect(bool ok, const char *what) { if (!ok) ++fails, std::printf("FAIL %s\n", what); }
+// One present asking for `asked`: the count it runs, with at most one copy loaded on the way.
+UINT Present(UINT asked) {
+    const int before = loads;
+    UINT wanted = asked;
+    Expect(BringUpEngines(wanted), "the latch refused a count");
+    Expect(loads - before <= 1, "one present loaded more than one copy");
+    return wanted;
+}
+int main(int argc, char **argv) {
+    const int scenario = argc > 1 ? std::atoi(argv[1]) : 0;
+    if (scenario == 0) {
+        Expect(Present(1) == 1, "the first bring-up at 1");
+        const UINT a = Present(3), b = Present(3), c = Present(3);
+        Expect(a == 2 && b == 3 && c == 3 && loads == 2, "1 -> 3 goes through 2, a copy a present");
+        Expect(Present(1) == 1 && Present(3) == 3 && loads == 2,
+               "a lower count and a higher one again load nothing");
+    } else if (scenario == 1) {
+        const UINT a = Present(3), b = Present(3);
+        Expect(a == 2 && b == 3 && loads == 2, "a first bring-up at 3 loads a copy a present too");
+    } else {
+        refuse = 1;
+        Present(1);
+        for (int i = 0; i < 50; ++i)
+            Expect(Present(3) == 1, "a count past a copy that failed is not held at 1");
+        Expect(loads == 1, "a copy that failed is tried again");
+    }
+    if (!fails) std::printf("ok\n");
+    return fails;
+}
+"""
+start = runtimes.find("UINT g_passLimit")
+if start < 0 or not bring:
+    bad.append("could not find g_passLimit or BringUpEngines in runtimes.inc")
+else:
+    source = runtimes[start:runtimes.index("\n}\n", runtimes.index("bool BringUpEngines(")) + 3]
+    with tempfile.TemporaryDirectory() as tmp:
+        src, exe = Path(tmp) / "latch.cpp", Path(tmp) / "latch.exe"
+        src.write_text(HARNESS.replace("PASS_LATCH", source), encoding="utf-8")
+        cxx = os.environ.get("CXX", "g++")
+        try:
+            built = subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-O1", "-static",
+                                    str(src), "-o", str(exe)], capture_output=True, text=True)
+        except FileNotFoundError:
+            built = subprocess.CompletedProcess(cxx, 1, "", f"no compiler at {cxx!r}; set CXX to a g++")
+        if built.returncode != 0:
+            bad.append("BringUpEngines did not compile on its own:\n" + built.stderr[-2000:])
+        else:
+            for scenario in ("0", "1", "2"):
+                ran = subprocess.run([str(exe), scenario], capture_output=True, text=True, timeout=30)
+                if ran.returncode != 0:
+                    bad.append(f"pass latch, scenario {scenario}: " + (ran.stdout.strip() or ran.stderr.strip()))
 
 if bad:
     print("FAIL\n  " + "\n  ".join(bad))

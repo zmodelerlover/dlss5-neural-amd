@@ -75,8 +75,8 @@ The main controls:
 - **Scale** — the size of the network input relative to the frame. 0.50 uses a quarter
   of the pixels. Smaller is faster and loses fine detail.
 - **Passes** — one to three evaluations. More passes strengthen the effect and can add grain.
-  A change applies live, with one long frame the first time a count needs another copy of the
-  runtime (about 150 MB of VRAM each, kept until the game exits).
+  A change applies live, with one long frame for each copy of the runtime a count needs the
+  first time, loaded one a frame (about 150 MB of VRAM each, kept until the game exits).
 - **Limit** — caps how much the image is changed. Default 0.25. In the **Debug** section.
 - **Timing** — 32-bit games only. It chooses presentation: pipelined is the default, because
   it measured 16% to 41% faster in three games and costs one frame of lag and nothing else.
