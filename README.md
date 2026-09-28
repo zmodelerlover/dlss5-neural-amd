@@ -96,6 +96,12 @@ The panel shows fifteen controls, fourteen on a 64-bit game, which has no Timing
 else it can do is one tick away under **More settings** at the bottom, and all of it is
 editable in `amd-nr.ini` either way.
 
+One of those is **Network precision** (Engine), on danielblnc v0.4.2 and 0.5.0: the runtime's own
+`Quality`. **Fast**, the default, uses cheaper arithmetic and is about 13 to 15% faster on RX 9000,
+with a difference that is barely visible; **Reference** is NVIDIA's exact arithmetic. It applies
+at once, is saved as `Quality` in `amd-nr.ini` (1 fast, 0 reference) and is used instead of the
+`Quality` in the runtime's own `dlssnr_on_amd.ini`.
+
 ## Which danielblnc runtime
 
 The add-on runs **DLSS-NR-on-AMD v0.4.2**, which the installer puts in, and still runs **v0.4.1**,

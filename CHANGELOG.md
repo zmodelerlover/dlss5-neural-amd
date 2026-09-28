@@ -16,9 +16,9 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   every address was mapped by its own anchor in the v0.4.2 binary and agrees with the OptiScaler
   fork's own map on every field both name, and the two only this add-on uses (CpuWait, the
   network's GPU time) were derived a second time on their own. The two patches moved to `0x655d`
-  and `0x91d2`. Its two new ini keys are left as the person has them: `Quality` (`fast`, or
-  `reference` for NVIDIA's exact arithmetic) and `NoiseHandoff` (off by default; with it on, Fixed
-  seed still holds the noise still, at one more kernel launch per job). The status column names the
+  and `0x91d2`. Of its two new ini keys, `Quality` is set by the add-on now (**Network precision**,
+  below), and `NoiseHandoff` is left as the person has it (off by default; with it on, Fixed seed
+  still holds the noise still, at one more kernel launch per job). The status column names the
   build that runs ("danielblnc 0.4.2: network X ms"), on the 32-bit panel too.
 - **danielblnc's 0.5.0 supporter build runs too, if you have it.** It is not distributed, by this
   project or by the installer: danielblnc gives it to his supporters, so you supply your own
@@ -43,6 +43,15 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   as on, since no earlier release wrote them. A `Temporal=0` set after that stays. To go back, set
   Temporal to Auto, untick Fixed seed and slide Output smoothing to off, or put `Temporal=0`,
   `FixedSeed=0` and `OutputSmooth=0` in `amd-nr.ini`.
+- **New: Network precision** (Engine, one tick away under More settings), on danielblnc v0.4.2 and
+  0.5.0: the runtime's `Quality`, on both panels. **Fast**, the default and the runtime's own, uses
+  cheaper arithmetic (f32 accumulation, approximate square roots and reciprocals) and is about 13 to
+  15% faster on RX 9000, with a difference that is barely visible; **Reference** is NVIDIA's exact
+  arithmetic. A change applies from the next frame and starts the temporal history over. It is
+  saved as `Quality` in `amd-nr.ini` (1 fast, 0 reference), Factory Defaults puts it back to Fast,
+  and it is used instead of the `Quality` in the runtime's own `dlssnr_on_amd.ini`. On v0.4.2 a GPU
+  without the fast kernels runs Reference whatever it says. v0.4.1 has no such setting and
+  mochizuki is another network, so neither shows the control.
 - **D3D12 games: every frame goes through the network.** Same-frame only made the GPU wait for the
   previous evaluation, so with frames in flight every present during that wait went out as the
   game drew it: 77 to 85% of the frames in Rollout Inline (UE5), a strobe. The CPU now waits for
