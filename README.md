@@ -224,6 +224,10 @@ You do not need to build anything to use this. If you want to:
 You need Visual Studio with the C++ tools and the Windows SDK. The ReShade and Dear ImGui headers
 are already in `3rdparty/`.
 
+`.\tools\gates.ps1 -All` builds every target and runs every check in `tools/` and
+`core/x86bridge/tests/`, one line each; a few compile one function on its own and need a MinGW g++
+(MSYS2's UCRT64 one is found at its usual place). CI runs the ones that need no GPU and no runtime.
+
 The code is laid out by layer. `core/addon/` is the add-on and the network calls, and every
 graphics API reaches it through one transport of its own in `core/transport/` (`d3d11`, `d3d12`,
 `vulkan`, `opengl`). `core/x86bridge/` is the 32-bit pair, `core/ui/` the panel both routes draw,

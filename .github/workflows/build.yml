@@ -60,6 +60,21 @@ jobs:
           python tools/guide_switch_check.py
           if ($LASTEXITCODE -ne 0) { throw "guide check failed" }
 
+      # These compile code of the add-on on its own against windows.h and run it: the fence wait, the
+      # watchdog's stand-down, the one-time ini move, and the bridge's other two contract suites.
+      # The runner's MinGW g++ does it.
+      - name: Run the fence wait, the watchdog, the ini move and the bridge contracts on their own
+        shell: pwsh
+        env:
+          CXX: g++
+        run: |
+          g++ --version
+          foreach ($t in 'tools/fence_wait_check.py', 'tools/watchdog_check.py', 'tools/ini_migrate_check.py',
+                         'core/x86bridge/tests/test-x86bridge-v2.py', 'core/x86bridge/tests/test-x86bridge-factory.py') {
+            python $t
+            if ($LASTEXITCODE -ne 0) { throw "$t failed" }
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: addons
@@ -123,3 +138,12 @@ jobs:
       # current length in tools/line_limit_allow.json, and may only shrink.
       - name: No file grows past the line limit
         run: python3 tools/line_limit_check.py
+
+      # The rest of tools/gates.ps1 that needs no GPU, no runtime binary and no windows.h: the depth
+      # gate and pick, the motion feed, unload, the job gate, the history resets, and the raster pin
+      # (compiled with this g++).
+      - name: The depth, motion, job, history and raster rules
+        run: |
+          for t in depth_gate_check d3d12_depth_pick_check motion_feed_check unload_check job_gate_check temporal_reset_check raster_pin_check; do
+            python3 "tools/$t.py" || { echo "$t failed"; exit 1; }
+          done
