@@ -53,6 +53,16 @@
 // detours the setup thread installs, which the first patch removes, as on every build; the half-
 // precision weight copy it keeps is made on RDNA3 only (about 280 MB more per module there).
 //
+// v0.4.3, public since 2026-09-28, sits between the two: the engine side is v0.4.2's (kFrameCounter
+// engine+0x3c, kSelfCheckFrame +0x104; one 8-byte member inserted between +0x150 and +0x180, where
+// none of these are), and the host side takes 0.5.0's ini reader, worker and static init, OverlayKey
+// with them. The data block moved again (+0x2170 up to kHistoryOn, +0x2178 from kReady on). Mapped
+// twice from the binary, once from v0.4.2 and once from 0.5.0, agreeing on every address with the same
+// reference count on all three builds (integracao-v043/ida/REMAP-v0.4.3.md, outside the repository),
+// and against the OptiScaler fork's own layout (AmdLayout.h, kAmd043), which agrees on every field
+// both name. Its overlay is reached only from the Present detours the setup thread installs, as on
+// 0.5.0, so the first patch keeps it off too.
+//
 // When the runtime moves again: add its build to kBuilds and its patches to runtime-patches.json,
 // and run the checker against the patched file.
 
@@ -167,10 +177,12 @@ size_t kToneLift;                      // ini `ToneLift`, float, clamped to 0..0
 // 1, the fast kernels (f32 accumulation, approximate rsqrt and rcp; upstream measures them about
 // 13-15% faster on RX 9000, and the difference is barely visible); anything else 0, NVIDIA's exact
 // arithmetic. The worker copies it into the engine on every job, so a write applies from the next
-// one. On v0.4.2 a GPU without the fast kernels runs reference whatever it says; on 0.5.0 a change
-// also resets the runtime's own temporal history. The add-on writes its own Quality here every
-// frame, over the runtime's ini. The ini reader's `sete` stores it (0x89d6 on v0.4.2, 0x8b1e on
-// 0.5.0), and the checker decodes that store.
+// one. On v0.4.2 a GPU without the fast kernels runs reference whatever it says; v0.4.3 and 0.5.0
+// push it to the device on every job (g_fastpow), and v0.4.3 logs that the colour conversion takes
+// the fast path even there; on 0.5.0 and v0.4.3 a change also resets the runtime's own temporal
+// history. The add-on writes its own Quality here every frame, over the runtime's ini. The ini
+// reader's `sete` stores it (0x89d6 on v0.4.2, 0x8d1e on v0.4.3, 0x8b1e on 0.5.0), and the checker
+// decodes that store.
 size_t kQuality;                       // optional: 0 on a build without the key (0.4.1). byte
 
 size_t kHipDevice;                     // the device actually in use, not the ini's copy
@@ -293,6 +305,57 @@ inline constexpr Build kBuilds[] = {
         .kNotifyFn = 0x9db0,
         .kRecordFn = 0x15040,
         .kInitFn = 0x28170,
+    },
+    {
+        .kVersion = "0.4.3",
+        .kSize = 12749824,
+        .kSha256 = "f3d9f2e53b775e4870917572f1f87a28c73068a4dc97252d6fb52360ddf8597a",
+        .kDevice = 0xb0c10,
+        .kQueue = 0xb0c18,
+        .kEngineObject = 0xb0c28,
+        .kFrameCounter = 0xb0c64,
+        .kSelfCheckFrame = 0xb0d2c,
+        .kHistory = 0xb0d70,
+        .kHistoryOn = 0xb0d78,
+        .kReady = 0xb1090,
+        .kNativeFailure = 0xb1092,
+        .kInlineMode = 0xb1598,
+        .kInlineActive = 0xb1599,
+        .kJobCounter = 0xb15cc,
+        .kNetworkMs = 0xb15f8,
+        .kWaitBudgetMax = 0xb16e0,
+        .kWatchdogJobA = 0xb1760,
+        .kWatchdogJobB = 0xb1764,
+        .kWatchdogFires = 0xb1790,
+        .kCpuWait = 0xb17c8,
+        .kInterop = 0xb17f0,
+        .kListMarker = 0xb18d0,
+        .kJobId = 0xb18dc,
+        .kDepthInverted = 0xb1980,
+        .kFsrFlagsSeen = 0xb1984,
+        .kEnabled = 0xb198c,
+        .kTemporal = 0xb198d,
+        .kUseFsrInputs = 0xb198e,
+        .kUseDepth = 0xb198f,
+        .kTonemap = 0xb1990,
+        .kLocalTone = 0xb19a0,
+        .kLocalStructure = 0xb19a4,
+        .kSkinStructure = 0xb19a8,
+        .kScale = 0xb19ac,
+        .kUseAutoMask = 0xb19b0,
+        .kToneChannels = 0xb19b4,
+        .kStyle = 0xb19b8,
+        .kToneCurve = 0xb19bc,
+        .kToneLift = 0xb19c0,
+        .kQuality = 0xb19c5,
+        .kHipDevice = 0xb1ab0,
+        .kFloatDumpFirst = 0xb1998,
+        .kFloatDumpLast = 0xb19b4,
+        .kByteDumpFirst = 0xb1980,
+        .kByteDumpLast = 0xb1997,
+        .kNotifyFn = 0xa200,
+        .kRecordFn = 0x157f0,
+        .kInitFn = 0x28a20,
     },
     // danielblnc's supporter build: not distributed, by this project or its installer. Whoever has
     // it supplies their own version.dll (or its setup), patched by tools/patch_runtime.py.

@@ -1,30 +1,34 @@
 # Changelog
 
-## v0.7.0 - 2026-09-28 - DLSS-NR-on-AMD v0.4.2, steadier by default, Passes that apply live, and a long list of fixes
+## v0.7.0 - 2026-09-28 - DLSS-NR-on-AMD v0.4.3, steadier by default, Passes that apply live, and a long list of fixes
 
-Built on v0.6.9. It moves to **DLSS-NR-on-AMD v0.4.2** (patched
-`f9aa21a2…`) and still runs v0.4.1 (`c8808716…`), with the same weights for both, so a by-hand
-update that keeps the old `dlssnr_amd_pass1.dll` still works. On 32-bit games `amd-nr.addon32` and
+Built on v0.6.9. It moves to **DLSS-NR-on-AMD v0.4.3** (patched
+`f3d9f2e5…`) and still runs v0.4.2 (`f9aa21a2…`) and v0.4.1 (`c8808716…`), with the same weights
+for all three, so a by-hand update that keeps an older `dlssnr_amd_pass1.dll` still works. On 32-bit games `amd-nr.addon32` and
 `amd-nr-host64.exe` go together (bridge protocol v5), and a mismatched pair is refused at the
 header, as before. Both runtimes, danielblnc and mochizuki, go through everything below.
 
 **Released together with AMD-NR-ReShade-Installer v0.6.7**, which moves its add-on, bridge and runtime
-pins to this release and to the patched v0.4.2 build (12,981,760 bytes, `f9aa21a2…`), offers the 0.5.0
+pins to this release and to the patched v0.4.3 build (12,749,824 bytes, `f3d9f2e5…`), offers the 0.5.0
 supporter build from the person's own files, and no longer lists add-on releases before this one: they
-refuse the v0.4.2 runtime.
+refuse the v0.4.3 runtime.
 
 ### What changes when you update
 
-- **DLSS-NR-on-AMD v0.4.2, with v0.4.1 still accepted.** Upstream measures v0.4.2 15% faster than
-  v0.4.1 at 1080p on RX 9000 in its new Fast mode, the default, and brings the temporal history
-  filter and one network block closer to NVIDIA's. The data block moved again in three pieces;
-  every address was mapped by its own anchor in the v0.4.2 binary and agrees with the OptiScaler
-  fork's own map on every field both name, and the two only this add-on uses (CpuWait, the
-  network's GPU time) were derived a second time on their own. The two patches moved to `0x655d`
-  and `0x91d2`. Of its two new ini keys, `Quality` is set by the add-on now (**Network precision**,
-  below), and `NoiseHandoff` is left as the person has it (off by default; with it on, Fixed seed
-  still holds the noise still, at one more kernel launch per job). The status column names the
-  build that runs ("danielblnc 0.4.2: network X ms"), on the 32-bit panel too.
+- **DLSS-NR-on-AMD v0.4.3, with v0.4.2 and v0.4.1 still accepted.** Upstream measures v0.4.3 20%
+  faster than v0.4.2 in Reference quality and 18% faster in Fast, the default; v0.4.2 had been 15%
+  faster than v0.4.1 at 1080p on RX 9000 in Fast, and brought the temporal history filter and one
+  network block closer to NVIDIA's. The data block moved again on both; every address was mapped by
+  its own anchor in each binary (v0.4.3 twice, from v0.4.2 and from 0.5.0, agreeing everywhere) and
+  agrees with the OptiScaler fork's own map on every field both name, and the ones only this add-on
+  uses (CpuWait, the network's GPU time, the watchdog's counters) were derived on their own. The two
+  patches sit at `0x655d` and `0x9622` on v0.4.3 (`0x655d` and `0x91d2` on v0.4.2). Of v0.4.2's two
+  new ini keys, `Quality` is set by the add-on now (**Network precision**, below), and
+  `NoiseHandoff` is left as the person has it (off by default; with it on, Fixed seed still holds
+  the noise still, at one more kernel launch per job). v0.4.3's new `OverlayKey` is for the
+  runtime's own overlay, which stays off: it is drawn only from the Present hooks the first patch
+  keeps the runtime from installing. The status column names the build that runs ("danielblnc
+  0.4.3: network X ms"), on the 32-bit panel too.
 - **danielblnc's 0.5.0 supporter build runs too, if you have it.** It is not distributed, by this
   project or by the installer: danielblnc gives it to his supporters, so you supply your own
   `version.dll` or its setup. The installer checks it, patches it and installs it for you; by hand,
@@ -48,8 +52,8 @@ refuse the v0.4.2 runtime.
   as on, since no earlier release wrote them. A `Temporal=0` set after that stays. To go back, set
   Temporal to Auto, untick Fixed seed and slide Output smoothing to off, or put `Temporal=0`,
   `FixedSeed=0` and `OutputSmooth=0` in `amd-nr.ini`.
-- **New: Network precision** (Engine, one tick away under More settings), on danielblnc v0.4.2 and
-  0.5.0: the runtime's `Quality`, on both panels. **Fast**, the default and the runtime's own, uses
+- **New: Network precision** (Engine, one tick away under More settings), on danielblnc v0.4.2,
+  v0.4.3 and 0.5.0: the runtime's `Quality`, on both panels. **Fast**, the default and the runtime's own, uses
   cheaper arithmetic (f32 accumulation, approximate square roots and reciprocals) and is about 13 to
   15% faster on RX 9000, with a difference that is barely visible; **Reference** is NVIDIA's exact
   arithmetic. A change applies from the next frame and starts the temporal history over. It is

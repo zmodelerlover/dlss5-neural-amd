@@ -35,7 +35,7 @@ int g_failures = 0;
 ui::PanelStatus Status64() {
     ui::PanelStatus st;
     st.hasFeedEffect = st.hasGameGuides = st.hasDepth = true; // the D3D11 route
-    st.hasQuality = true; // on danielblnc 0.4.2 or 0.5.0
+    st.hasQuality = true; // on danielblnc 0.4.2, 0.4.3 or 0.5.0
     st.hotkeyName = "Ctrl+END";
     return st;
 }

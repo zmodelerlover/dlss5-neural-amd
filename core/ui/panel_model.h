@@ -137,8 +137,8 @@ struct PanelStatus
     // to hand over: D3D12 has only its pre-clear copy, and Vulkan, OpenGL and a 32-bit D3D9 game
     // have neither, so Depth there would be a switch with nothing behind it.
     bool hasGameGuides = false, hasDepth = false;
-    // The danielblnc build running has the runtime's Quality (rt::Build::kQuality): 0.4.2 and
-    // 0.5.0, not 0.4.1 or mochizuki, where Network precision would be a control for nothing.
+    // The danielblnc build running has the runtime's Quality (rt::Build::kQuality): 0.4.2, 0.4.3
+    // and 0.5.0, not 0.4.1 or mochizuki, where Network precision would be a control for nothing.
     bool hasQuality = false;
     std::string feedStatus;       // what the companion effect is handing over, when it is
     // The engine runs in a helper process: only here is Timing drawn, as the bridge's pipelining

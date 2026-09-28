@@ -78,7 +78,7 @@ void Seed(PanelSettings &s)
          "mesmo quadro parado dá a mesma resposta bit a bit.");
 }
 
-// The runtime's Quality, which only danielblnc 0.4.2 and 0.5.0 have (PanelStatus::hasQuality).
+// The runtime's Quality, which only danielblnc 0.4.2, 0.4.3 and 0.5.0 have (PanelStatus::hasQuality).
 // Two choices, fast first: the settings value is 1 for fast, the runtime's own default.
 void Quality(PanelSettings &s)
 {

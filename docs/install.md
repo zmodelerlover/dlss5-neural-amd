@@ -28,8 +28,8 @@ Check them against `tools/SHA256SUMS.txt` before using them. The add-on hashes t
 and refuses anything that is not the exact build it was written against, because every offset in it
 is a hardcoded address into that one binary.
 
-**This release runs the v0.4.2 runtime, and still the v0.4.1 one.** If you are upgrading,
-replacing `dlssnr_amd_pass1.dll` with v0.4.2's is worth it but not needed; any other build is
+**This release runs the v0.4.3 runtime, and still the v0.4.2 and v0.4.1 ones.** If you are
+upgrading, replacing `dlssnr_amd_pass1.dll` with v0.4.3's is worth it but not needed; any other build is
 refused and the log names the ones it takes. The weights did not change, so leave
 `dlssnr_on_amd_weights.bin` where it is. If you build the runtime yourself from the upstream setup,
 the setup carries the DLL inside the installer rather than after it (since v0.3.3);

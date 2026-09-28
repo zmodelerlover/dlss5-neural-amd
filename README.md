@@ -96,7 +96,7 @@ The panel shows fifteen controls, fourteen on a 64-bit game, which has no Timing
 else it can do is one tick away under **More settings** at the bottom, and all of it is
 editable in `amd-nr.ini` either way.
 
-One of those is **Network precision** (Engine), on danielblnc v0.4.2 and 0.5.0: the runtime's own
+One of those is **Network precision** (Engine), on danielblnc v0.4.2, v0.4.3 and 0.5.0: the runtime's own
 `Quality`. **Fast**, the default, uses cheaper arithmetic and is about 13 to 15% faster on RX 9000,
 with a difference that is barely visible; **Reference** is NVIDIA's exact arithmetic. It applies
 at once, is saved as `Quality` in `amd-nr.ini` (1 fast, 0 reference) and is used instead of the
@@ -104,8 +104,8 @@ at once, is saved as `Quality` in `amd-nr.ini` (1 fast, 0 reference) and is used
 
 ## Which danielblnc runtime
 
-The add-on runs **DLSS-NR-on-AMD v0.4.2**, which the installer puts in, and still runs **v0.4.1**,
-so a folder that keeps the older `dlssnr_amd_pass1.dll` goes on working. It tells the builds apart
+The add-on runs **DLSS-NR-on-AMD v0.4.3**, which the installer puts in, and still runs **v0.4.2**
+and **v0.4.1**, so a folder that keeps an older `dlssnr_amd_pass1.dll` goes on working. It tells the builds apart
 by hash and refuses any other; the status column says which one runs.
 
 It also runs **0.5.0**, the build danielblnc gives his supporters. **It is not distributed**, by this
@@ -119,8 +119,8 @@ python tools/extract_runtime.py dlssnr_on_amd_setup.exe version.dll      (only f
 python tools/patch_runtime.py version.dll tools/runtime-patches.json dlssnr_amd_pass1.dll
 ```
 
-The weights are the same file for all three. On an RDNA3 card 0.5.0 keeps a half-precision copy of
-them, about 280 MB more VRAM per pass; on RDNA4 it needs nothing more than v0.4.2.
+The weights are the same file for all of them. On an RDNA3 card 0.5.0 keeps a half-precision copy
+of them, about 280 MB more VRAM per pass; on RDNA4 it needs nothing more than v0.4.3.
 
 ## The mochizuki runtime (experimental)
 
