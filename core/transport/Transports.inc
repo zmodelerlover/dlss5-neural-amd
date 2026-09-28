@@ -25,8 +25,8 @@ void DeviceGone(const char* reason) {
 // The game destroyed the device a route that crosses to our own D3D12 device latched, as PCSX2 and
 // RPCS3 do when they switch game or renderer. Our device, the runtime and the raster never depended
 // on it, so only what crossed to it goes, and the next present on the new device brings the route
-// up again. The route has forgotten the game's device; this drains our queue and drops everything
-// sized to the swapchain, the latch on it and the history. False, with all of it left where it is,
+// up again. This drains our queue and drops everything sized to the swapchain, the latch on it and
+// the history; the route forgets the game's device itself. False, with all of it left where it is,
 // when the add-on is already down, our device was removed, or our queue did not drain: that wait
 // stood it down (WaitFence), and what the GPU may still read is kept, as at every teardown.
 bool GameDeviceGone(const char* what) {
