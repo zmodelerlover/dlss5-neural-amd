@@ -5,14 +5,19 @@
 namespace d3d11route {
 
 // The game's device as ReShade hands it, before the QueryInterface: game11 need not be the same
-// pointer, and this is what a present and a destroy_device are compared against.
+// pointer, and this is what a present and a destroy_device are compared against. Set once the
+// game's side of the bridge is up, and forgotten when the game destroys the device.
 ID3D11Device* gameDevice = nullptr;
+bool loggedRemoved = false;
 
 // D3D11 path, step 1. Brings up the work device and stops there: the network still does not run
 // on this API, so the picture is untouched. What this proves, and all it proves, is that the
-// second device comes up on the same GPU as the game.
+// second device comes up on the same GPU as the game. Once per game device: the work device
+// outlives the one it was first made beside (OnDestroyDevice).
+// ponytail: a new game device on another adapter is not compared with ours; its textures do not
+// share, and the retries in Present stand the bridge down.
 void BridgeStep1(device* dev) {
-    if (g.bridge.failed || g.bridge.workDevice != nullptr)
+    if (g.bridge.failed || gameDevice != nullptr)
         return;
     // First point at which D3D12 is genuinely needed. Everything before this runs without
     // d3d12.dll ever entering the process.
@@ -28,7 +33,6 @@ void BridgeStep1(device* dev) {
         g.bridge.failed = true;
         return;
     }
-    gameDevice = native;
     ComPtr<ID3D11DeviceContext> ctx;
     g.bridge.game11->GetImmediateContext(&ctx);
     if (ctx == nullptr || FAILED(ctx.As(&g.bridge.game11ctx))) {
@@ -45,10 +49,11 @@ void BridgeStep1(device* dev) {
         g.bridge.failed = true;
         return;
     }
-    if (!CreateWorkDevice(adapter.Get(), ad.AdapterLuid)) {
+    if (g.bridge.workDevice == nullptr && !CreateWorkDevice(adapter.Get(), ad.AdapterLuid)) {
         g.bridge.failed = true;
         return;
     }
+    gameDevice = native;
     if (g.stage.load() < 3) {
         Log("stage %d: stopping after the work device, on purpose.", g.stage.load());
         return;
@@ -335,10 +340,25 @@ struct Transport final : FrameTransport {
             !g.status.windowHidden && !g.bridge.failed && !g.noBridge.load() && g.stage.load() >= 3)
             d3d11guides::SnapshotDepthBeforeClear(cmd, dsv, gameDevice, g.guideDepth);
     }
+    // PCSX2 destroys its device when it switches game or renderer. What crossed to it goes, and
+    // BridgeStep1 opens the new one on its first present. Only once GameDeviceGone has drained our
+    // queue: a wait that gave up keeps it all, as every teardown does.
     void OnDestroyDevice(device* dev) override {
-        if (gameDevice != nullptr &&
-            reinterpret_cast<ID3D11Device*>(dev->get_native()) == gameDevice)
-            DeviceGone("the game destroyed its D3D11 device; restart the game to re-enable");
+        if (gameDevice == nullptr ||
+            reinterpret_cast<ID3D11Device*>(dev->get_native()) != gameDevice ||
+            !GameDeviceGone("the game destroyed its D3D11 device"))
+            return;
+        gameDevice = nullptr;
+        g.bridge.crossOn11.Reset();
+        g.bridge.backOn11.Reset();
+        g.bridge.game11ctx.Reset();
+        g.bridge.game11.Reset();
+        g.guideDepthCs.Reset();  // compiled on that device
+        g.guideDepthCsFailed = false;
+        g.bridge.failed = false;
+        g.bridge.retries = 0;
+        g.bridge.presentsSinceFrame = 0;
+        g.loggedRound = loggedRemoved = false;  // so the log says when it is back
     }
     void Present(device* dev, command_queue*, swapchain* sc) override {
         // Between a teardown and the new swapchain being announced there is nothing safe to
@@ -369,12 +389,19 @@ struct Transport final : FrameTransport {
             return;
         }
         BridgeStep1(dev);
-        if (g.bridge.workDevice == nullptr)
+        if (gameDevice == nullptr)
             return; // BridgeStep1 said why
-        // The bridge is built on the game's device as first seen. OnPresent checks our own device;
-        // a removed game device comes back as a new one, with none of this on it.
+        // A removed game device is the game's to replace: its frames go out as drawn until it
+        // destroys this one, and OnDestroyDevice lets the new one in. Ours being removed is
+        // OnPresent's, and stands the add-on down. Not a stuck bridge, and no settle takes the
+        // tallies, as for MSAA.
         if (FAILED(g.bridge.game11->GetDeviceRemovedReason())) {
-            DeviceGone("the game's D3D11 device was removed; restart the game to re-enable");
+            g_depthTally.clear();
+            g_motionTally.clear();
+            g.bridge.presentsSinceFrame = 0;
+            if (!std::exchange(loggedRemoved, true))
+                Log("the game's D3D11 device was removed; its frames go out as drawn until it "
+                    "makes a new one, and the add-on comes back on that.");
             return;
         }
         if (g.bridge.failed) {

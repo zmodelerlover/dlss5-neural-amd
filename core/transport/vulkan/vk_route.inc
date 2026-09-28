@@ -35,8 +35,8 @@ using namespace vkraw;
 #include "vk_devicehook.inc"
 #include "vk_crossing.inc"
 
-// Everything that only has to happen once, plus the resize path. Returns false with a reason
-// already logged.
+// Everything that only has to happen once per host VkDevice, plus the resize path. Returns false
+// with a reason already logged.
 bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate, UINT w, UINT h,
             DXGI_FORMAT fmt)
 {
@@ -68,7 +68,10 @@ bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate
         }
         Log("vulkan: host VkDevice %p, interop entry points resolved.",
             static_cast<void *>(r.device));
-        if (!FindPhysicalDevice(r))
+        // Once. A device the host makes after destroying one is on the same GPU, and a second
+        // instance would be one more never destroyed. ponytail: a host that moves to another GPU
+        // has its imports refused, and the route stands down.
+        if (r.gpu == nullptr && !FindPhysicalDevice(r))
         {
             r.Stop("could not identify the physical device.");
             return false;
@@ -101,12 +104,15 @@ bool Ensure(Route &r, device *dev, command_queue *queue, command_list *immediate
             r.Stop("could not create the completion fence.");
             return false;
         }
-        if (!ImportFence(r, g.bridge.crossHandle, r.semToVk, "D3D12 -> Vulkan") ||
-            !ImportFence(r, g.bridge.backHandle, r.semToD3D, "Vulkan -> D3D12"))
-        {
-            r.Stop("the shared fences would not import.");
-            return false;
-        }
+    }
+    // Into every VkDevice the host makes: the pair on the last one died with it, and a work device
+    // another route made first never had them imported at all.
+    if (r.semToVk == nullptr &&
+        (!ImportFence(r, g.bridge.crossHandle, r.semToVk, "D3D12 -> Vulkan") ||
+         !ImportFence(r, g.bridge.backHandle, r.semToD3D, "Vulkan -> D3D12")))
+    {
+        r.Stop("the shared fences would not import.");
+        return false;
     }
 
     const bool crossingsReady = r.in.image != nullptr && r.in.memory != nullptr &&

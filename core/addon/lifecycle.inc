@@ -1,7 +1,7 @@
 // ReShade's swapchain, effect runtime and device lifecycle: what is drained and dropped when a
 // swapchain goes, what is let back in when the next one is announced, which effect runtime the
-// guides come from, and which route stands down when the device it built on is destroyed. Part of
-// the core's unity build, included by neural.cpp.
+// guides come from, and what a route does when the game destroys the device it latched. Part of the
+// core's unity build, included by neural.cpp.
 
 // Another window's swapchain (PrimaryRoute, Transports.inc): its presents went out as drawn, so
 // nothing of ours is on it, and its teardown or arrival says nothing about the primary.
@@ -113,8 +113,8 @@ void OnDestroyEffects(effect_runtime *runtime)
         }
 }
 
-// The device a route latched is being destroyed: that route stands down (FrameTransport.hpp),
-// because a game that makes a new one hands it none of what was built on the old.
+// The device a route latched is being destroyed: D3D12 stands down, and a route that crosses to
+// our own device drops what crossed and waits for the new one (FrameTransport.hpp).
 void OnDestroyDevice(device *dev)
 {
     std::lock_guard guard(g.lock);

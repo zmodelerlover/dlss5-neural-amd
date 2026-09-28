@@ -13,12 +13,33 @@ bool CrossingReady(swapchain* sc) {
     return false;
 }
 
-// The device a route built on was destroyed or removed. What was built on it is gone with it and a
-// new device starts with none of it, so the add-on stands down until the game is restarted.
+// The game destroyed the device the D3D12 route runs the network on. The runtime was initialised on
+// that device and a new one starts with none of it, so the add-on stands down until the game is
+// restarted.
 void DeviceGone(const char* reason) {
     g.status.unavailable = true;
     g.status.reason = reason;
     Log("off: %s", reason);
+}
+
+// The game destroyed the device a route that crosses to our own D3D12 device latched, as PCSX2 and
+// RPCS3 do when they switch game or renderer. Our device, the runtime and the raster never depended
+// on it, so only what crossed to it goes, and the next present on the new device brings the route
+// up again. The route has forgotten the game's device; this drains our queue and drops everything
+// sized to the swapchain, the latch on it and the history. False, with all of it left where it is,
+// when the add-on is already down, our device was removed, or our queue did not drain: that wait
+// stood it down (WaitFence), and what the GPU may still read is kept, as at every teardown.
+bool GameDeviceGone(const char* what) {
+    if (g.status.unavailable || g.status.failed || DeviceLost() || !WaitForWorkQueue(g.completion))
+        return false;
+    ReleaseSwapchainSized();
+    // The primary was on that device. Taken again by the first swapchain to present on the new one,
+    // should a game destroy its device without the swapchain's own teardown reaching us first.
+    g.primarySwapchain.store(nullptr);
+    ResetTemporal(what);
+    Log("%s: what crossed to it is dropped, and the add-on comes back on the next present from the "
+        "new one.", what);
+    return true;
 }
 
 // A present from a device, or on a queue, other than the one a route latched: a swapchain made after

@@ -87,12 +87,15 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
 - **On Vulkan and OpenGL, a route that stands down says so on the panel**, with its reason (the
   device lacking an entry point, the textures not crossing, a work slot that could not be
   recovered, and so on), where the panel went on reading Ready and only the log knew.
-- **When the game destroys the device the add-on runs on** (D3D12, D3D11, Vulkan), or a D3D11
-  game's device is removed, the effect switches off and the panel says to restart the game, instead
-  of carrying on with what was built on the old device. A removed device is checked on every
-  present, on every route. A present from a device or queue other than the first one seen goes out
-  as the game drew it, said once in the log. The D3D12 pre-clear depth copy is only ever taken on
-  the add-on's own device.
+- **When the game destroys the device the add-on runs on**, as PCSX2 and RPCS3 do when they switch
+  game or renderer, the effect comes back on its own on the new device on D3D11, Vulkan and OpenGL:
+  what was built on the old device is dropped, the history starts again, and the log says so once.
+  If a D3D11 game's device is removed, its frames go out as the game drew them until it makes a new
+  one. On D3D12 the effect switches off and the panel says to restart the game, because the network
+  runs on the game's own device there. The add-on's own device being removed is checked on every
+  present, on every route, and still switches the effect off. A present from a device or queue other
+  than the one the add-on runs on goes out as the game drew it, said once in the log. The D3D12
+  pre-clear depth copy is only ever taken on the add-on's own device.
 - **A wait on the add-on's own GPU work no longer lasts for ever.** After `FenceWaitCapMs` (new,
   ini only, 10000 ms by default, at least 1000; `0` waits for ever as before) the effect switches
   off, the panel says to restart the game, and whatever the GPU may still be reading is kept

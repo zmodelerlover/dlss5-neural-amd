@@ -982,7 +982,7 @@ struct State
 
 // ponytail: never destroyed, like every global holding COM objects: a destructor would release
 // them under the loader lock, after the runtime, HIP and the driver detached. Ceiling: an unload
-// keeps its refs on the game's device and context; release those at destroy_device if it matters.
+// keeps its refs on the game's device and context, which only a re-arm on destroy_device drops.
 State &g = *new State;
 
 #include "../temporal/history.inc"

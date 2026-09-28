@@ -49,6 +49,7 @@ Gate 'd3d12_depth_pick' { python tools/d3d12_depth_pick_check.py } 'properties h
 Gate 'motion_feed' { python tools/motion_feed_check.py } 'PASS'
 Gate 'transport_check' { python tools/transport_check.py } 'PASS'
 Gate 'unload_check' { python tools/unload_check.py } 'PASS'
+Gate 'device_rearm_check' { python tools/device_rearm_check.py } 'PASS the device re-arm'
 Gate 'job_gate_check' { python tools/job_gate_check.py } 'PASS'
 Gate 'fence_wait_check' { python tools/fence_wait_check.py } 'PASS the fence wait'
 Gate 'watchdog_check' { python tools/watchdog_check.py } 'PASS the watchdog'

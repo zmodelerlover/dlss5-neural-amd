@@ -219,7 +219,7 @@ latched = (("D3D12", D3D12, ("Foreign(g.device.Get() != device12 || g.queue.Get(
 for name, path, marks in latched:
     text = path.read_text(encoding="utf-8")
     if not all(s in text for s in marks + ("void OnDestroyDevice(device* dev) override", "DeviceGone(")):
-        bad.append(f"{name}: does not compare what it latched on each present and stand down on destroy_device")
+        bad.append(f"{name}: does not compare what it latched on each present and answer destroy_device (device_rearm_check.py)")
 if "g.device.Get() != reinterpret_cast<ID3D12Device*>(dev->get_native())" not in snapshot:
     bad.append("SnapshotBeforeClear: a clear on another device would be copied across devices")
 lines = neural.splitlines()

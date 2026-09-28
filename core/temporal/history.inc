@@ -17,7 +17,8 @@
 // effect resuming from off or minimised, a Passes change, a guide in use moving to another
 // buffer, the guide probe withholding the game's depth or handing it back (SetDepthUsable; any
 // re-arm hands it back, even one that found the same buffer again after a swapchain rebuild), a
-// new OpenGL context, a list that failed to close, and a frame the chain did not run
+// new OpenGL context, the game destroying the D3D11 or Vulkan device a route crossed to
+// (GameDeviceGone), a list that failed to close, and a frame the chain did not run
 // (DropStaleHistory); a pass that sat a frame out loses its own bit after the pass loop.
 // tools/temporal_reset_check.py holds every store to this.
 

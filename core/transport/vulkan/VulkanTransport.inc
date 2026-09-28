@@ -18,16 +18,17 @@ struct Transport final : FrameTransport {
     }
     // The one reliable word that the host's VkDevice is going: a new one can take the same handle,
     // so the compare above cannot tell it from the old. ReShade has already unregistered the device
-    // by now, so a vkDestroyImage through its hook would fault: the handle is forgotten before the
-    // common teardown, the D3D12 side is drained and released, and the imported images go with the
-    // device, which the host has idled as the spec requires.
+    // by now, so a vkDestroyImage through its hook would fault: the handle and the two semaphores
+    // imported on it are forgotten before the common teardown, the D3D12 side is drained and
+    // released, and the imported images go with the device, which the host has idled as the spec
+    // requires. RPCS3 makes a new one for every game it boots; Ensure imports into it.
     void OnDestroyDevice(device* dev) override {
         if (g_route.device == nullptr ||
             reinterpret_cast<VkDevice>(dev->get_native()) != g_route.device)
             return;
         g_route.device = nullptr;
-        ::ReleaseSwapchainSized();
-        DeviceGone("the host destroyed its VkDevice; restart the game to re-enable");
+        g_route.semToVk = g_route.semToD3D = nullptr;
+        GameDeviceGone("the host destroyed its VkDevice");
     }
     // The imported VkImages have the same lifetime as the D3D12 resources the core drops. Invalidate
     // the route even when the replacement swapchain keeps the same size and format, otherwise its
