@@ -1,12 +1,17 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 - 2026-09-28 - DLSS-NR-on-AMD v0.4.2, steadier by default, Passes that apply live, and a long list of fixes
 
-Planned as **v0.7.0**. Built on v0.6.9. It moves to **DLSS-NR-on-AMD v0.4.2** (patched
+Built on v0.6.9. It moves to **DLSS-NR-on-AMD v0.4.2** (patched
 `f9aa21a2…`) and still runs v0.4.1 (`c8808716…`), with the same weights for both, so a by-hand
 update that keeps the old `dlssnr_amd_pass1.dll` still works. On 32-bit games `amd-nr.addon32` and
 `amd-nr-host64.exe` go together (bridge protocol v5), and a mismatched pair is refused at the
 header, as before. Both runtimes, danielblnc and mochizuki, go through everything below.
+
+**Released together with AMD-NR-ReShade-Installer v0.6.7**, which moves its add-on, bridge and runtime
+pins to this release and to the patched v0.4.2 build (12,981,760 bytes, `f9aa21a2…`), offers the 0.5.0
+supporter build from the person's own files, and no longer lists add-on releases before this one: they
+refuse the v0.4.2 runtime.
 
 ### What changes when you update
 
@@ -54,9 +59,9 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   mochizuki is another network, so neither shows the control.
 - **D3D12 games: every frame goes through the network.** Same-frame only made the GPU wait for the
   previous evaluation, so with frames in flight every present during that wait went out as the
-  game drew it: 77 to 85% of the frames in Rollout Inline (UE5), a strobe. The CPU now waits for
-  the previous evaluation as well, as on the other routes, so every frame gets the effect and the
-  frame rate follows the network (about 28 to 30 fps at Scale 1 in 1080p on an RX 9070 XT). For
+  game drew it: 77 to 85% of the frames in a game that keeps three frames in flight, a strobe. The
+  CPU now waits for the previous evaluation as well, as on the other routes, so every frame gets
+  the effect and the frame rate follows the network (about 28 to 30 fps at Scale 1 in 1080p on an RX 9070 XT). For
   more frames, lower Scale.
 - **`Passes` applies live in both directions**, on both routes. Each extra pass loads its own copy
   of the runtime (about 150 MB of VRAM) the first time a count needs it, one copy a frame at one
@@ -101,7 +106,7 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   and so on), where the panel went on reading Ready and only the log knew. An engine that did not
   come up keeps the reason it gave, mochizuki's own words or the `dlssnr_amd_pass1.dll` that was
   refused, as on D3D11 and D3D12, instead of `could not bring the engine up on the Vulkan bridge`.
-- **When the game destroys the device the add-on runs on**, as PCSX2 and RPCS3 do when they switch
+- **When the game destroys the device the add-on runs on**, as emulators do when they switch
   game or renderer, the effect comes back on its own on the new device on D3D11, Vulkan and OpenGL:
   what was built on the old device is dropped, the history starts again, and the log says so once.
   If a D3D11 game's device is removed, its frames go out as the game drew them until it makes a new
@@ -151,7 +156,7 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   proven again, and our queue drained, before anything is rebuilt.
 - On Vulkan and OpenGL a work slot is no longer reused while the GPU still runs it after a 2 s wait
   ran out (alt-tab), and no fence wait ends early on a wake another wait left behind.
-- An add-on unloaded mid-game (NFS unloads it when the device goes) no longer leaves its crash
+- An add-on unloaded mid-game (a game that drops its device unloads it) no longer leaves its crash
   probe or the OpenGL fault filter pointing into freed code, and nothing the add-on holds on the GPU
   is released at exit after the runtime and the driver have gone.
 - `Events` without bit 8 no longer drops the drain a resize waits on: destroy-swapchain is always
@@ -179,19 +184,19 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   bytes, 16 more than the add-on passed, among them a jitter pair it reads on every frame; those
   came from whatever was on the stack. They are zero now, as the OptiScaler fork passes them.
   Whether the stack bytes ever moved the picture was not measured.
-- **Lighting no longer flickers in motion where the game's motion buffer is not really motion**, as
-  in Tomb Raider 2013 on the 32-bit bridge. The motion handed to the network is checked on every
-  frame and every route: a vector longer than the raster, inf or NaN becomes no motion. Tomb
-  Raider's guide had taken a 960x540 buffer that reads 65504 px on every pixel, so the runtime's
-  history and Output smoothing were fetched from off the frame and the network was left alone,
-  flickering; a buffer like that is now given up on and the estimator takes the motion over. In
-  Tomb Raider the lighting's frame-to-frame variation fell 2.6 to 4.8 times. A game with real
-  vectors (NFS) is unchanged.
+- **Lighting no longer flickers where the buffer taken for the game's motion is not really
+  motion**, on every route. The motion handed to the network is checked on every frame: a vector
+  longer than the raster, inf or NaN becomes no motion. A guide could take a buffer of the right
+  format and size that holds something else, 65504 px (the largest half-float) on every pixel, and
+  then the runtime's history and Output smoothing were fetched from off the frame and the network
+  was left alone, flickering; a buffer like that is now given up on and the estimator takes the
+  motion over. Measured on such a game, the lighting's frame-to-frame variation fell 2.6 to 4.8
+  times; a game with real vectors is unchanged.
 - **32-bit games with 2 or 3 passes no longer blink.** The helper told only the first pass's
   runtime copy that the frame was submitted, so the last pass's job never ran and the effect came
   in 500 ms stretches of frames drawn as the game drew them, with 1 to 3 frames processed in
-  between: 33 of 481 frames at 2 passes in Tomb Raider. Every copy is told now, and every frame is
-  processed. Each pass adds its own GPU time.
+  between: 33 of 481 frames at 2 passes. Every copy is told now, and every frame is processed.
+  Each pass adds its own GPU time.
 - A frame the network did not answer is shown by one rule on every route: the game's own frame,
   graded when a style is selected, or the debug view or Network Output when one is on. On OpenGL it
   no longer repeats the last result, and on the 32-bit bridge it no longer loses the style, the
@@ -208,9 +213,9 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   (`measure, non-finite`); with Output smoothing on it reads after the smooth, so only a run with
   OutputSmooth=0 says whether the network returns any.
 - **A window resized for good now gets a raster of its own size.** On every route the raster kept
-  the size it started at until Scale moved, so NFS windowed from 1080 to 1017 lines ran the
+  the size it started at until Scale moved, so a game windowed from 1080 to 1017 lines ran the
   network on a frame stretched to the old shape. A new size is now followed once it has lasted 120
-  presents and is more than 2% off; a game that keeps changing size (Xenosaga 2, PCSX2) still keeps
+  presents and is more than 2% off; a game that keeps changing size (common under emulators) still keeps
   one raster. Following it starts history again, as a Scale change does.
 - The guide probe looks again, 120 presents later, whenever the game's depth or motion moves to
   another buffer or is taken back after a resize, on D3D11, D3D12 and the 32-bit bridge. It used to
@@ -223,7 +228,7 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   the probe gives up on it again.
 - **Depth the guide probe reads as JUNK, or as FLAT twice while something moves, is no longer
   handed to the network**, on every route. It used to be logged and fed anyway, so a game that
-  clears depth before present (a 32-bit Tomb Raider) gave the network a constant plane. A reading
+  clears depth before present gave the network a constant plane. A reading
   that varies hands it back, and so does every new look after a guide is taken, even the same
   buffer taken back after a resize (until two readings withhold it again). A flat menu with nothing moving
   never withholds it; one that moves (a spinner, a video) can, so while depth is withheld as FLAT
@@ -233,13 +238,13 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   `depth fed 1 (handed 0)`, and the Status column reads `depth unusable` on both panels while it
   is withheld.
 - **Depth a game clears before present is copied just before the clear instead**, on the 64-bit
-  D3D11 route and the 32-bit bridge (a 32-bit Tomb Raider), and the guide probe looks at that copy.
+  D3D11 route and the 32-bit bridge, and the guide probe looks at that copy.
   Only once the probe has withheld the copy taken at present, and the first time only on trial: an
   engine that clears at the start of a frame would hand over the last frame's depth there, and a
   menu that moves is withheld the same way before its scene arrives in that buffer. So the first
   copy before a clear that reads right goes back to the copy at present, once, and is probed again,
   and depth that reads right at present stays this frame's. Withheld there a second time, the copy
-  before the clears stays until the depth moves to another buffer; Tomb Raider pays one more probe
+  before the clears stays until the depth moves to another buffer; such a game pays one more probe
   cycle for it (some 14 s at 60 fps). A copy that reads no better is withheld as before. The log
   says `withheld as copied at present, so it is copied just before the game clears it`, `reads right
   as copied just before the game clears it, so copied at present again, once`, and `the snapshot
@@ -258,7 +263,7 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   game's depth or motion buffer takes the place of one the network was fed, when the guide probe
   withholds the game's depth or hands it back, on a new OpenGL context, and, for the passes that
   sat a frame out, when fewer passes ran than were asked for. A swapchain rebuild alone no longer
-  drops it on the 32-bit route, where a game that rebuilds every few frames (PCSX2, Xenosaga 2)
+  drops it on the 32-bit route, where a game that rebuilds every few frames (common under emulators)
   lost its accumulation each time; neither route drops it there now, nor when the game's depth and
   motion are found again a few presents after it, unless the guide probe had withheld that depth:
   finding it again hands it back, which drops the history, and again when the probe withholds it.
@@ -303,7 +308,7 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
     value from before; one set to nan or inf reads as its default instead of being taken.
   - `SerialPasses` is saved.
 - **The mochizuki runtime shares the danielblnc path's rules:** a new pass count starts the history
-  again, a game that keeps changing size (PCSX2, Xenosaga 2) keeps one raster, where with mochizuki
+  again, a game that keeps changing size (common under emulators) keeps one raster, where with mochizuki
   every size it flapped through rebuilt the raster and started history again, the panel offers every
   pass, and it runs through the same run-or-skip decision, device checks and stand-downs on every
   route.
@@ -366,6 +371,23 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   started setting its scale from the range it measured; it still said x500, the PS2's. The 32-bit
   frontend's frame line says `same_frame=0` when presentation is pipelined, where it always said 1,
   and `result=-1` when no answer came back with that present.
+
+### For developers
+
+- **`tools/gates.ps1`** is in the repository and runs every check in one pass (`-All` adds the
+  diagnostic builds). CI runs the checks that need no GPU and no runtime binary: the Python ones and
+  the raster pin on Linux, the compiled fence-wait, watchdog, ini-migration, bridge and factory ones
+  on Windows.
+- **Recorded sequences** can be played through the whole pipeline and measured in time
+  (`tools/seqgen.py`, `seq_run.py`, `seq_player.py`, `seq_table.py`, `temporal_metrics.py`, with
+  framecheck), which is how the new defaults were chosen.
+- A lab build (`build.ps1`) can run the reference's optical flow and history filters ahead of and
+  around the network (`OpticalFlow`, `MotionMaxPx`, `HistoryGuard`); a release build reads
+  `OpticalFlow` as 0. lmxxf's MIT notice is in `docs/third-party/lmxxf-LICENSE.md`.
+- Most of `core/addon/neural.cpp` moved into includes of their own (the job gate, the guide and flow
+  probes, the motion sources, the 64-bit panel glue, the D3D12 depth pick, the scale cap, the HIP
+  device pick, the fault probe), with no change in behaviour. The line-limit check keeps new files
+  under 500 lines and never lets one already over it grow.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 
