@@ -126,7 +126,7 @@ void TallyBoundDepth(resource res) {
     if (res.handle == 0)
         return;
     auto* native = reinterpret_cast<ID3D12Resource*>(res.handle);
-    std::lock_guard guard(g.lock);
+    const auto guard = LockForHook();
     if (native == g.depthBest.Get())
         ++g.depthBinds; // the status line's running total, which outlives one present
     const auto d = native->GetDesc();
@@ -156,7 +156,7 @@ void SnapshotBeforeClear(command_list* cmd_list, device* dev, resource_view dsv)
         return;
     auto* native = reinterpret_cast<ID3D12Resource*>(res.handle);
 
-    std::lock_guard guard(g.lock);
+    const auto guard = LockForHook();
     // Counted for whichever candidate this is, not only for the one holding the slot: "the game
     // clears it every frame" is how the scene depth is told from a buffer that is merely the same
     // size, and that has to be known about a challenger before it can win. Recorded rather than

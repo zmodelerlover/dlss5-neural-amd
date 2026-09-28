@@ -678,7 +678,7 @@ struct State
         std::atomic<bool> networkOutput;
         std::atomic<int> debugView;
         std::atomic<bool> measureNow { false };
-        bool diagnostics = false;
+        int diagnostics = 0;  // bits: 1 the Ctrl+Home/PageDown keys, 2 a stats line a second
         bool capturePair = false;
         std::atomic<float> flowGate;
         std::atomic<float> flowRatio;
@@ -1059,9 +1059,6 @@ int RuntimeTonemap()
 // here are the same defaults the code carries; this file existing changes nothing about how the
 // add-on behaves.
 void LoadSettings();
-// Defined with the other composition helpers, below; wanted in LoadSettings only so the log can
-// report which model was selected.
-bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat);
 void SaveSettings(bool quiet = false);
 
 #include "ini_migrate.inc"
@@ -1277,7 +1274,7 @@ void LoadSettings()
             "input; using the runtime's default 0.03125 instead.", static_cast<double>(es));
         g.settings.engineScale.store(0.03125f);
     }
-    g.settings.diagnostics = flag(L"Diagnostics", false);
+    g.settings.diagnostics = static_cast<int>(num(L"Diagnostics", 0.0f));
 
     Log("settings: scale %.2f passes %d intensity %.2f structure %.2f skin %.2f tone %.2f "
         "inline %d bicubic %d motion %d history %d gate %.3f ratio %.2f debug %d temporal %d seed %d smooth %.2f/%.0f",
@@ -1645,6 +1642,7 @@ void AdoptFeedEffect()
         lpTech.handle != 0 && g.effects->get_technique_state(lpTech) ? 1 : 0);
 }
 
+#include "stats.inc"
 #include "runtimes.inc"
 
 void RenderEffectsAheadOfNetwork(device *dev, resource back);
@@ -2867,9 +2865,9 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         }
         if (At<ID3D12CommandList *>(r, rt::B->kListMarker) != cmd)
         {
-            if (++g.status.skipped % 600 == 1)
+            if (++g_stats.now.refused % 600 == 1)
                 Log("pass %u refused (%llu total)", i + 1,
-                    static_cast<unsigned long long>(g.status.skipped));
+                    static_cast<unsigned long long>(g_stats.now.refused));
             break;
         }
         // Same frame or nothing. Async never moves kJobCounter, so the job would read busy for ever.
@@ -2966,6 +2964,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     {
         g.lastJobAt = GetTickCount64();
         g.jobRunning = true;
+        ++g_stats.now.evaluated;
     }
     if (nativeFailure)
         return false;
@@ -3106,7 +3105,7 @@ void OnPresent(command_queue *queue, swapchain *sc, const rect *, const rect *, 
     d3d12route::SettleD3D12Depth();
     // Opt-in diagnostic controls, only on the foreground game's swapchain.
     // No per-frame file polling and no UI interaction needed for matched captures.
-    if (g.settings.diagnostics)
+    if (g.settings.diagnostics & 1)
     {
         static bool reloadDown = false, captureDown = false;
         const bool foreground = sc != nullptr && sc->get_hwnd() == GetForegroundWindow();

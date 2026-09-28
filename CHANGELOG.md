@@ -291,6 +291,19 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   `tools/runtime_offsets_check.py` proves the build it is handed, and without one refuses a build
   that leaves an address out.
 
+### Logs and the Debug section
+
+- **A line a second says what the network did with that second's frames**, on every route and in
+  the 32-bit helper's log, with `Diagnostics=2` in `amd-nr.ini`: `stats: 1.00 s | presents 61 eval
+  58 skip 3 (heap 1) refused 0 | bind waits 2 | job max 18 ms`. That is the frames the network ran
+  on, the ones it sat out because the GPU still had the last one (of those, `heap` were held because
+  a list was still reading the add-on's views), the passes the engine refused, how often one of the
+  game's binds or clears waited for the add-on's lock, and the longest evaluation. The same line is
+  under **Debug** on the 64-bit panel whatever `Diagnostics` says. `Diagnostics` is bits now: 1 is
+  still the Ctrl+Home and Ctrl+PageDown keys, so 3 is both. A refused pass no longer counts as a
+  skipped frame, and the skipped share on both panels is of the frames presented; it counted each
+  skipped frame twice, so it read low.
+
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 
 Requires the pinned **DLSS-NR-on-AMD v0.4.1** runtime; v0.4.0 is refused by hash. The weights are

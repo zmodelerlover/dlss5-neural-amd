@@ -276,6 +276,7 @@ bool NoteWatchdog()
 // recorded on top of a late job, and never timed the jobs NoteJobCost needs to see.
 bool JobGate()
 {
+    TickStats();
     WaitForPreviousJob();
     const bool pending = RuntimeBusy() || (g.fence->GetCompletedValue() < g.completion &&
                                            GetTickCount64() - g.lastJobAt < 500);
@@ -326,7 +327,7 @@ bool HeapStillRead(bool ran)
     if (wrote)
         return false;
     if (ran)
-        ++g.status.skipped;
+        ++g.status.skipped, ++g_stats.now.heapHeld;
     if (++held % 600 == 1)
         Log("network skipped: the last list that read the descriptor heap is still on the GPU "
             "(%llu such frames).", static_cast<unsigned long long>(held));

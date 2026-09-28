@@ -61,15 +61,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "guide check failed" }
 
       # These compile code of the add-on on its own against windows.h and run it: the fence wait, the
-      # watchdog's stand-down, the one-time ini move, and the bridge's other two contract suites.
-      # The runner's MinGW g++ does it.
-      - name: Run the fence wait, the watchdog, the ini move and the bridge contracts on their own
+      # watchdog's stand-down, the one-time ini move, the stats line, and the bridge's other two
+      # contract suites. The runner's MinGW g++ does it.
+      - name: Run the fence wait, the watchdog, the ini move, the stats and the bridge contracts on their own
         shell: pwsh
         env:
           CXX: g++
         run: |
           g++ --version
-          foreach ($t in 'tools/fence_wait_check.py', 'tools/watchdog_check.py', 'tools/ini_migrate_check.py',
+          foreach ($t in 'tools/fence_wait_check.py', 'tools/watchdog_check.py', 'tools/ini_migrate_check.py', 'tools/stats_check.py',
                          'core/x86bridge/tests/test-x86bridge-v2.py', 'core/x86bridge/tests/test-x86bridge-factory.py') {
             python $t
             if ($LASTEXITCODE -ne 0) { throw "$t failed" }

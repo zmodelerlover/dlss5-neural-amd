@@ -21,7 +21,7 @@ PanelStatus ReadPanelStatus()
     std::lock_guard guard(g.lock);
     st.run = g.status.unavailable ? RunState::Unavailable : g.status.failed ? RunState::Error : RunState::Ready;
     st.reason = g.status.reason;
-    st.processed = g.status.frame;
+    st.processed = g.status.frame - std::min(g.status.frame, g.status.skipped);  // a skip is a present too
     st.skipped = g.status.skipped;
     st.routeNote = ProfileForThisProcess().note;
     st.outWidth = g.outWidth;
@@ -47,6 +47,8 @@ PanelStatus ReadPanelStatus()
     st.noBackBuffer = g.noBackBuffer.load();
     st.hotkeyName = HotkeyName();
     RouteCaps(st);  // Feed.fx, Read from the game and depth, as far as this route reaches them
+    if (!g_stats.line.empty())
+        st.routeDiagnostics.push_back(g_stats.line);
     st.feedStatus = g.feedStatus;
     MzStatus(st);
     return st;

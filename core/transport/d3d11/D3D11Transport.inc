@@ -320,7 +320,7 @@ struct Transport final : FrameTransport {
     uint32_t Caps() const override { return kDepth | kGameGuides | kFeed; }
     void OnTargetsBound(device* dev, uint32_t count, const resource_view* rtvs,
                         resource depth) override {
-        std::lock_guard observe(g.lock);
+        const auto observe = LockForHook();
         ObserveD3D11(dev, rtvs, count, depth);
     }
     // The depth copy before a clear, once the probe withheld the one taken at present
@@ -329,7 +329,7 @@ struct Transport final : FrameTransport {
     void OnDepthCleared(command_list* cmd, device*, resource_view dsv) override {
         if (g.inEffects.load())
             return;
-        std::lock_guard guard(g.lock);
+        const auto guard = LockForHook();
         if (g.settings.enabled.load() && g.settings.useGameGuides.load() &&
             g.settings.useDepth.load() && !g.status.unavailable && !g.status.failed &&
             !g.status.windowHidden && !g.bridge.failed && !g.noBridge.load() && g.stage.load() >= 3)
