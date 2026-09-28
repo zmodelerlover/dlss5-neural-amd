@@ -42,8 +42,8 @@
 // OptiScaler fork's own layout (AmdLayout.h, kAmd042), which agree on every field both name. The
 // two only this add-on uses were derived again on their own: kCpuWait from the ini reader's store
 // (now a checker rule), kNetworkMs from the worker's write and the log's read, the same pair of
-// instructions 0x108 apart on both builds. It adds two ini keys the add-on leaves alone: Quality
-// (fast by default, reference on a GPU without the fast kernels) and NoiseHandoff (see seed.inc).
+// instructions 0x108 apart on both builds. It adds two ini keys: Quality, which the add-on writes
+// from its own setting (kQuality), and NoiseHandoff, which it leaves alone (see seed.inc).
 // Code addresses quoted in the comments below are v0.4.1's.
 //
 // 0.5.0 is danielblnc's supporter build, and is not distributed: whoever has it supplies their own
@@ -163,6 +163,16 @@ size_t kStyle;                         // ini `Style`, int, clamped to 0..2
 size_t kToneCurve;                     // ini `ToneCurve`, int: 0 reinhard, 1 aces
 size_t kToneLift;                      // ini `ToneLift`, float, clamped to 0..0.25
 
+// ini `Quality`, new in v0.4.2 and read as a string: `fast` in any case, or no key at all, stores
+// 1, the fast kernels (f32 accumulation, approximate rsqrt and rcp; upstream measures them about
+// 13-15% faster on RX 9000, and the difference is barely visible); anything else 0, NVIDIA's exact
+// arithmetic. The worker copies it into the engine on every job, so a write applies from the next
+// one. On v0.4.2 a GPU without the fast kernels runs reference whatever it says; on 0.5.0 a change
+// also resets the runtime's own temporal history. The add-on writes its own Quality here every
+// frame, over the runtime's ini. The ini reader's `sete` stores it (0x89d6 on v0.4.2, 0x8b1e on
+// 0.5.0), and the checker decodes that store.
+size_t kQuality;                       // optional: 0 on a build without the key (0.4.1). byte
+
 size_t kHipDevice;                     // the device actually in use, not the ini's copy
 
 // The window the log dumps once after init, to show the engine's own defaults read back.
@@ -178,7 +188,9 @@ size_t kInitFn;                       // loads the weights
 
 // Every build this add-on knows, told apart by the hash of the patched file. Each one's addresses
 // are proven against its own binary by tools/runtime_offsets_check.py; a field left out of a build
-// here would be zero, which the checker refuses. Designated initializers keep them in field order.
+// here would be zero, which the checker refuses unless the field is declared optional, and then
+// only with the binary showing the build has no such key. Designated initializers keep them in
+// field order.
 inline constexpr Build kBuilds[] = {
     {
         .kVersion = "0.4.1",
@@ -221,6 +233,7 @@ inline constexpr Build kBuilds[] = {
         .kStyle = 0xaa668,
         .kToneCurve = 0xaa66c,
         .kToneLift = 0xaa670,
+        .kQuality = 0,
         .kHipDevice = 0xaa760,
         .kFloatDumpFirst = 0xaa648,
         .kFloatDumpLast = 0xaa664,
@@ -271,6 +284,7 @@ inline constexpr Build kBuilds[] = {
         .kStyle = 0xaf840,
         .kToneCurve = 0xaf844,
         .kToneLift = 0xaf848,
+        .kQuality = 0xaf84d,
         .kHipDevice = 0xaf938,
         .kFloatDumpFirst = 0xaf820,
         .kFloatDumpLast = 0xaf83c,
@@ -323,6 +337,7 @@ inline constexpr Build kBuilds[] = {
         .kStyle = 0xb69f0,
         .kToneCurve = 0xb69f4,
         .kToneLift = 0xb69f8,
+        .kQuality = 0xb69fd,
         .kHipDevice = 0xb6ae8,
         .kFloatDumpFirst = 0xb69d0,
         .kFloatDumpLast = 0xb69ec,

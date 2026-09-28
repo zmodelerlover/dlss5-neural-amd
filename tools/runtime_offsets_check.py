@@ -25,9 +25,13 @@ What it proves, in the order of how much each would have caught:
     it first to kWaitBudgetMax, the value InitEngine logs as the budget in force.
   * Every data offset lands in `.data` and every entry point in `.text`. `.rdata` is where a stale
     data offset goes to fault, so this is not a formality.
+  * The ini reader takes Quality with a default of "fast", compares it with "fast" and stores the
+    answer to kQuality, the byte the add-on writes its own Quality into; a build that names 0 there
+    has no Quality key in it at all.
   * The file is a build `kBuilds` names, by its hash, and it has been through `patch_runtime.py`.
-    Without a binary: every build names every address (a field left out compiles as zero), and
-    each is the patched_sha256 of a runtime-patches.json build.
+    Without a binary: every build names every address (a field left out compiles as zero) but the
+    ones `struct Build` declares optional, and each is the patched_sha256 of a runtime-patches.json
+    build.
   * The runtime names d3d12.dll in a table the add-on rewrites. The private-D3D12 copy renames it
     in the import and delay-import tables; v0.4.0 moved it from the first to the second while the
     add-on read only the first, and a runtime it cannot rename loads the system d3d12.dll -- the
@@ -93,12 +97,16 @@ def import_names(data):
 
 
 def header_builds():
-    """The address fields `struct Build` declares, and every entry of `kBuilds`: its version, size,
-    SHA-256 and {name: rva}, the rvas split into data and entry points by the `Fn` suffix."""
+    """The address fields `struct Build` declares, the ones among them it declares optional (the
+    word in the comment on the declaration's line: a build without the key names 0), and every
+    entry of `kBuilds`: its version, size, SHA-256 and {name: rva}, the rvas split into data and
+    entry points by the `Fn` suffix."""
     text = HEADER.read_text(encoding="utf-8")
     struct_body = re.search(r"struct Build\s*\{(.*?)\n\};", text, re.S).group(1)
-    fields = [n for decl in re.findall(r"^size_t ([^;]+);", struct_body, re.M)
-              for n in re.findall(r"k\w+", decl) if n != "kSize"]
+    decls = re.findall(r"^size_t ([^;]+);(.*)$", struct_body, re.M)
+    fields = [n for decl, _ in decls for n in re.findall(r"k\w+", decl) if n != "kSize"]
+    optional = {n for decl, comment in decls if re.search(r"//.*\boptional\b", comment)
+                for n in re.findall(r"k\w+", decl)}
     table = re.search(r"kBuilds\[\]\s*=\s*\{(.*?)\n\};", text, re.S).group(1)
     builds = []
     for entry in re.split(r"\n    \{", table)[1:]:
@@ -112,7 +120,7 @@ def header_builds():
                        "sha256": values["kSha256"].strip('"'), "data": data, "code": code})
     if not fields or not builds:
         raise ValueError(f"no struct Build or kBuilds in {HEADER}")
-    return fields, builds
+    return fields, optional, builds
 
 
 def stray_literals():
@@ -169,13 +177,16 @@ def main(argv):
 
     # A field a build leaves out of its designated initializer compiles, as zero: an address at the
     # module's base. Every build names every field, and each is a build runtime-patches.json makes.
-    fields, builds = header_builds()
+    # An optional field may be 0, for a build without it; with the binary, a check below proves it.
+    fields, optional, builds = header_builds()
     spec = json.loads((ROOT / "tools/runtime-patches.json").read_text(encoding="utf-8"))
     patched = {b["patched_sha256"]: b for b in spec["builds"]}
     for build in builds:
         named = {**build["data"], **build["code"]}
-        missing = [f for f in fields if not named.get(f)]
+        missing = [f for f in fields if not named.get(f) and f not in optional]
+        lacks = [f for f in fields if not named.get(f) and f in optional]
         check(not missing, f"build {build['version']} names all {len(fields)} addresses"
+                           + (f" (optional, 0 on this build: {', '.join(lacks)})" if lacks else "")
                            + ("" if not missing else "  -- missing or zero: " + ", ".join(missing)))
         check(build["sha256"] in patched, f"build {build['version']}'s kSha256 is the patched_sha256 of a "
                                           "runtime-patches.json build")
@@ -201,7 +212,9 @@ def main(argv):
     check(len(raw) == build["size"], f"size {len(raw)} == kSize {build['size']} of {build['version']}")
     print(f"\n  build {build['version']}\n")
 
-    data_off, code_off = build["data"], build["code"]
+    # A 0 left here is an optional field this build lacks: there is nothing of it to find in .data.
+    data_off = {n: v for n, v in build["data"].items() if v or n not in optional}
+    code_off = build["code"]
     secs = {name: (va, vsize, rawp) for name, va, vsize, rawp in sections(raw)}
     text_va, text_vsize, text_raw = secs[".text"]
     data_va, data_vsize, _ = secs[".data"]
@@ -318,6 +331,37 @@ def main(argv):
     check(cpu_wait == data_off.get("kCpuWait"),
           f"CpuWait is stored to {cpu_wait:#x}, which the header calls kCpuWait "
           f"({data_off.get('kCpuWait', 0):#x})")
+
+    # Quality, which the add-on writes from its own setting. The reader: `lea rdx, "Quality"`, `lea
+    # r8, "fast"` (the default), `lea r9, [rbp+buf]`, `call [GetPrivateProfileStringA]`, `lea rdx,
+    # "fast"`, `lea rcx, [rbp+buf]`, `call _stricmp`, `test eax, eax`, `sete byte [rip+..]`: 1 for
+    # fast in any case, or no key, and 0 for anything else. The same nine instructions on v0.4.2
+    # (0x89ac) and 0.5.0 (0x8af4); the overlay's own `lea rdx, "Quality"`, its write-back, is not
+    # followed by them. A build that names 0 must have no Quality key anywhere in the file.
+    quality = data_off.get("kQuality", 0)
+    key = raw.find(b"Quality\0")
+    if not quality:
+        check(key < 0, "the runtime has no Quality key, as its kQuality of 0 says"
+                       + ("" if key < 0 else f"  -- it has one, at file offset {key:#x}"))
+    else:
+        key_rva = key - rdata_raw + rdata_va if key >= 0 else -1
+        shape = re.compile(rb"\x48\x8d\x15.{4}\x4c\x8d\x05.{4}\x4c\x8d\x4d(.)\xff\x15.{4}"
+                           rb"\x48\x8d\x15.{4}\x48\x8d\x4d\1\xe8.{4}\x85\xc0\x0f\x94\x05.{4}", re.S)
+
+        def string_at(rva):
+            off = rva - rdata_va + rdata_raw
+            return raw[off:raw.find(b"\0", off)] if rdata_raw <= off < len(raw) else b""
+
+        stores = [rip_target(raw, delta, at + 42, 7, 0)
+                  for m in re.finditer(rb"\x48\x8d\x15", text)
+                  for at in [text_va + m.start()]
+                  if rip_target(raw, delta, at, 7, 0) == key_rva and shape.match(text, m.start())
+                  and string_at(rip_target(raw, delta, at + 7, 7, 0)) == b"fast"
+                  and string_at(rip_target(raw, delta, at + 24, 7, 0)) == b"fast"]
+        check(stores == [quality],
+              f"Quality is read with a default of \"fast\", compared with \"fast\" and stored to "
+              f"{', '.join(f'{v:#x}' for v in stores) or 'nothing found'}, which the header calls "
+              f"kQuality ({quality:#x})")
 
     # -- And the DLL went through patch_runtime.py -----------------------------------------------
     for change in patched[got]["changes"]:
