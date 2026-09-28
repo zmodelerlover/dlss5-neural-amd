@@ -735,6 +735,7 @@ struct State
         std::atomic<bool> glSemaphores { true };
         std::atomic<int> fenceWaitCapMs { 10000 };  // ini-only as well: see WaitFence
         std::atomic<int> watchdogStandDown { 8 };   // ini-only as well: see NoteWatchdog
+        std::atomic<bool> d3d12Wait { true };        // ini-only as well: see WaitForPreviousJob
     } settings;
     UINT loadedPasses = 0;
 
@@ -985,11 +986,6 @@ struct State
 State &g = *new State;
 
 #include "../temporal/history.inc"
-
-// Defined further down, beside the raster code they belong to; used from both present paths,
-// which come first.
-float EffectiveScale();
-void NoteJobCost(UINT64 ms, bool fired);
 
 // Whether this frame's composition carries something the network produced for THIS frame.
 //
@@ -1244,6 +1240,9 @@ void LoadSettings()
     const int capMs = static_cast<int>(num(L"FenceWaitCapMs", 10000.0f));  // under 1 s, one slow frame stands it down
     g.settings.fenceWaitCapMs.store(capMs <= 0 ? 0 : std::max(capMs, 1000));
     g.settings.watchdogStandDown.store(std::max(0, static_cast<int>(num(L"WatchdogStandDown", 8.0f))));
+    g.settings.d3d12Wait.store(flag(L"D3D12Wait", true));
+    if (!g.settings.d3d12Wait.load())
+        Log("D3D12Wait=0: no present waits for the last evaluation, so expect more frames skipped as pending.");
     g.stage.store(static_cast<int>(num(L"Stage", 3.0f)));
     g.events = static_cast<int>(num(L"Events", 31.0f));
     // Enabled starts as StartOn says. StartOn began as a diagnostic in the family of Stage / Events /
@@ -1643,6 +1642,7 @@ void AdoptFeedEffect()
 }
 
 #include "stats.inc"
+#include "scale_cap.inc"
 #include "runtimes.inc"
 
 void RenderEffectsAheadOfNetwork(device *dev, resource back);
@@ -2113,55 +2113,6 @@ bool EnsureResources(UINT w, UINT h, DXGI_FORMAT outFormat, float scale)
     Log("raster: back buffer %ux%u format %d, network at %ux%u (scale %.2f)", w, h,
         static_cast<int>(outFormat), nw, nh, static_cast<double>(scale));
     return true;
-}
-
-// What the network is actually run at: the person's Scale, held down when this card has already
-// shown it cannot carry it.
-//
-// The engine's inline mode makes the game's own queue wait for the network, and the watchdog this
-// add-on writes into dlssnr_on_amd.ini (InlineWaitMs=100) only stops the CPU from waiting -- it
-// cannot cancel a dispatch already on the GPU. A Conan Exiles log from an RX 9070 has jobs of
-// 277 ms and then 2711 ms at 1920x1080, which is Windows TDR territory: the driver resets, the
-// device is removed, and the game goes with it. The person reporting it had the game and then the
-// whole PC go down, and found by hand that 0.50 was the setting that survived.
-//
-// So the cost is measured and the scale is held one step below whatever produced it. Their own
-// setting is never overwritten -- the cap is separate, and the overlay says it is in force.
-float EffectiveScale()
-{
-    return ui::EffectiveScale(g.settings.scale.load(), g.scaleCap.load());
-}
-
-// One finished evaluation, timed from this side rather than read out of the engine's log. Three
-// dangerous jobs and the scale comes down a step: one is a shader compile or an alt-tab, three is
-// this card at this resolution. `fired`: the runtime's watchdog stopped this one (NoteWatchdog).
-void NoteJobCost(UINT64 ms, bool fired)
-{
-    constexpr UINT64 kDanger = 250;  // an order of magnitude past a frame, far short of TDR
-    // A reading this large is not a job. The GPU cannot hold one for half a minute -- Windows
-    // resets the driver long before -- so it is a pause that slipped past the latch: a route that
-    // skipped frames without a reset (an MSAA or missing back buffer). Counting it would cap the
-    // scale for something that never ran.
-    if (ms > 30000)
-        return;
-    if (ms > g.worstJobMs.load())
-        g.worstJobMs.store(ms);
-    if (ms < kDanger)
-    {
-        if (ms < kDanger / 2)
-            g.longJobs = 0;  // comfortably back inside budget: the streak was a hitch
-        return;
-    }
-    // At the lowest scale the next step is off for the session, and a present gap (a loading
-    // screen) reads as long too: there only a job the watchdog also stopped counts, as any real
-    // one past 250 ms does under the engine's 200 ms default.
-    if ((!fired && EffectiveScale() <= 0.25f) || ++g.longJobs < 3)
-        return;
-    char why[64];  // a dispatch that long resets the display driver and takes the game with it
-    std::snprintf(why, sizeof(why), "the network took %llu ms three times",
-                  static_cast<unsigned long long>(ms));
-    StepScaleDown(why, "the network took over 250 ms three times at the lowest scale; restart the "
-                       "game to re-enable");
 }
 
 // True on a thread while this add-on is issuing commands into the host's API on its own account.

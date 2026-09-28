@@ -12,6 +12,7 @@ struct Stats
     ULONGLONG at = GetTickCount64();        // when that reading was taken
     std::atomic<uint64_t> bindWaits { 0 };  // counted off the lock, on the game's own threads
     std::string line;                       // the last line made, for the panel
+    double holdMaxMs = 0.0;                 // the longest hold since that reading
     // What this window's evaluations handed the engine (NoteTemporal). The passes handed history or
     // smoothed are ORed over the window: a pass whose history a skip dropped would flip it each second.
     unsigned passes = 0, handed = 0, smoothed = 0;
@@ -72,6 +73,24 @@ void TemporalLine()
     Log("%s", line.c_str());
 }
 
+// One hold of WaitForPreviousJob: how long it held the present, whether it ran out at 500 ms with
+// the last list still on the GPU, and whether the job counter was still behind after its spin.
+void NoteHold(double ms, bool late, bool spunOut)
+{
+    static bool said = false;
+    if (!said)
+    {
+        said = true;
+        Log("hold: each present waits here for the last evaluation, as the same-frame engine needs "
+            "on D3D12 and on OpenGL's fences; the stats line has its cost, and D3D12Wait=0 turns it off.");
+    }
+    ++g_stats.now.holds;
+    g_stats.now.holdMs += ms;
+    g_stats.holdMaxMs = std::max(g_stats.holdMaxMs, ms);
+    g_stats.now.deadlines += late ? 1 : 0;
+    g_stats.now.spinOuts += spunOut ? 1 : 0;
+}
+
 // Once a present, from JobGate. A line covers the time since the last one, which is longer than a
 // second across a pause: nothing ticks while the effect is off, and the line says how long it was.
 void TickStats()
@@ -83,7 +102,7 @@ void TickStats()
     g_stats.now.skipped = g.status.skipped;
     g_stats.now.bindWaits = g_stats.bindWaits.load();
     g_stats.line = FormatStats(g_stats.now - g_stats.last, static_cast<double>(now - g_stats.at) / 1000.0,
-                               g.worstJobMs.exchange(0));
+                               g.worstJobMs.exchange(0), std::exchange(g_stats.holdMaxMs, 0.0));
     if (g_stats.now.evaluated != g_stats.last.evaluated && g_stats.passes != 0)
         TemporalLine();
     g_stats.last = g_stats.now;

@@ -10,29 +10,41 @@
 // least one pass. skipped: the network sat the present out because the GPU still had the last one,
 // JobGate's pending job or, as heapHeld, a list still reading the descriptor heap. refused: the
 // engine turned a pass down. bindWaits: a game's bind or clear found the present holding g.lock.
+// holds: WaitForPreviousJob held the present for the last evaluation, holdMs in all; deadlines of
+// them ran out at 500 ms with its list still on the GPU, spinOuts left its job counter behind.
 struct FrameCounts {
     uint64_t presents = 0, evaluated = 0, skipped = 0, heapHeld = 0, refused = 0, bindWaits = 0;
+    uint64_t holds = 0, deadlines = 0, spinOuts = 0;
+    double holdMs = 0.0;
 };
 
 inline FrameCounts operator-(const FrameCounts& a, const FrameCounts& b) {
     return {a.presents - b.presents, a.evaluated - b.evaluated, a.skipped - b.skipped,
-            a.heapHeld - b.heapHeld, a.refused - b.refused, a.bindWaits - b.bindWaits};
+            a.heapHeld - b.heapHeld,   a.refused - b.refused,     a.bindWaits - b.bindWaits,
+            a.holds - b.holds,         a.deadlines - b.deadlines, a.spinOuts - b.spinOuts,
+            a.holdMs - b.holdMs};
 }
 
-// jobMs: the longest evaluation that retired in the window, 0 when none did.
-inline std::string FormatStats(const FrameCounts& d, double seconds, uint64_t jobMs) {
+// jobMs: the longest evaluation that retired in the window, 0 when none did; holdMaxMs, the longest
+// hold. The hold is only there when a route held: D3D12, OpenGL on its fences, unless D3D12Wait=0.
+inline std::string FormatStats(const FrameCounts& d, double seconds, uint64_t jobMs,
+                               double holdMaxMs) {
     char line[256];
     const auto u = [](uint64_t v) { return static_cast<unsigned long long>(v); };
-    const int n =
+    int n =
         std::snprintf(line, sizeof(line),
                       "stats: %.2f s | presents %llu eval %llu skip %llu (heap %llu) refused %llu"
                       " | bind waits %llu | job max ",
                       seconds, u(d.presents), u(d.evaluated), u(d.skipped), u(d.heapHeld),
                       u(d.refused), u(d.bindWaits));
     if (jobMs == 0)
-        std::snprintf(line + n, sizeof(line) - n, "none");
+        n += std::snprintf(line + n, sizeof(line) - n, "none");
     else
-        std::snprintf(line + n, sizeof(line) - n, "%llu ms", u(jobMs));
+        n += std::snprintf(line + n, sizeof(line) - n, "%llu ms", u(jobMs));
+    if (d.holds != 0)
+        std::snprintf(line + n, sizeof(line) - n, " | hold %.1f/%.1f ms, deadline %llu, spin %llu",
+                      d.holdMs / static_cast<double>(d.holds), holdMaxMs, u(d.deadlines),
+                      u(d.spinOuts));
     return line;
 }
 

@@ -310,6 +310,11 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   smoothing and depth really reached the network, and which motion did. It is under **Debug** on
   the 64-bit panel too, and the Status column's motion source is now the one the network last got:
   `none` with Motion off, where it said `estimated`, and `optical flow` in a lab build.
+- **The stats line times the hold that makes each present wait for the last evaluation** on D3D12
+  and on OpenGL's fences: `| hold 3.1/9.4 ms, deadline 0, spin 0` is its mean and longest, how often
+  it ran out at 500 ms with the last frame still on the GPU, and how often the runtime's job count
+  was still behind after it. `D3D12Wait=0` in `amd-nr.ini` (new, ini only, never saved) turns the
+  hold off, to set what it costs against the frames it saves, and the log says so at load.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 

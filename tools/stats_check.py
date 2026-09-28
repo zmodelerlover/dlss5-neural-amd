@@ -6,6 +6,8 @@ counts the skipped presents. Now JobGate ticks one set of running totals once a 
 route (core/addon/stats.inc), and a line a second says what that second did (FormatStats,
 core/shared/frame_stats.h). Both are compiled here with g++, against a clock this script moves:
   - a window formats exactly, and a window with no job retired says "job max none";
+  - the holds WaitForPreviousJob notes read as their mean, longest, deadlines run out and spins
+    left behind, with a line once to say what the hold is, and no field when nothing held;
   - no line inside the first second; one at the second, logged only with Diagnostics bit 2 and kept
     for the panel either way, covering exactly that window's counts;
   - a hook finding g.lock held counts one bind wait; one that finds it free counts none;
@@ -17,6 +19,8 @@ And read from the text:
     an evaluation counts where a pass was accepted; a held heap counts inside skipped;
   - both panels read processed as the presents less the skipped ones, and the 64-bit one shows the
     line under Debug;
+  - WaitForPreviousJob is off with D3D12Wait=0 (read at load, never saved) and notes each hold
+    once, after its spin;
   - Diagnostics bit 1 is the old hotkeys, and the game's bind and clear hooks lock through
     LockForHook;
   - the temporal state is noted once per evaluation, SmoothOutput records the passes it smoothed,
@@ -50,6 +54,7 @@ HARNESS = r"""
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 static unsigned long long fakeNow = 5000;
 #define GetTickCount64() fakeNow
 struct {
@@ -91,11 +96,26 @@ void Expect(bool ok, const char *what) {
 int main() {
     FrameCounts a;
     a.presents = 61; a.evaluated = 58; a.skipped = 3; a.heapHeld = 1; a.refused = 0; a.bindWaits = 2;
-    Expect(FormatStats(a - FrameCounts {}, 1.0, 18) ==
+    Expect(FormatStats(a - FrameCounts {}, 1.0, 18, 0.0) ==
                "stats: 1.00 s | presents 61 eval 58 skip 3 (heap 1) refused 0 | bind waits 2 | job max 18 ms",
-           "a window formats as the line");
-    Expect(FormatStats(FrameCounts {}, 2.5, 0).find("job max none") != std::string::npos,
+           "a window formats as the line, with no hold field when nothing held");
+    Expect(FormatStats(FrameCounts {}, 2.5, 0, 0.0).find("job max none") != std::string::npos,
            "a window with no job retired says so");
+
+    // Three holds, one that ran out at 500 ms and one whose spin left the counter behind.
+    g.settings.diagnostics = 0;
+    NoteHold(3.0, false, false);
+    NoteHold(9.5, true, false);
+    NoteHold(0.5, false, true);
+    Expect(logs == 1 && logged.rfind("hold: ", 0) == 0, "the first hold says once what it is");
+    NoteHold(0.0, false, false);
+    Expect(logs == 1, "and only once");
+    Expect(FormatStats(g_stats.now - FrameCounts {}, 1.0, 20, g_stats.holdMaxMs).find(
+               " | job max 20 ms | hold 3.2/9.5 ms, deadline 1, spin 1") != std::string::npos,
+           "the holds are their mean, their longest, the ones that ran out and the spins left behind");
+    g_stats.now = g_stats.last = {};
+    g_stats.holdMaxMs = 0.0;
+    logs = 0;
 
     g_stats.at = fakeNow;  // as if the add-on had just loaded
     g.settings.diagnostics = 1;
@@ -250,6 +270,14 @@ if not ("GuideSource motionFrom = GuideSource::Estimated;" in motion
     bad.append("motion_sources.inc: a branch does not say which source it is")
 if "st.motionSource = g_stats.motion;" not in panel:
     bad.append("panel64.inc: the motion source is not the last evaluation's")
+
+hold = body(runtimes, "void WaitForPreviousJob(")
+if not re.match(r"void WaitForPreviousJob\(\)\s*\{\s*//[^\n]*\n\s*if \(!g\.settings\.d3d12Wait\.load\(\) \|\|", hold) \
+        or hold.count("NoteHold(") != 1 or hold.index("NoteHold(") < hold.index("SwitchToThread();"):
+    bad.append("runtimes.inc: the hold is not off with D3D12Wait=0, or is not noted once after its spin")
+if 'g.settings.d3d12Wait.store(flag(L"D3D12Wait", true));' not in body(neural, "void LoadSettings(") \
+        or "D3D12Wait" in body(neural, "void ForEachSetting("):
+    bad.append("neural.cpp: D3D12Wait is not read at load with 1 as its default, or is written back")
 
 if bad:
     print("FAIL\n  " + "\n  ".join(bad))

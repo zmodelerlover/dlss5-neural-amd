@@ -2,10 +2,10 @@
 the add-on down; InlineWaitMs is only ever read.
 
 The runtime's watchdog lets the game's queue go when a job outlasts InlineWaitMs and counts each
-time it does (rt::B->kWatchdogFires, one count per module). NoteWatchdog (core/addon/runtimes.inc)
+time it does (rt::B->kWatchdogFires, one count per module). NoteWatchdog (core/addon/scale_cap.inc)
 takes the scale one step down after WatchdogStandDown retired evaluations in a row that each
-tripped it, and stands the add-on down only when that happens at the lowest scale. NoteJobCost
-(neural.cpp) steps on three jobs past 250 ms, and at the lowest counts only one the watchdog also
+tripped it, and stands the add-on down only when that happens at the lowest scale. NoteJobCost,
+beside it, steps on three jobs past 250 ms, and at the lowest counts only one the watchdog also
 stopped. Both step through StepScaleDown. The three bodies are compiled here with g++ against
 counters this script moves, each evaluation noted the way JobGate notes it, so the rules are run,
 not read:
@@ -38,8 +38,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 neural = "\n".join((ROOT / f).read_text(encoding="utf-8")
-                   for f in ("core/addon/neural.cpp", "core/addon/runtime_files.inc"))
-runtimes = (ROOT / "core/addon/runtimes.inc").read_text(encoding="utf-8")
+                   for f in ("core/addon/neural.cpp", "core/addon/runtime_files.inc", "core/addon/scale_cap.inc"))
+runtimes = "\n".join((ROOT / f).read_text(encoding="utf-8")
+                     for f in ("core/addon/runtimes.inc", "core/addon/scale_cap.inc"))
 
 
 def body(text, name):
