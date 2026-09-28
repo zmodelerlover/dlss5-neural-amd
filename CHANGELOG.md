@@ -2,78 +2,33 @@
 
 ## Unreleased
 
-Built on v0.6.9: the same pinned **DLSS-NR-on-AMD v0.4.1** runtime (`c8808716…`) and the same
-weights, so nothing but the add-on changes. Both runtimes, danielblnc and mochizuki, go through
-everything below. Changes a player would notice:
+Planned as **v0.7.0**. Built on v0.6.9, on the same pinned **DLSS-NR-on-AMD v0.4.1** runtime
+(`c8808716…`) and the same weights, so an update replaces the add-on and nothing else. On 32-bit
+games `amd-nr.addon32` and `amd-nr-host64.exe` go together (bridge protocol v5), and a mismatched
+pair is refused at the header, as before. Both runtimes, danielblnc and mochizuki, go through
+everything below.
 
-- **Quitting a game no longer ends in `0xC0000409` inside `dlssnr_amd_pass1.dll`.** On v0.3.0 the
-  runtime's exit-time destructor aborted the game whenever the network had run same-frame, because
-  its watchdog thread was never let go. v0.4.1, pinned since v0.6.9, lets it go in `DllMain`
-  (checked in the binary), so nothing of ours is patched for it.
-- **The mochizuki runtime shares the danielblnc path's rules:** a new pass count starts the
-  history again, the panel offers every pass, and it runs through the same run-or-skip decision,
-  device checks and stand-downs on every route.
-- An add-on unloaded mid-game (NFS unloads it when the device goes) no longer leaves its crash
-  probe or the OpenGL fault filter pointing into freed code, and nothing the add-on holds on the GPU
-  is released at exit after the runtime and the driver have gone.
-- `Events` without bit 8 no longer drops the drain a resize waits on: destroy-swapchain is always
-  subscribed.
-- On D3D12, the finished image is copied to the back buffer from the state a copy needs, a network
-  failure still returns the back buffer to the game ready to present, and the runtime hears of a
-  frame only once it has been submitted, as on every other route.
-- On D3D12, a depth buffer that changes format gets a new pre-clear copy, and the old copy, like a
-  probe readback the GPU has not finished in 2 s, is kept until the next resolution change instead
-  of being freed while the GPU may still use it.
-- **Removed: reading the D3D12 depth buffer live** when there is no pre-clear copy. It measured all
-  zeros; the network now gets no depth there, which is what the panel already showed (None).
-- **OpenGL: imported fences that do not work no longer hang the game on the first frame.** GL's
-  first signal is now seen on the CPU before the work queue waits on it, so the fall-back to the
-  CPU stall can no longer wait for ever. With `Passes` above 1 the first pass no longer reads the
-  frame before GL has finished writing it, and a new GL context gets its fences imported and
-  proven again, and our queue drained, before anything is rebuilt.
-- On Vulkan and OpenGL a work slot is no longer reused while the GPU still runs it after a 2 s wait
-  ran out (alt-tab), and no fence wait ends early on a wake another wait left behind.
-- **The 32-bit route picks the game's depth and motion buffers the way the 64-bit one does.** Both
-  now run one copy of the D3D11 guide code, and the 32-bit bridge gains what it was missing: a depth
-  buffer under 256 pixels is no longer a candidate, ReShade's own effect targets are never taken for
-  the game's, `GameGuides=0` stops it looking at all, and the first guide is taken over three
-  presents instead of being decided by the third alone.
-- On D3D11, an `_SRGB` back buffer no longer fails the 64-bit bridge ten times over and stands it
-  down with "the bridge kept failing", nor fails a texture creation in the 32-bit helper, logged, on
-  every frame. An MSAA back buffer on the 64-bit route goes out as the game drew it, as on D3D12 and
-  the 32-bit helper, and is said once in the log, instead of counting as processed with nothing
-  changed. While the effect is off, the 64-bit route no longer keeps collecting references to the
-  game's render targets.
-- **Removed: Async timing on 64-bit games.** The network runs same-frame on every route. In async
-  the runtime never reports a job as finished, so the effect only ran about twice a second. An
-  `Inline=0` left in `amd-nr.ini` is ignored and the log says so, and Timing leaves the 64-bit
-  panel. Where the runtime cannot run same-frame (its zero-copy path or flag pipeline did not come
-  up) the effect now switches off with that reason, instead of running twice a second with the
-  frame's own input handed on as its history. The 32-bit bridge's Timing, which pipelines
-  presentation and is a different thing, is unchanged.
-- On a 32-bit game with pipelined presentation, an answer still in flight when the game is
-  minimised or the effect switched back on is dropped, not shown after the restore.
-- **Removed: `GlHoldFrames`**, the OpenGL route's option to repeat the last result instead of
-  waiting for the network (v0.6.0, off by default). The route now always waits, which is what the
-  default did, and an ini that still sets it is ignored.
-- A frame the network did not answer is shown by one rule on every route: the game's own frame,
-  graded when a style is selected, or the debug view or Network Output when one is on. On OpenGL it
-  no longer repeats the last result, and on the 32-bit bridge it no longer loses the style, the
-  debug view and Network Output. The 32-bit panel's skipped percentage is counted as on the 64-bit
-  routes, so a graded skipped frame still counts as skipped.
-- Every route decides whether to run the network in one shared place, and asks the runtime itself
-  whether a job is still in flight. No route records on top of an unfinished job any more: those
-  frames go out as the game drew them until the runtime has finished it, and a job still waited on
-  is named in the log every 600 skipped frames. Before, every route gave up on a job after 500 ms
-  and recorded the next one behind it, and the runtime, which finishes jobs in order, refused
-  frames once four were in flight. A command list that fails to close after a swapchain rebuild
-  still tells the runtime, so its job is retired rather than waited on for ever. A skipped frame is
-  counted and logged the same way everywhere. Vulkan and OpenGL now also time each job, and on them
-  and the 32-bit bridge the scale cap after three long evaluations really lowers the scale; the
-  32-bit panel used to show that cap while the network still ran at the slider's scale.
-- Switching the effect off and on again (hotkey, panel or alt-tab), or a 32-bit game coming back
-  from a pause, no longer counts the time it was off as one long evaluation, which counted toward
-  the three that lower the scale.
+### What changes when you update
+
+- **New: Fixed seed and Output smoothing, and with Temporal On they are the defaults** on every
+  route, the steadiest set measured on recorded play. **Fixed seed** (Engine) holds the network's
+  noise pattern still, as the reference does: on a still frame with nothing temporal on,
+  consecutive answers used to differ by 0.44/255 on average and up to 15/255, and now a still
+  frame gets the same answer every time. **Output smoothing** (Image) blends each pixel toward the
+  previous answer, moved by the motion, by up to 0.80 where the two agree and less as they differ,
+  and leaves differences of 10/255 or more alone (`OutputSmoothLimit`, ini only). A fresh
+  `amd-nr.ini` is written with `Temporal=2`, `FixedSeed=1`, `OutputSmooth=0.8` and
+  `OutputSmoothLimit=10`, and Factory Defaults restores them on both panels. An existing
+  `amd-nr.ini` is not rewritten and keeps every key it has, so it keeps its `Temporal`; no earlier
+  release wrote `FixedSeed` or `OutputSmooth`, so those two read as on. To go back, set Temporal
+  to Auto, untick Fixed seed and slide Output smoothing to off, or put `Temporal=0`,
+  `FixedSeed=0` and `OutputSmooth=0` in `amd-nr.ini`.
+- **D3D12 games: every frame goes through the network.** Same-frame only made the GPU wait for the
+  previous evaluation, so with frames in flight every present during that wait went out as the
+  game drew it: 77 to 85% of the frames in Rollout Inline (UE5), a strobe. The CPU now waits for
+  the previous evaluation as well, as on the other routes, so every frame gets the effect and the
+  frame rate follows the network (about 28 to 30 fps at Scale 1 in 1080p on an RX 9070 XT). For
+  more frames, lower Scale.
 - **`Passes` applies live in both directions**, on both routes. Each extra pass loads its own copy
   of the runtime (about 150 MB of VRAM) the first time a count needs it, which costs one long frame,
   and it stays loaded until the game exits. A copy that fails to load is no longer tried again on
@@ -81,10 +36,32 @@ everything below. Changes a player would notice:
   names the pass. A change waits until no copy has a job in flight, up to 2 s, and then starts
   history again, so a pass that sat out is no longer handed a frame from before. If the runtime
   does not drain three times running, the count is kept and the next change tries again.
-- On D3D12, and on OpenGL with its fences, a frame that arrives while the last one is still on the
-  GPU after the 500 ms hold ran out no longer rewrites the views that one is still reading, which
-  could compose it from another back buffer: an old frame flashing up. The frame goes out as the
-  game drew it, without the style or Network Output, and the log counts such frames every 600.
+- **Removed: Async timing on 64-bit games.** The network runs same-frame on every route. In async
+  the runtime never reports a job as finished, so the effect only ran about twice a second. An
+  `Inline=0` left in `amd-nr.ini` is ignored and the log says so, and Timing leaves the 64-bit
+  panel. Where the runtime cannot run same-frame (its zero-copy path or flag pipeline did not come
+  up) the effect now switches off with that reason, instead of running twice a second with the
+  frame's own input handed on as its history. The 32-bit bridge's Timing, which pipelines
+  presentation and is a different thing, is unchanged.
+- **Removed: `GlHoldFrames`**, the OpenGL route's option to repeat the last result instead of
+  waiting for the network (v0.6.0, off by default). The route now always waits, which is what the
+  default did, and an ini that still sets it is ignored.
+- **Removed: reading the D3D12 depth buffer live** when there is no pre-clear copy. It measured all
+  zeros; the network now gets no depth there, which is what the panel already showed (None).
+- **The panel only offers the guide controls the route can use**, and the log says once what the
+  route reaches, e.g. `Vulkan route: no depth path on this API; motion estimated: no game MV path
+  on this API; Feed.fx does not reach the network here`. **Use Feed.fx** is on 64-bit D3D11 games
+  only (it used to be offered on D3D12, Vulkan and OpenGL too, where it did nothing). **Read from
+  the game** is on D3D11 games, 64-bit and 32-bit. **Depth**, **Depth inverted** and **Stretch
+  depth** are there on D3D11 and D3D12 games, not on Vulkan, OpenGL or 32-bit D3D9 ones. The same
+  line is under **Debug** on the 64-bit panel; a 32-bit D3D9 game's shows `colour only` in place
+  of the guide candidates. The ini keys are kept either way.
+- **The 32-bit panel says why the helper switched off**: the device was removed, the engine or its
+  textures could not be brought up, or otherwise to look in `amd-nr-x86-host.log`. Bridge protocol
+  v5: replace `amd-nr.addon32` and `amd-nr-host64.exe` together.
+
+### Crashes, hangs and the effect switching itself off
+
 - **When the game destroys the device the add-on runs on** (D3D12, D3D11, Vulkan), or a D3D11
   game's device is removed, the effect switches off and the panel says to restart the game, instead
   of carrying on with what was built on the old device. A removed device is checked on every
@@ -112,6 +89,31 @@ everything below. Changes a player would notice:
   on the next frame; only a second one in a row stops the bridge. The D3D11 drain, on the 64-bit
   route too, and the D3D9 one no longer keep a CPU core spinning while they wait: past the first
   millisecond they wait a millisecond at a time on a high-resolution timer.
+- Every route decides whether to run the network in one shared place, and asks the runtime itself
+  whether a job is still in flight. No route records on top of an unfinished job any more: those
+  frames go out as the game drew them until the runtime has finished it, and a job still waited on
+  is named in the log every 600 skipped frames. Before, every route gave up on a job after 500 ms
+  and recorded the next one behind it, and the runtime, which finishes jobs in order, refused
+  frames once four were in flight. A command list that fails to close after a swapchain rebuild
+  still tells the runtime, so its job is retired rather than waited on for ever. A skipped frame is
+  counted and logged the same way everywhere. Vulkan and OpenGL now also time each job, and on them
+  and the 32-bit bridge the scale cap after three long evaluations really lowers the scale; the
+  32-bit panel used to show that cap while the network still ran at the slider's scale.
+- Switching the effect off and on again (hotkey, panel or alt-tab), or a 32-bit game coming back
+  from a pause, no longer counts the time it was off as one long evaluation, which counted toward
+  the three that lower the scale.
+- **OpenGL: imported fences that do not work no longer hang the game on the first frame.** GL's
+  first signal is now seen on the CPU before the work queue waits on it, so the fall-back to the
+  CPU stall can no longer wait for ever. With `Passes` above 1 the first pass no longer reads the
+  frame before GL has finished writing it, and a new GL context gets its fences imported and
+  proven again, and our queue drained, before anything is rebuilt.
+- On Vulkan and OpenGL a work slot is no longer reused while the GPU still runs it after a 2 s wait
+  ran out (alt-tab), and no fence wait ends early on a wake another wait left behind.
+- An add-on unloaded mid-game (NFS unloads it when the device goes) no longer leaves its crash
+  probe or the OpenGL fault filter pointing into freed code, and nothing the add-on holds on the GPU
+  is released at exit after the runtime and the driver have gone.
+- `Events` without bit 8 no longer drops the drain a resize waits on: destroy-swapchain is always
+  subscribed.
 - **Vulkan on a machine with two GPUs** (a laptop, or a desktop with the CPU's graphics on) now
   works on the GPU the game renders on, found by its LUID, instead of always the first one, which
   stood the route down at the first import. If the add-on loaded after the game made its device,
@@ -126,6 +128,33 @@ everything below. Changes a player would notice:
   the background switched the effect off; one minimised dropped the history on every frame, and one
   of another size rebuilt everything on every frame. The 32-bit route already kept to one swapchain;
   the other one's frames no longer count in its frame timing or clear its depth and motion tallies.
+- On a 32-bit game with pipelined presentation, an answer still in flight when the game is
+  minimised or the effect switched back on is dropped, not shown after the restore.
+
+### Image
+
+- **Lighting no longer flickers in motion where the game's motion buffer is not really motion**, as
+  in Tomb Raider 2013 on the 32-bit bridge. The motion handed to the network is checked on every
+  frame and every route: a vector longer than the raster, inf or NaN becomes no motion. Tomb
+  Raider's guide had taken a 960x540 buffer that reads 65504 px on every pixel, so the runtime's
+  history and Output smoothing were fetched from off the frame and the network was left alone,
+  flickering; a buffer like that is now given up on and the estimator takes the motion over. In
+  Tomb Raider the lighting's frame-to-frame variation fell 2.6 to 4.8 times. A game with real
+  vectors (NFS) is unchanged.
+- **32-bit games with 2 or 3 passes no longer blink.** The helper told only the first pass's
+  runtime copy that the frame was submitted, so the last pass's job never ran and the effect came
+  in 500 ms stretches of frames drawn as the game drew them, with 1 to 3 frames processed in
+  between: 33 of 481 frames at 2 passes in Tomb Raider. Every copy is told now, and every frame is
+  processed. Each pass adds its own GPU time.
+- A frame the network did not answer is shown by one rule on every route: the game's own frame,
+  graded when a style is selected, or the debug view or Network Output when one is on. On OpenGL it
+  no longer repeats the last result, and on the 32-bit bridge it no longer loses the style, the
+  debug view and Network Output. The 32-bit panel's skipped percentage is counted as on the 64-bit
+  routes, so a graded skipped frame still counts as skipped.
+- On D3D12, and on OpenGL with its fences, a frame that arrives while the last one is still on the
+  GPU after the 500 ms hold ran out no longer rewrites the views that one is still reading, which
+  could compose it from another back buffer: an old frame flashing up. The frame goes out as the
+  game drew it, without the style or Network Output, and the log counts such frames every 600.
 - A NaN or inf the network returns for a pixel is taken as no correction, where it used to darken
   that pixel (black with the additive composition). On a frame Output smoothing blends, the pixel
   becomes the previous frame's, or the game's own where that one is bad too, so it is not stored in
@@ -186,6 +215,31 @@ everything below. Changes a player would notice:
   lost its accumulation each time; neither route drops it there now, nor when the game's depth and
   motion are found again a few presents after it, unless the guide probe had withheld that depth:
   finding it again hands it back, which drops the history, and again when the probe withholds it.
+- A frame the network skipped now drops the history when the motion handed with the next
+  evaluation is measured present to present (the game's own vectors, Feed.fx): a history a frame
+  older than that motion no longer lines up with it. It used never to be dropped on a skip. With
+  the motion the estimator measures between evaluations, which spans the same gap as the history,
+  it stays: dropping it there cost the whole temporal gain on still content.
+- **The 32-bit route picks the game's depth and motion buffers the way the 64-bit one does.** Both
+  now run one copy of the D3D11 guide code, and the 32-bit bridge gains what it was missing: a depth
+  buffer under 256 pixels is no longer a candidate, ReShade's own effect targets are never taken for
+  the game's, `GameGuides=0` stops it looking at all, and the first guide is taken over three
+  presents instead of being decided by the third alone.
+- On D3D11, an `_SRGB` back buffer no longer fails the 64-bit bridge ten times over and stands it
+  down with "the bridge kept failing", nor fails a texture creation in the 32-bit helper, logged, on
+  every frame. An MSAA back buffer on the 64-bit route goes out as the game drew it, as on D3D12 and
+  the 32-bit helper, and is said once in the log, instead of counting as processed with nothing
+  changed. While the effect is off, the 64-bit route no longer keeps collecting references to the
+  game's render targets.
+- On D3D12, the finished image is copied to the back buffer from the state a copy needs, a network
+  failure still returns the back buffer to the game ready to present, and the runtime hears of a
+  frame only once it has been submitted, as on every other route.
+- On D3D12, a depth buffer that changes format gets a new pre-clear copy, and the old copy, like a
+  probe readback the GPU has not finished in 2 s, is kept until the next resolution change instead
+  of being freed while the GPU may still use it.
+
+### Settings and runtimes
+
 - **One settings table for every route** (`core/x86bridge/settings_fields.inc`): each setting's
   ini key, default and range, from which the ini is read and written, both panels are filled and
   the 32-bit bridge's wire is laid out. The same ini now gives the same settings on both routes:
@@ -201,27 +255,9 @@ everything below. Changes a player would notice:
   - A key missing from `amd-nr.ini` reads as its default on a Reload too, where it used to keep the
     value from before; one set to nan or inf reads as its default instead of being taken.
   - `SerialPasses` is saved.
-- **The 32-bit panel says why the helper switched off**: the device was removed, the engine or its
-  textures could not be brought up, or otherwise to look in `amd-nr-x86-host.log`. Bridge protocol
-  v5: replace `amd-nr.addon32` and `amd-nr-host64.exe` together.
-- **Temporal On, Fixed seed and Output smoothing are the defaults** on every route, the steadiest
-  set measured on recorded play. Fixed seed holds the network's noise pattern still, so a still
-  frame gets the same answer every time. Output smoothing blends each pixel toward the previous
-  answer, moved by the motion, by up to 0.80 where the two agree and less as they differ, and
-  leaves differences of 10/255 or more alone. A fresh `amd-nr.ini` is written with `Temporal=2`,
-  `FixedSeed=1`, `OutputSmooth=0.8` and `OutputSmoothLimit=10`, and Factory Defaults restores them
-  on both panels. An existing `amd-nr.ini` is not rewritten and keeps every key it has, so one
-  from v0.6.6 keeps its `Temporal`; it has no `FixedSeed` or `OutputSmooth` key, so those two read
-  as on. To go back, set Temporal to Auto, untick Fixed seed and slide Output smoothing to off, or
-  put `Temporal=0`, `FixedSeed=0` and `OutputSmooth=0` in `amd-nr.ini`.
-- **The panel only offers the guide controls the route can use**, and the log says once what the
-  route reaches, e.g. `Vulkan route: no depth path on this API; motion estimated: no game MV path
-  on this API; Feed.fx does not reach the network here`. **Use Feed.fx** is on 64-bit D3D11 games
-  only (it used to be offered on D3D12, Vulkan and OpenGL too, where it did nothing). **Read from
-  the game** is on D3D11 games, 64-bit and 32-bit. **Depth**, **Depth inverted** and **Stretch
-  depth** are there on D3D11 and D3D12 games, not on Vulkan, OpenGL or 32-bit D3D9 ones. The same
-  line is under **Debug** on the 64-bit panel; a 32-bit D3D9 game's shows `colour only` in place
-  of the guide candidates. The ini keys are kept either way.
+- **The mochizuki runtime shares the danielblnc path's rules:** a new pass count starts the
+  history again, the panel offers every pass, and it runs through the same run-or-skip decision,
+  device checks and stand-downs on every route.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 
