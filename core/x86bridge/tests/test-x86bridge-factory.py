@@ -5,7 +5,7 @@ r=Path(__file__).resolve().parents[3];n=r/'core/x86bridge'
 read=lambda path:path.read_text(encoding='utf-8-sig')
 compiler=os.environ.get('CXX') or shutil.which('g++')
 if not compiler:raise SystemExit('Set CXX to a C++20 compiler')
-h=read(n/'host64.cpp');u=read(r/'core/addon/neural.cpp');front=read(n/'frontend32.cpp')
+h=read(n/'host64.cpp');u=read(r/'core/addon/neural.cpp')+read(r/'core/addon/panel64.inc');front=read(n/'frontend32.cpp')
 adapter=read(n/'panel32.cpp')
 fields=re.findall(r'^X\((\w+), (\w+), "\w*", ([-.0-9e]+),', read(n/'settings_fields.inc'), re.M)
 # Every test initial value is the settings table's default, which is what State's constructor

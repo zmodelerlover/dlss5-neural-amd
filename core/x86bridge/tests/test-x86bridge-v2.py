@@ -135,7 +135,7 @@ assert all(rows),'a settings_fields.inc row is not X(type, field, "Key", default
 # 64-bit reader, writer and panel write-back generated from it rather than written out beside it.
 keys=[m[3] for m in rows];assert len(set(keys))==len(keys) and [m[2] for m in rows if not m[3]]==['enabled'],keys
 for m in rows:assert float(m[5])<=float(m[4])<=float(m[6]),m[0]
-neural=read(r/'core/addon/neural.cpp')
+neural=read(r/'core/addon/neural.cpp')+read(r/'core/addon/panel64.inc')
 for fn in ['void LoadSettings()\n{','void ForEachSetting(Num num, Flag flag)\n{','void ApplyPanelSettings(const PanelSettings &before, const PanelSettings &after)\n{','SettingsState()\n']:
  at=neural.index(fn);assert '#include "../x86bridge/settings_fields.inc"' in neural[at:neural.index('\n}',at)],fn
 for key in keys:

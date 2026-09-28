@@ -221,7 +221,8 @@ lines = neural.splitlines()
 at = [i for i, line in enumerate(lines) if "addon_event::destroy_device>(OnDestroyDevice)" in line]
 if len(at) != 1 or lines[at[0] - 1].strip().startswith("if (g.events"):
     bad.append("neural.cpp: destroy_device is registered once and unconditionally")
-if "RouteCaps(st);" not in body(neural, "ReadPanelStatus") or re.search(r"\bst\.has\w+ = (true|false)", neural):
+panel = (ROOT / "core/addon/panel64.inc").read_text(encoding="utf-8")
+if "RouteCaps(st);" not in body(panel, "ReadPanelStatus") or re.search(r"\bst\.has\w+ = (true|false)", panel):
     bad.append("ReadPanelStatus: a capability bit is a constant, not the primary route's Caps()")
 if "RouteReach(*transport)" not in body(FACTORY.read_text(encoding="utf-8"), "PrimaryRoute"):
     bad.append("PrimaryRoute: a route taking over does not say what it reaches")

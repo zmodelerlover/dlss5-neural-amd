@@ -64,9 +64,9 @@ for field in ("scale", "depthInverted", "useHistory", "temporalMode", "useMotion
 
 neural = code(read("core/addon/neural.cpp"))
 host = code(read("core/x86bridge/host64.cpp"))
-panel = body(neural, "void ApplyPanelSettings(")
+panel = body(code(read("core/addon/panel64.inc")), "void ApplyPanelSettings(")
 if not re.search(r"if \(SettingsInvalidateHistory\(before, after\)\)\s*ResetTemporal\(", panel):
-    bad.append("neural.cpp: the 64-bit panel does not drop history by the shared list")
+    bad.append("panel64.inc: the 64-bit panel does not drop history by the shared list")
 apply = body(host, "    bool ApplySettings(")
 if ("SettingsInvalidateHistory(ExportSettings(),s)" not in apply
         or "if(historyChanged)ResetTemporal(" not in apply):

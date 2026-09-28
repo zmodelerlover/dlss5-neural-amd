@@ -173,7 +173,7 @@ core_code = "".join(code(p.read_text(encoding="utf-8", errors="replace"))
                     for p in sorted((ROOT / "core").rglob("*")) if p.suffix in (".cpp", ".h", ".inc"))
 if len(re.findall(r"(?<!bool )LoadExtraRuntime\(", core_code)) != 1:
     bad.append("a runtime copy loads outside BringUpEngines' drained change")
-for path, wiring in (("core/addon/neural.cpp", "st.passesAvailable = PassesAvailable();"),
+for path, wiring in (("core/addon/panel64.inc", "st.passesAvailable = PassesAvailable();"),
                      ("core/x86bridge/host64.cpp", "s.loadedPasses=PassesAvailable();"),
                      ("core/x86bridge/panel32.cpp", "s.passesAvailable=w.loadedPasses;"),
                      ("core/ui/sections/performance.cpp", "s.passes) > status.passesAvailable")):
