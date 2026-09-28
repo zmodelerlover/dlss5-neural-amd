@@ -187,7 +187,7 @@ if gone:
         src.write_text(HARNESS.replace("GAME_DEVICE_GONE", gone + "\n}\n"), encoding="utf-8")
         cxx = os.environ.get("CXX", "g++")
         try:
-            built = subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-O1",
+            built = subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-O1", "-static",
                                     str(src), "-o", str(exe)], capture_output=True, text=True)
         except FileNotFoundError:
             built = subprocess.CompletedProcess(cxx, 1, "", f"no compiler at {cxx!r}; set CXX to a g++")
