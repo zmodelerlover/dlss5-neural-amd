@@ -37,7 +37,22 @@ std::unique_lock<std::mutex> LockForHook()
 }
 
 HMODULE RuntimeFor(UINT slot);  // runtimes.inc
+int Outstanding(HMODULE m);
 bool MzSelected();
+
+// Why the record entry turned pass `r` down, as far as the runtime's own state says: it refuses when
+// its init never finished and at four jobs in flight (runtime_offsets.h, kReady and kJobId). The
+// text lasts until the next call.
+const char *RefusalReason(HMODULE r)
+{
+    static char why[128];
+    if (At<uint8_t>(r, rt::B->kReady) == 0)
+        return "the engine is not ready";
+    std::snprintf(why, sizeof(why), "%s: job %u, %u retired",
+                  Outstanding(r) >= 4 ? "four jobs already in flight" : "no reason the runtime's state shows",
+                  At<UINT>(r, rt::B->kJobId), At<UINT>(r, rt::B->kJobCounter));
+    return why;
+}
 
 // After an evaluation: what the engine was handed, read back out of the danielblnc runtime rather
 // than kept beside each write, so the line says what the engine holds. mochizuki keeps its own.
@@ -93,6 +108,7 @@ void NoteHold(double ms, bool late, bool spunOut)
 
 // Once a present, from JobGate. A line covers the time since the last one, which is longer than a
 // second across a pause: nothing ticks while the effect is off, and the line says how long it was.
+// It ends on each module's work: its last job, and how many it has retired.
 void TickStats()
 {
     ++g_stats.now.presents;
@@ -101,8 +117,20 @@ void TickStats()
         return;
     g_stats.now.skipped = g.status.skipped;
     g_stats.now.bindWaits = g_stats.bindWaits.load();
+    // A module zeroes its count when it rebuilds its staging, so a count that went down is all new.
+    static UINT fires[State::kMaxPasses] {};
+    char work[192] = "";  // three modules at their longest take 135
+    for (UINT m = 0, n = 0; m < State::kMaxPasses; ++m)
+        if (const HMODULE r = g.runtimes[m]; r != nullptr)
+        {
+            const UINT seen = At<volatile UINT>(r, rt::B->kWatchdogFires);
+            g_stats.now.timeouts += seen >= fires[m] ? seen - fires[m] : seen;
+            fires[m] = seen;
+            n += std::snprintf(work + n, sizeof(work) - n, " | module %u job %u retired %u", m + 1,
+                               At<UINT>(r, rt::B->kJobId), At<UINT>(r, rt::B->kJobCounter));
+        }
     g_stats.line = FormatStats(g_stats.now - g_stats.last, static_cast<double>(now - g_stats.at) / 1000.0,
-                               g.worstJobMs.exchange(0), std::exchange(g_stats.holdMaxMs, 0.0));
+                               g.worstJobMs.exchange(0), std::exchange(g_stats.holdMaxMs, 0.0)) + work;
     if (g_stats.now.evaluated != g_stats.last.evaluated && g_stats.passes != 0)
         TemporalLine();
     g_stats.last = g_stats.now;

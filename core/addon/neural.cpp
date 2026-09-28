@@ -2771,8 +2771,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         if (At<ID3D12CommandList *>(r, rt::B->kListMarker) != cmd)
         {
             if (++g_stats.now.refused % 600 == 1)
-                Log("pass %u refused (%llu total)", i + 1,
-                    static_cast<unsigned long long>(g_stats.now.refused));
+                Log("pass %u refused (%llu total): %s", i + 1,
+                    static_cast<unsigned long long>(g_stats.now.refused), RefusalReason(r));
             break;
         }
         // Same frame or nothing. Async never moves kJobCounter, so the job would read busy for ever.

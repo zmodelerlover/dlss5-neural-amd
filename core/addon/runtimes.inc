@@ -429,6 +429,7 @@ bool BringUpEngines(UINT &wanted)
     {
         Log("passes %u -> %u, taken with every module drained; history starts again.", live, next);
         ResetTemporal("Passes changed");
+        g.loggedPassDetail = false;  // each pass's job ids again, for the new count
     }
     live = next;
     wanted = live;

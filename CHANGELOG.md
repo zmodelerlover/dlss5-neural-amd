@@ -315,6 +315,11 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   it ran out at 500 ms with the last frame still on the GPU, and how often the runtime's job count
   was still behind after it. `D3D12Wait=0` in `amd-nr.ini` (new, ini only, never saved) turns the
   hold off, to set what it costs against the frames it saves, and the log says so at load.
+- **A refused pass says why**: `pass 2 refused (1 total): four jobs already in flight: job 816, 812
+  retired`, or that the engine was not ready, or that the runtime's own state shows no reason. The
+  stats line also adds up how often the runtime's watchdog let the game's queue go (`timeouts`, over
+  every pass's copy of the runtime) and ends on each copy's work (`module 1 job 816 retired 816`),
+  and after a `Passes` change the log gives each pass's job ids again, for the new count.
 
 ## v0.6.9 - 2026-09-26 - DLSS-NR-on-AMD v0.4.1, and the runtime in the status column
 

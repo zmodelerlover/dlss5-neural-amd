@@ -11,6 +11,9 @@ core/shared/frame_stats.h). Both are compiled here with g++, against a clock thi
   - no line inside the first second; one at the second, logged only with Diagnostics bit 2 and kept
     for the panel either way, covering exactly that window's counts;
   - a hook finding g.lock held counts one bind wait; one that finds it free counts none;
+  - a refused pass says why (not ready, four in flight, or neither), and the line adds up the
+    watchdog's fires over every module, a count a staging rebuild zeroed included, and ends on each
+    module's last job and how many it retired;
   - the temporal line reads the engine's bytes back, ORs a window's evaluations (a skip that
     dropped one pass's history does not flip it), is logged when it changes and only then, and says
     nothing for a window with no evaluation.
@@ -67,14 +70,17 @@ struct {
     } settings;
     std::atomic<unsigned long long> worstJobMs { 0 };
     UINT activePasses = 0;
+    HMODULE runtimes[3] {};
 } g;
-// The runtime is a byte array here, its four bytes at small offsets, one module for every pass.
+struct State { static constexpr UINT kMaxPasses = 3; };
+// The runtime is a byte array here, its fields at small offsets, one module for every pass.
 enum class GuideSource { None, Game, Effect, Snapshot, Estimated, Unusable, Flow };
-namespace rt { struct Build { size_t kHistoryOn, kTemporal, kInlineActive, kUseDepth; };
-               const Build kFake { 1, 2, 3, 4 }, *B = &kFake; }
-uint8_t module[8] {};
+namespace rt { struct Build { size_t kHistoryOn, kTemporal, kInlineActive, kUseDepth, kReady, kJobId, kJobCounter, kWatchdogFires; };
+               const Build kFake { 1, 2, 3, 4, 5, 8, 12, 16 }, *B = &kFake; }
+alignas(4) uint8_t module[32] {};
 template <class T> T &At(HMODULE h, size_t rva) { return *reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(h) + rva); }
 HMODULE RuntimeFor(UINT) { return reinterpret_cast<HMODULE>(module); }
+int Outstanding(HMODULE m) { return static_cast<int>(At<UINT>(m, 8) - At<UINT>(m, 12)); }
 bool mochizuki = false;
 bool MzSelected() { return mochizuki; }
 std::string logged;
@@ -97,7 +103,7 @@ int main() {
     FrameCounts a;
     a.presents = 61; a.evaluated = 58; a.skipped = 3; a.heapHeld = 1; a.refused = 0; a.bindWaits = 2;
     Expect(FormatStats(a - FrameCounts {}, 1.0, 18, 0.0) ==
-               "stats: 1.00 s | presents 61 eval 58 skip 3 (heap 1) refused 0 | bind waits 2 | job max 18 ms",
+               "stats: 1.00 s | presents 61 eval 58 skip 3 (heap 1) refused 0 | bind waits 2 | job max 18 ms | timeouts 0",
            "a window formats as the line, with no hold field when nothing held");
     Expect(FormatStats(FrameCounts {}, 2.5, 0, 0.0).find("job max none") != std::string::npos,
            "a window with no job retired says so");
@@ -111,7 +117,7 @@ int main() {
     NoteHold(0.0, false, false);
     Expect(logs == 1, "and only once");
     Expect(FormatStats(g_stats.now - FrameCounts {}, 1.0, 20, g_stats.holdMaxMs).find(
-               " | job max 20 ms | hold 3.2/9.5 ms, deadline 1, spin 1") != std::string::npos,
+               " | job max 20 ms | timeouts 0 | hold 3.2/9.5 ms, deadline 1, spin 1") != std::string::npos,
            "the holds are their mean, their longest, the ones that ran out and the spins left behind");
     g_stats.now = g_stats.last = {};
     g_stats.holdMaxMs = 0.0;
@@ -130,7 +136,7 @@ int main() {
     g.worstJobMs = 31;
     fakeNow = 6000;
     TickStats();
-    Expect(g_stats.line == "stats: 1.00 s | presents 60 eval 20 skip 4 (heap 0) refused 1 | bind waits 0 | job max 31 ms",
+    Expect(g_stats.line == "stats: 1.00 s | presents 60 eval 20 skip 4 (heap 0) refused 1 | bind waits 0 | job max 31 ms | timeouts 0",
            "the first second's line counts that second");
     Expect(logs == 0, "Diagnostics=1 keeps the line out of the log");
     Expect(g.worstJobMs == 0, "the job maximum starts again each window");
@@ -180,6 +186,34 @@ int main() {
     Expect(FormatTemporal(off) == "temporal: byte 0 (Temporal=0), engine NOT same-frame, history handed 2/2, "
                                   "not smoothed (OutputSmooth=0), seed free, motion none, depth not handed",
            "a pass bit past the passes run is not counted, and smoothing off says so");
+
+    // A refused pass says why, as far as the runtime's own state does.
+    const HMODULE r = reinterpret_cast<HMODULE>(module);
+    module[5] = 0;
+    Expect(std::string(RefusalReason(r)) == "the engine is not ready", "a refusal before the engine was ready");
+    module[5] = 1;
+    At<UINT>(r, 8) = 816;
+    At<UINT>(r, 12) = 812;
+    Expect(std::string(RefusalReason(r)) == "four jobs already in flight: job 816, 812 retired",
+           "a refusal at four jobs in flight");
+    At<UINT>(r, 12) = 816;
+    Expect(std::string(RefusalReason(r)) == "no reason the runtime's state shows: job 816, 816 retired",
+           "a refusal the runtime's state does not explain");
+
+    // The watchdog's fires on every loaded module, and each module's work, close the line; a count
+    // that went down is a module that rebuilt its staging, and all of it is new.
+    g.runtimes[0] = r;
+    At<UINT>(r, 16) = 2;
+    fakeNow = 13000;
+    TickStats();
+    Expect(g_stats.line.find(" | timeouts 2") != std::string::npos &&
+               g_stats.line.ends_with(" | module 1 job 816 retired 816"),
+           "the line counts the fires and ends on each module's work");
+    At<UINT>(r, 16) = 1;
+    fakeNow = 14000;
+    TickStats();
+    Expect(g_stats.line.find(" | timeouts 1 |") != std::string::npos, "a count a staging rebuild zeroed is new fires");
+    g.runtimes[0] = nullptr;
 
     { auto free = LockForHook(); }
     Expect(g_stats.bindWaits == 0, "a free lock is no wait");
@@ -268,6 +302,11 @@ if not ("GuideSource motionFrom = GuideSource::Estimated;" in motion
         and "motionFrom = g.guideMotion.external ? GuideSource::Effect : GuideSource::Game;" in motion
         and "haveMotion = FlowMotion(cmd, colourSrc, colourFmt), motionFrom = GuideSource::Flow;" in motion):
     bad.append("motion_sources.inc: a branch does not say which source it is")
+if "static_cast<unsigned long long>(g_stats.now.refused), RefusalReason(r));" not in record:
+    bad.append("neural.cpp: a refused pass does not say why")
+change = re.search(r"if \(change\)\s*\{[^}]*history starts again[^}]*\}", body(runtimes, "bool BringUpEngines("))
+if not change or "g.loggedPassDetail = false;" not in change.group(0):
+    bad.append("runtimes.inc: a new pass count does not print each pass's job ids again")
 if "st.motionSource = g_stats.motion;" not in panel:
     bad.append("panel64.inc: the motion source is not the last evaluation's")
 
