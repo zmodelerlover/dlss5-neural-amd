@@ -107,7 +107,9 @@ if not (wait and release and ensure and bind):
 else:
     with tempfile.TemporaryDirectory() as tmp:
         src, exe = Path(tmp) / "fence_wait.cpp", Path(tmp) / "fence_wait.exe"
-        src.write_text(HARNESS.replace("WAIT_FENCE", wait), encoding="utf-8")
+        # The stand-down strings it sets, as the source spells them (runtimes.inc).
+        reasons = "\n".join(re.findall(r'^constexpr char k\w+\[\] =(?:\s*"[^"\n]*")+;', runtimes, re.M))
+        src.write_text(HARNESS.replace("WAIT_FENCE", reasons + "\n" + wait), encoding="utf-8")
         cxx = os.environ.get("CXX", "g++")
         try:
             built = subprocess.run([cxx, "-std=c++20", "-O1", "-static", str(src), "-o", str(exe)],

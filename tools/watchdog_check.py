@@ -190,7 +190,9 @@ if not (note and gate and down and cost and init and ini):
 else:
     with tempfile.TemporaryDirectory() as tmp:
         src, exe = Path(tmp) / "watchdog.cpp", Path(tmp) / "watchdog.exe"
-        harness = HARNESS.replace("STEP_SCALE_DOWN", down).replace("NOTE_WATCHDOG", note)
+        # The stand-down strings the notes hand StepScaleDown, as the source spells them (scale_cap.inc).
+        reasons = "\n".join(re.findall(r'^constexpr char k\w+\[\] =(?:\s*"[^"\n]*")+;', runtimes, re.M))
+        harness = HARNESS.replace("STEP_SCALE_DOWN", reasons + "\n" + down).replace("NOTE_WATCHDOG", note)
         src.write_text(harness.replace("NOTE_JOB_COST", cost), encoding="utf-8")
         cxx = os.environ.get("CXX", "g++")
         try:

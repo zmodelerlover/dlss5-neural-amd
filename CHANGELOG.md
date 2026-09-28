@@ -77,11 +77,16 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
   line is under **Debug** on the 64-bit panel; a 32-bit D3D9 game's shows `colour only` in place
   of the guide candidates. The ini keys are kept either way.
 - **The 32-bit panel says why the helper switched off**: the device was removed, the engine or its
-  textures could not be brought up, or otherwise to look in `amd-nr-x86-host.log`. Bridge protocol
-  v5: replace `amd-nr.addon32` and `amd-nr-host64.exe` together.
+  textures could not be brought up, its GPU work did not finish within `FenceWaitCapMs`, the network
+  was too slow even at the lowest scale, the engine could not run same-frame, or otherwise to look
+  in `amd-nr-x86-host.log`. Bridge protocol v5: replace `amd-nr.addon32` and `amd-nr-host64.exe`
+  together.
 
 ### Crashes, hangs and the effect switching itself off
 
+- **On Vulkan and OpenGL, a route that stands down says so on the panel**, with its reason (the
+  device lacking an entry point, the textures not crossing, a work slot that could not be
+  recovered, and so on), where the panel went on reading Ready and only the log knew.
 - **When the game destroys the device the add-on runs on** (D3D12, D3D11, Vulkan), or a D3D11
   game's device is removed, the effect switches off and the panel says to restart the game, instead
   of carrying on with what was built on the old device. A removed device is checked on every

@@ -41,7 +41,9 @@ never submits through ReShade, so its InfoQueue sees none of it:
     taken; a resize keeps the latch, and the init of a primary a destroy let go (a Vulkan rebuild, an
     OpenGL restore) takes it back, dropping what was built for a window taken meanwhile;
   - the panel's capability bits (Feed.fx, Read from the game, depth) are the primary route's own
-    Caps(), never a constant, and PrimaryRoute logs what each route reaches when it takes over.
+    Caps(), never a constant, and PrimaryRoute logs what each route reaches when it takes over;
+  - the Vulkan and OpenGL routes' Stop keeps the port's contract: the add-on is unavailable, and the
+    panel has the reason.
 
     python tools/transport_check.py
 """
@@ -224,6 +226,10 @@ if len(at) != 1 or lines[at[0] - 1].strip().startswith("if (g.events"):
 panel = (ROOT / "core/addon/panel64.inc").read_text(encoding="utf-8")
 if "RouteCaps(st);" not in body(panel, "ReadPanelStatus") or re.search(r"\bst\.has\w+ = (true|false)", panel):
     bad.append("ReadPanelStatus: a capability bit is a constant, not the primary route's Caps()")
+for route in ("vulkan/vk_crossing.inc", "opengl/gl_crossing.inc"):
+    stop = re.search(r"void Stop\(const char \*why\)\s*\{([^}]*)\}", (ROOT / "core/transport" / route).read_text(encoding="utf-8"))
+    if not stop or "g.status.unavailable = true;" not in stop.group(1) or "g.status.reason = why;" not in stop.group(1):
+        bad.append(f"{route}: Stop stands the route down without telling the panel (FrameTransport.hpp's contract)")
 if "RouteReach(*transport)" not in body(FACTORY.read_text(encoding="utf-8"), "PrimaryRoute"):
     bad.append("PrimaryRoute: a route taking over does not say what it reaches")
 

@@ -44,6 +44,9 @@ ui::PanelStatus BridgeStatus(){
     if(w.unavailable)s.reason=code==SD::DeviceLost?"the D3D12 device was removed; restart the game to re-enable"
         :code==SD::EngineInit?"the helper could not bring the engine up; amd-nr-x86-host.log says why"
         :code==SD::Resources?"the helper could not create its working textures; amd-nr-x86-host.log says why"
+        :code==SD::FenceWait?"the helper's GPU work did not finish within FenceWaitCapMs; restart the game to re-enable"
+        :code==SD::TooSlow?"the network was too slow even at the lowest scale; restart the game to re-enable"
+        :code==SD::NotSameFrame?"the engine could not run same-frame; amd-nr-x86-host.log says why"
         :"the helper stood down; amd-nr-x86-host.log says why";
     s.processed=w.processed;s.skipped=w.skipped;
     // Where the 64-bit panel prints the profile it picked for this game. This frontend has no

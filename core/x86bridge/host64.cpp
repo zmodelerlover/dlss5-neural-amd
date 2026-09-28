@@ -56,7 +56,10 @@ struct Host {
         s.depthMin=g.probeDepthMin.load();s.depthMax=g.probeDepthMax.load();s.motionMean=g.probeMotionMean.load();s.motionMax=g.probeMotionMax.load();s.stillPct=g.probeStillPct.load();
         s.stage=g.stage.load();s.events=g.events;s.noBridge=g.noBridge.load();s.noBackBuffer=g.noBackBuffer.load();
         s.scaleCap=g.scaleCap.load();
-        s.reason=static_cast<uint32_t>(!g.status.unavailable?StandDown::None:g.loggedDeviceLost?StandDown::DeviceLost:standDown);
+        const char* why=g.status.reason;  // the core's stand-downs, by the string each sets
+        s.reason=static_cast<uint32_t>(!g.status.unavailable?StandDown::None:g.loggedDeviceLost?StandDown::DeviceLost
+            :why==kFenceGaveUp?StandDown::FenceWait:why==kSlowWatchdog||why==kSlowJobs?StandDown::TooSlow
+            :why==kNotSameFrame?StandDown::NotSameFrame:standDown);
         ui::PanelStatus p;MzStatus(p);
         s.mochizuki=p.mochizuki;s.danielblnc=p.danielblnc!=nullptr?static_cast<uint32_t>(rt::B-rt::kBuilds)+1:0;s.networkMs=p.mochizuki!=0?p.mochizukiMs:p.danielblncMs;
         return s;

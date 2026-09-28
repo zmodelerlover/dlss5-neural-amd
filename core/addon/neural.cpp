@@ -2779,7 +2779,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         if (At<uint8_t>(r, rt::B->kInlineActive) != 1)
         {
             g.status.unavailable = true;
-            g.status.reason = "the engine could not run same-frame; see amd-nr.log";
+            g.status.reason = kNotSameFrame;
             Log("pass %u: engine latched async (no zero-copy or flag PSO); standing down", i + 1);
             break;
         }

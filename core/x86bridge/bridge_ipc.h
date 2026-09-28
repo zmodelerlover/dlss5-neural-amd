@@ -39,7 +39,8 @@ struct WireSettings {
 struct WireCommand { uint64_t id=0;CommandCode code=CommandCode::MeasureResidualAgain;uint32_t reserved=0; };
 // Why the helper stood down (WireStatus::unavailable), so the 32-bit panel can say it as the 64-bit
 // one does; amd-nr-x86-host.log has the words either way. Other is a reason with no code of its own.
-enum class StandDown:uint32_t { None=0, Other=1, DeviceLost=2, EngineInit=3, Resources=4 };
+// 5 to 7 came within v5: the layout is the same, and a frontend from before them says Other.
+enum class StandDown:uint32_t { None=0, Other=1, DeviceLost=2, EngineInit=3, Resources=4, FenceWait=5, TooSlow=6, NotSameFrame=7 };
 struct WireStatus {
     uint64_t processed=0,skipped=0;
     uint32_t connected=0,engineReady=0,unavailable=0,failed=0,transportOnly=0;

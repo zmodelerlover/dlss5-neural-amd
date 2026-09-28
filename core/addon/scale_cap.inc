@@ -3,6 +3,13 @@
 // NoteJobCost, both taken by JobGate (runtimes.inc) as it retires an evaluation. Part of the core's
 // unity build, included by neural.cpp before runtimes.inc.
 
+// The stand-down at the lowest scale, one string for each note, which the 32-bit helper names on
+// the wire by its address (host64.cpp ExportStatus).
+constexpr char kSlowWatchdog[] = "the network kept outlasting InlineWaitMs at the lowest scale; "
+                                 "restart the game to re-enable";
+constexpr char kSlowJobs[] = "the network took over 250 ms three times at the lowest scale; restart "
+                             "the game to re-enable";
+
 // What the network is actually run at: the person's Scale, held down when this card has already
 // shown it cannot carry it.
 //
@@ -80,8 +87,7 @@ bool NoteWatchdog()
     char why[128];
     std::snprintf(why, sizeof(why), "the network outlasted InlineWaitMs on %d evaluations in a row "
                   "(WatchdogStandDown=%d; 0 turns this off)", streak, limit);
-    StepScaleDown(why, "the network kept outlasting InlineWaitMs at the lowest scale; restart the "
-                       "game to re-enable");
+    StepScaleDown(why, kSlowWatchdog);
     return fired;
 }
 
@@ -113,6 +119,5 @@ void NoteJobCost(UINT64 ms, bool fired)
     char why[64];  // a dispatch that long resets the display driver and takes the game with it
     std::snprintf(why, sizeof(why), "the network took %llu ms three times",
                   static_cast<unsigned long long>(ms));
-    StepScaleDown(why, "the network took over 250 ms three times at the lowest scale; restart the "
-                       "game to re-enable");
+    StepScaleDown(why, kSlowJobs);
 }

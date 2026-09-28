@@ -97,6 +97,12 @@ bool DeviceLost()
 // where it is for the rest of the session. Once one wait has given up, later ones (each resize,
 // the exit) only look: the queue that did not finish then is not waited out again for the whole
 // cap on the game's thread.
+//
+// Two stand-downs the 32-bit helper names on the wire by the reason set (host64.cpp ExportStatus),
+// so each is one string, told apart by its address; scale_cap.inc has the other two.
+constexpr char kFenceGaveUp[] = "the GPU did not finish our work within FenceWaitCapMs; restart the "
+                                "game to re-enable";
+constexpr char kNotSameFrame[] = "the engine could not run same-frame; see amd-nr.log";
 bool WaitFence(ID3D12Fence *fence, UINT64 value, HANDLE ev, const char *what)
 {
     static std::atomic<bool> gaveUp { false };
@@ -137,8 +143,7 @@ bool WaitFence(ID3D12Fence *fence, UINT64 value, HANDLE ev, const char *what)
                 "Standing down, and keeping everything the GPU may still read.", what, waited, cap);
             gaveUp = true;
             g.status.unavailable = true;
-            g.status.reason = "the GPU did not finish our work within FenceWaitCapMs; restart the "
-                              "game to re-enable";
+            g.status.reason = kFenceGaveUp;
             return false;
         }
         if (!told && waited >= 2000)

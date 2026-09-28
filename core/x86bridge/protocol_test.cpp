@@ -44,6 +44,8 @@ int main(){
     auto factory=FactorySettings(base,current);assert(factory.colourStrength==1&&factory.skin==-1);
     assert(factory.tone==1&&factory.scale==.5f&&factory.enabled==1&&factory.language==1&&factory.toggleKey==70&&factory.startOn==1&&factory.settings_revision==8);
     status.reason=static_cast<uint32_t>(StandDown::DeviceLost);std::memcpy(&statusCopy,&status,sizeof(status));assert(statusCopy.reason==2);
+    // The codes are the wire's: a frontend reads them as numbers, so they are never renumbered.
+    assert(static_cast<uint32_t>(StandDown::FenceWait)==5&&static_cast<uint32_t>(StandDown::TooSlow)==6&&static_cast<uint32_t>(StandDown::NotSameFrame)==7);
     status.mochizuki=2;status.danielblnc=0;status.networkMs=6.8f;std::memcpy(&statusCopy,&status,sizeof(status));assert(statusCopy.reason==2&&statusCopy.mochizuki==2&&statusCopy.networkMs==6.8f);
     printf("PASS protocol v5 WireSettings=236 WireStatus=128 StateSnapshot=364 WireCommand=16; roundtrips, table ranges, NaN/Inf, old-version rejection, revisions, command dedup, stand-down code, runtime line\n");
     printf("PASS fixed-width layouts Header=16 Hello=16 Texture=24 Build=104 Frame=32 Ack=48; malformed/version/old-frame/generation rejected; transport is explicit; pointer_bits=%zu\n",sizeof(void*)*8);

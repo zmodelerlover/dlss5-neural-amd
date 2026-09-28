@@ -89,6 +89,9 @@ for call in ['Request(', 'WaitFor', 'FlushAndWait', 'StartHost(', 'StateRequest(
 assert 'std::try_to_lock' in adapter and 'controls.save=true' in adapter and 'controls.reload=true' in adapter and 'controls.measure=true' in adapter
 assert 'controls.exportLogs=true' in adapter and 'ExportBridgeLogs()' not in adapter
 assert 'controls.liftCap=true' in adapter and 'CommandCode::LiftScaleCap' in front
+# The core's stand-downs reach the 32-bit panel by code: each is one string, told apart by its address.
+for code,mark in (('FenceWait','why==kFenceGaveUp'),('TooSlow','why==kSlowWatchdog||why==kSlowJobs'),('NotSameFrame','why==kNotSameFrame')):
+ assert f'{mark}?StandDown::{code}' in h and f'code==SD::{code}?' in adapter,code
 assert front.index('if(controls.save)')<front.index('controls.exportedPath=ExportBridgeLogs()')
 # The rebuilt panel: fifteen controls, the cascade that reveals the rest, and no
 # MEASURED/TRACED/UNKNOWN/INERT tags. Feed.fx exists in the shared panel but is never drawn on this

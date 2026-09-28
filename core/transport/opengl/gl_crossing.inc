@@ -76,6 +76,8 @@ struct Route
     {
         failed = true;
         ready = false;
+        g.status.unavailable = true;  // so the panel says it, as for every other stand-down
+        g.status.reason = why;        // a literal at every call
         Log("opengl: %s Standing down and leaving the host's own image alone.", why);
     }
 };
