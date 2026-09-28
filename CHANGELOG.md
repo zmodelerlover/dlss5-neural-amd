@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.7.1 - 2026-09-28 - Motion measured by optical flow wherever a game gives none
+
+Built on v0.7.0, with the same runtimes (DLSS-NR-on-AMD v0.4.3, v0.4.2 and v0.4.1, and the 0.5.0
+supporter build from your own files) and the same bridge protocol (v5). Nothing else changes: an
+`amd-nr.ini` you already have keeps every setting in it. Tested in game on the D3D12 route.
+
+### What changes when you update
+
+- **On D3D12, Vulkan and OpenGL, and on D3D11 games that render no velocity buffer, the motion is
+  now measured by AMD FidelityFX optical flow** instead of the add-on's block estimator. The
+  estimator matched nine samples of a frame shrunk to an eighth, one sample per 8x8 block, so on a
+  textured scene a camera pan came out as noise -- neighbouring blocks pointing opposite ways. The
+  runtime, handed motion that did not line its history up with the picture, dropped the history:
+  the effect faded and flickered while the camera moved and came back once it stopped. The optical
+  flow is what the reference itself runs where a game has no vectors. A game's own vectors and the
+  companion effect's still come first, and `OpticalFlow=0` in `amd-nr.ini` goes back to the estimator.
+- **Each block's vector is spread over its pixels along the depth**, on routes that have depth: a
+  pixel takes the vectors of the neighbouring blocks at its own distance, so a character's motion no
+  longer bleeds onto the background behind it, nor the background's onto the character. Without
+  depth it is plain bilinear, as in the reference.
+- **32-bit games are unchanged.** The bridge's 64-bit helper has no optical flow built in and keeps
+  the estimator.
+- A very high Intensity or Structure still multiplies whatever the network does from one frame to
+  the next; if the picture shimmers in motion, bring those two back towards 1 first.
+
+### Logs
+
+- The route line says `motion by optical flow` where it said `motion estimated`, the guide probe
+  names the optical flow as the motion's source, and the D3D12 line after 600 frames no longer says
+  the game is a PS2 that never computed motion.
+
+### For developers
+
+- The release build of the 64-bit add-on is `build.ps1 -Ffx <FidelityFX SDK>` (the AMD FSR SDK
+  2.3.0); `tools/release-assets.ps1` refuses an `amd-nr.addon64` without the optical flow in it,
+  because a plain `build.ps1` -- the one `gates.ps1` runs -- drops it without a word. The SDK's MIT
+  notice is in `docs/third-party/fidelityfx-LICENSE.md`.
+- `RecordNetwork` fills this frame's depth before the motion, which the densify reads;
+  `tools/transport_check.py` holds that order.
+
 ## v0.7.0 - 2026-09-28 - DLSS-NR-on-AMD v0.4.3, steadier by default, Passes that apply live, and a long list of fixes
 
 Built on v0.6.9. It moves to **DLSS-NR-on-AMD v0.4.3** (patched

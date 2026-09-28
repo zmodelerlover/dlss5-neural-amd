@@ -124,6 +124,9 @@ if not fences or not fences == mapped == parked:
     bad.append(f"DrainReadbacks: {fences} fences, {mapped} maps behind them, {parked} parks; each readback needs all three")
 if "depthBest" in body(neural, "RecordNetwork") + MOTION.read_text(encoding="utf-8"):
     bad.append("RecordNetwork reads the live D3D12 depth buffer, which measured zeros")
+record = body(neural, "RecordNetwork")
+if not 0 <= record.find("haveDepth = true;") < record.find('#include "../temporal/motion_sources.inc"'):
+    bad.append("RecordNetwork: the motion runs before this frame's depth, so the flow's densify reads the last frame's")
 snapshot = body(GUIDES.read_text(encoding="utf-8"), "SnapshotBeforeClear")
 if "Format != DepthAliasFormat(" not in snapshot or "depthSnapshot.Reset()" in snapshot:
     bad.append("SnapshotBeforeClear: the snapshot must be rebuilt on a format change and parked, not reset")

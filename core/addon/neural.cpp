@@ -1254,11 +1254,11 @@ void LoadSettings()
     if (g.settings.startOn.load())
         Log("StartOn=1: the effect is on from the first frame. Set it to 0, or clear the box in "
             "the overlay, to go back to starting with the game's own image.");
-    // Optical flow exists only in a lab build (build.ps1 -Ffx). Anywhere else OpticalFlow=2 would pass
-    // over the game's vectors for a flow that is not there and hand the motion to the estimator.
-    const int opticalFlow = std::clamp(static_cast<int>(num(L"OpticalFlow", 0.0f)), 0, 2);
+    // Optical flow is built into the 64-bit add-on (build.ps1 -Ffx) and on there by default; the 32-bit
+    // bridge's host has none, where OpticalFlow=2 would pass over the game's vectors for nothing.
+    const int opticalFlow = std::clamp(static_cast<int>(num(L"OpticalFlow", AMDNR_WITH_FFX ? 1.0f : 0.0f)), 0, 2);
     if (opticalFlow != 0 && !AMDNR_WITH_FFX)
-        Log("OpticalFlow=%d needs a lab build with FidelityFX; this one reads it as 0, so the game's own "
+        Log("OpticalFlow=%d needs a build with FidelityFX; this one reads it as 0, so the game's own "
             "vectors are still used when it has them.", opticalFlow);
     g.settings.opticalFlow.store(AMDNR_WITH_FFX ? opticalFlow : 0);
     g.settings.motionMaxPx.store(std::max(0.0f, num(L"MotionMaxPx", 0.0f)));
@@ -2530,13 +2530,6 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     Barrier(cmd, g.netColour.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-    // Optical flow. Three dispatches on small textures: luminance, block match against last
-    // frame's luminance, then upsample into the raster the engine reads. The two luminance
-    // textures swap every frame so this frame's becomes next frame's reference.
-    bool haveMotion = false;
-    g_motionSinceEvaluation = false;  // the include below may set it; see DropStaleHistory
-#include "../temporal/motion_sources.inc"
-
     bool haveDepth = false;
     // Two ways depth can arrive, in descending order of how much it is worth. From the game over
     // the bridge: a real, full-range depth buffer an engine wrote and left alone, as RenoDX gets on
@@ -2574,6 +2567,13 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                 nw, nh, fromGame ? "the game's own buffer, over the bridge" : "pre-clear snapshot");
         }
     }
+
+    // The motion, after the depth: the optical flow's densify reads this frame's netDepth to keep
+    // an object's vectors off its background (optical_flow.inc). Neither block reads the other's
+    // descriptors, and every view below sets its own format.
+    bool haveMotion = false;
+    g_motionSinceEvaluation = false;  // the include below may set it; see DropStaleHistory
+#include "../temporal/motion_sources.inc"
 
     // One-shot look at the two guides, once the game has settled.
     if (g.probeGuides.load() && g.status.frame >= g.nextGuideProbe && g.netDepth != nullptr &&

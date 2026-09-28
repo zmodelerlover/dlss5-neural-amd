@@ -49,7 +49,7 @@
         }
     }
     else if (flow != 0 && OpticalFlowReady(w, h))
-        haveMotion = FlowMotion(cmd, colourSrc, colourFmt), motionFrom = GuideSource::Flow;
+        haveMotion = FlowMotion(cmd, colourSrc, colourFmt, haveDepth && g.depthUsable.load()), motionFrom = GuideSource::Flow;
     else if (g.settings.useMotion.load() && g.flowSmall != nullptr)
     {
         // Swapped per estimator run, not per present: with the network sitting out every other

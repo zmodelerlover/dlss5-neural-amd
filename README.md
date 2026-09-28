@@ -158,12 +158,13 @@ has been tried in Euro Truck Simulator 2 (D3D11).
 
 The network takes four inputs: colour, depth, motion and exposure. Colour is always there. On a
 game that renders a velocity buffer, D3D11 hands the real one over. Everywhere else — every
-emulator, every game without one — the add-on has to *estimate* motion by comparing two frames,
-and what it can afford next to the network is two levels of block matching with a search radius
-of four.
+emulator, every game without one — the 64-bit add-on measures motion between two frames with
+AMD FidelityFX optical flow, in 8x8 blocks, and spreads each block's vector over its pixels along
+the depth, so an object's motion stays off its background. 32-bit games fall back to a cheaper
+block estimator.
 
-A dedicated optical-flow shader is not on that budget. `effects/AMD_Neural_Feed.fx` lets the
-add-on read one instead, and passes ReShade's depth buffer along with it.
+An optical-flow shader you already run can take over from it: `effects/AMD_Neural_Feed.fx` lets
+the add-on read one, and passes ReShade's depth buffer along with it.
 
 1. Install a motion-vector shader. **iMMERSE Launchpad** is the default and runs an eight-level
    pyramid with a filter between every level: <https://martysmods.com>. VORT, LumeniteFX Kernel
@@ -178,8 +179,9 @@ declares the provider's output texture exactly as the provider does, which is ho
 the same one.
 
 The add-on's **Status** column reports what it ended up with, per frame, and the line is the
-whole story: a game's own vectors beat the effect, the effect beats the estimator, and the
-estimator beats nothing. Turn the whole thing off with the checkbox there or `FeedEffect=0`.
+whole story: a game's own vectors beat the effect, the effect beats the optical flow (the
+estimator on 32-bit games), and that beats nothing. `OpticalFlow=0` in `amd-nr.ini` goes back to
+the estimator on 64-bit games too. Turn the whole thing off with the checkbox there or `FeedEffect=0`.
 
 Optical flow is a guess, and it guesses confidently wrong wherever the picture changes without
 moving — a flickering light, a flame, a reflection. The effect reprojects every vector into the
@@ -244,7 +246,7 @@ a game.
 
 - D3D11 is the only route where the game's own motion vectors reach the network, and the only one
   where the companion effect above can stand in for them. On D3D12 the add-on finds the game's
-  depth, captured before the game clears it, and estimates motion. On Vulkan and OpenGL, and on
+  depth, captured before the game clears it, and measures motion by optical flow. On Vulkan and OpenGL, and on
   32-bit D3D9 games, it only receives the final image. The panel leaves out the guide controls a
   route cannot use, and the log's `route:` line says what it reaches.
 - FSR upscaling is not implemented and is not planned.

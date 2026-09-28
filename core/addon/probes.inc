@@ -172,6 +172,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                     "max %.3f px, %llu%% past the feed's %.0f px, so zeroed%s", nw, nh,
                     g.guideMotion.external  ? "from the effect"
                     : g.gameMotionActive    ? "the game's own"
+                    : g.settings.opticalFlow.load() != 0 ? "optical flow"
                                             : "estimated",
                     static_cast<unsigned long long>(100 * zero / n), mag / (2.0 * n), biggest,
                     static_cast<unsigned long long>(100 * past / n), static_cast<double>(cap),

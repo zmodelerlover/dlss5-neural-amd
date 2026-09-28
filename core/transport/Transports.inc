@@ -65,13 +65,15 @@ FrameTransport* g_primaryRoute = nullptr;
 std::string RouteReach(const FrameTransport& route) {
     const uint32_t caps = route.Caps();
     std::string line = std::string(route.Name()) + " route: ";
+    // What stands in for the game's vectors: the optical flow where FidelityFX is built in (the 64-bit
+    // add-on), the estimator where it is not (the 32-bit bridge's host).
+    const std::string guess = AMDNR_WITH_FFX ? "motion by optical flow" : "motion estimated";
     line += caps & FrameTransport::kGameGuides
                 ? "depth and motion from the game's own buffers when it renders them (Read from "
-                  "the game), motion estimated otherwise"
+                  "the game), " + guess + " otherwise"
             : caps & FrameTransport::kDepth
-                ? "depth copied just before the game clears it; motion estimated: no game MV path "
-                  "on this API"
-                : "no depth path on this API; motion estimated: no game MV path on this API";
+                ? "depth copied just before the game clears it; " + guess + ": no game MV path on this API"
+                : "no depth path on this API; " + guess + ": no game MV path on this API";
     line += caps & FrameTransport::kFeed ? "; Feed.fx can hand over its own"
                                          : "; Feed.fx does not reach the network here";
     if (g.stage.load() != 3 && !(caps & FrameTransport::kStage))

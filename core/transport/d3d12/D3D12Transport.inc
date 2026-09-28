@@ -169,7 +169,7 @@ struct Transport final : FrameTransport {
         // One line, once, so a log tells us whether depth is even reachable on this API.
         if (g.status.frame == 600)
             Log("guides after 600 frames: %llu depth-stencil bind events, best candidate %s. Motion: "
-                "the PS2 never computed per-pixel motion, so there is none to take.",
+                "this route takes no game vectors; the motion: line says what stands in for them.",
                 static_cast<unsigned long long>(g.depthEvents.load()),
                 g.depthBest != nullptr ? "found" : "none");
     }

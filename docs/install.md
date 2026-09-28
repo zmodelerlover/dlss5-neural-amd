@@ -55,7 +55,8 @@ in — the one holding the proxy DLL you just installed.
    you already have -- iMMERSE Launchpad, VORT or LumeniteFX -- and hands the field over. None
    of them is bundled. Enable it in ReShade **below** the provider, and set its
    `AMDNR_MV_PROVIDER` preprocessor definition to 1, 2 or 3 to match. Without it the add-on
-   estimates motion from consecutive frames instead, which works but is a guess.
+   measures motion from consecutive frames with FidelityFX optical flow (a block estimator on
+   32-bit games), which works well but is still a measurement of the picture, not the game's own.
 5. **For a 32-bit game**, copy `files\amd-nr.addon32`, `files\amd-nr-host64.exe` and
    `payload.sha256` in as well. The `.addon32` is what ReShade loads; the `.exe` is the 64-bit
    helper it starts, and it has to be beside it.

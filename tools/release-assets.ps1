@@ -9,8 +9,11 @@
 #   32-bit route : amd-nr.addon32, amd-nr-host64.exe, payload.sha256
 #   always       : SHA256SUMS.txt covering all of them
 #
-# Run build-x86bridge.ps1 first -- it produces every one of these except the sums file.
+# Run build-x86bridge.ps1 first -- it produces every one of these except the sums file -- and then
+# build.ps1 -Ffx, because the bridge script rebuilds amd-nr.addon64 without the optical flow.
 #
+#   .\build-x86bridge.ps1
+#   .\build.ps1 -Ffx ..\referencias\ffx-sdk-v2.3.0
 #   .\tools\release-assets.ps1
 #   gh release upload v0.5.1 (Get-Content release\upload.txt)
 #
@@ -36,6 +39,13 @@ $wanted = [ordered]@{
 $missing = $wanted.GetEnumerator() | Where-Object { -not (Test-Path -LiteralPath $_.Value) }
 if ($missing) {
     throw ("Run .\build-x86bridge.ps1 first; missing: " + (($missing | ForEach-Object { $_.Key }) -join ', '))
+}
+
+# The 64-bit add-on ships the optical flow since v0.7.1, and a plain build.ps1 -- the one gates.ps1
+# runs -- drops it without a word: the release would go back to the estimator.
+$addon = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($wanted['amd-nr.addon64']))
+if ($addon.IndexOf('optical flow: FidelityFX') -lt 0) {
+    throw "build\amd-nr.addon64 has no optical flow; build it with .\build.ps1 -Ffx ..\referencias\ffx-sdk-v2.3.0 (after build-x86bridge.ps1, which rebuilds it without)"
 }
 
 $rows = @()

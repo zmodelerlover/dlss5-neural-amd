@@ -4,13 +4,13 @@
 //
 // The chain is the reference's (Magpie AmdOpticalFlowProvider.cpp): the frame copied to 8-bit at its
 // own size (Quality, no downscale), ffxOpticalflowContextDispatch -- 8x8 blocks, seven passes,
-// sRGB transfer, luminance 0..1 -- and the sparse field densified bilinearly at p/8 - 0.5 into
-// frame pixels, current to previous. A reset dispatch has no previous frame and yields zero, as
-// there. Then into the raster the engine reads, scaled by nw/w, the way the estimator's field is.
+// sRGB transfer, luminance 0..1 -- and the sparse field densified at p/8 - 0.5 into frame pixels,
+// bilinearly and along the depth (below), current to previous. A reset dispatch has no previous
+// frame and yields zero, as there. Then into the raster the engine reads, scaled by nw/w.
 //
-// OpticalFlow in the ini: 0 off (the estimator, as shipped), 1 when the game and the companion
-// effect give nothing, 2 always -- parity with the reference, which has nothing else. A build
-// without -Ffx reads it as 0 (LoadSettings), so the game's vectors are never passed over there.
+// OpticalFlow in the ini: 0 off (the block estimator), 1 when the game and the companion effect
+// give nothing -- the default, since v0.7.1 -- 2 always, parity with the reference. A build without
+// -Ffx (the 32-bit bridge's host) reads it as 0, so the game's vectors are never passed over there.
 
 // Descriptor tables of the root signature's t0-t2/u0 shape live in slots 32..63, one each, because a
 // descriptor is read when the list executes and a slot rewritten later in the same list would be
@@ -64,20 +64,37 @@ cbuffer C : register(b0) { uint w; uint h; };
  dst[p.xy] = src.Load(int3(p.xy,0));
 })";
 
+// Bilinear over the four nearest blocks, each weighted down by how far its depth is from the
+// pixel's: an 8x8 block straddling a silhouette carries one vector, and plain bilinear smeared it
+// 8-16 px across the edge -- a skater's vectors on the road behind, the road's on the skater -- which
+// is where the history misaligned. dw = 0 (no depth this frame) is plain bilinear. The relative
+// difference works on either depth convention; at 10% a block keeps half its weight. The floor
+// hands a pixel unlike all four back to bilinear rather than to whichever is least unlike.
+// ponytail: a block's depth is its centre pixel; the block's min and max if thin objects halo.
 inline constexpr char kFlowDensifyShader[] = R"(
 Texture2D<int2> sparse : register(t0);
+Texture2D<float> depth : register(t1);
 RWTexture2D<float2> dense : register(u0);
-cbuffer C : register(b0) { uint w; uint h; uint ow; uint oh; uint vw; uint vh; float sx; float sy; uint zero; };
+cbuffer C : register(b0) { uint w; uint h; uint ow; uint oh; uint vw; uint vh; float sx; float sy; uint zero; uint dw; uint dh; };
+float Z(float2 xy) { return depth.Load(int3(min(uint2(xy * float2(dw,dh) / float2(w,h)), uint2(dw-1,dh-1)), 0)); }
 [numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID) {
  if(p.x>=w || p.y>=h) return;
  if(zero != 0) { dense[p.xy] = 0; return; }
  float2 s = (float2(p.xy)+0.5) * (float2(ow,oh)/float2(w,h)) / 8.0 - 0.5;
  int2 p0 = int2(floor(s)); float2 f = frac(s); int2 lim = int2(vw,vh) - 1;
- float2 a = sparse.Load(int3(clamp(p0, 0, lim), 0));
- float2 b = sparse.Load(int3(clamp(p0 + int2(1,0), 0, lim), 0));
- float2 c = sparse.Load(int3(clamp(p0 + int2(0,1), 0, lim), 0));
- float2 d = sparse.Load(int3(clamp(p0 + int2(1,1), 0, lim), 0));
- dense[p.xy] = lerp(lerp(a,b,f.x), lerp(c,d,f.x), f.y) * float2(sx,sy);
+ float zp = dw != 0 ? Z(float2(p.xy)+0.5) : 0.0;
+ float2 v = 0; float sum = 0;
+ [unroll] for (int i = 0; i < 4; ++i) {
+  int2 o = int2(i & 1, i >> 1), q = clamp(p0 + o, 0, lim);
+  float k = (o.x ? f.x : 1.0 - f.x) * (o.y ? f.y : 1.0 - f.y);
+  if (dw != 0) {
+   float zb = Z((float2(q) + 0.5) * 8.0 * float2(w,h) / float2(ow,oh));
+   float r = abs(zp - zb) / max(max(zp, zb), 1e-6) / 0.1;
+   k *= 1.0 / (1.0 + r * r) + 1e-3;
+  }
+  v += k * float2(sparse.Load(int3(q, 0))); sum += k;
+ }
+ dense[p.xy] = v / max(sum, 1e-9) * float2(sx,sy);
 })";
 
 struct OpticalFlow
@@ -155,7 +172,7 @@ bool OpticalFlowReady(UINT w, UINT h)
 // on a reset, which has no previous frame, nor for the six frames after one: the SDK reports a
 // scene change while FrameIndex() <= 5 (IsSceneChanged) and writes zero, measured here as six
 // frames of an all-zero field on a pan.
-bool RecordOpticalFlow(ID3D12GraphicsCommandList *cmd, ID3D12Resource *src, DXGI_FORMAT fmt)
+bool RecordOpticalFlow(ID3D12GraphicsCommandList *cmd, ID3D12Resource *src, DXGI_FORMAT fmt, bool depth)
 {
     const UINT w = g_flow.width, h = g_flow.height;
     ViewAt(32, src, ColourReadFormat(fmt));
@@ -188,12 +205,14 @@ bool RecordOpticalFlow(ID3D12GraphicsCommandList *cmd, ID3D12Resource *src, DXGI
 
     const auto vd = g_flow.sparse->GetDesc();
     ViewAt(36, g_flow.sparse.Get(), DXGI_FORMAT_R16G16_SINT);
+    ViewAt(37, g.netDepth.Get(), DXGI_FORMAT_R32_FLOAT);  // bound either way; read only when dw != 0
     ViewAt(39, g_flow.dense.Get(), DXGI_FORMAT_R16G16_FLOAT, true);
     const float one = 1.0f;
-    UINT dk[9] { w, h, w, h, static_cast<UINT>(vd.Width), vd.Height, 0, 0, real ? 0u : 1u };
+    UINT dk[11] { w, h, w, h, static_cast<UINT>(vd.Width), vd.Height, 0, 0, real ? 0u : 1u,
+                  depth ? g.netWidth : 0u, depth ? g.netHeight : 0u };
     std::memcpy(&dk[6], &one, sizeof(one));
     std::memcpy(&dk[7], &one, sizeof(one));
-    DispatchOn(cmd, g_flow.densify.Get(), 36, g_flow.dense.Get(), dk, 9, w, h);
+    DispatchOn(cmd, g_flow.densify.Get(), 36, g_flow.dense.Get(), dk, 11, w, h);
     return real;
 }
 
@@ -219,7 +238,7 @@ void FlowToRaster(ID3D12GraphicsCommandList *cmd)
 #else
 
 bool OpticalFlowReady(UINT, UINT) { return false; }
-bool RecordOpticalFlow(ID3D12GraphicsCommandList *, ID3D12Resource *, DXGI_FORMAT) { return false; }
+bool RecordOpticalFlow(ID3D12GraphicsCommandList *, ID3D12Resource *, DXGI_FORMAT, bool) { return false; }
 void FlowToRaster(ID3D12GraphicsCommandList *) {}
 void DestroyOpticalFlow() {}
 
@@ -227,9 +246,9 @@ void DestroyOpticalFlow() {}
 
 // The optical flow as the network's motion. Returns whether it is real motion, which also spans
 // the gap since the last evaluation: the flow runs only on evaluated frames.
-bool FlowMotion(ID3D12GraphicsCommandList *cmd, ID3D12Resource *src, DXGI_FORMAT fmt)
+bool FlowMotion(ID3D12GraphicsCommandList *cmd, ID3D12Resource *src, DXGI_FORMAT fmt, bool depth)
 {
-    const bool real = RecordOpticalFlow(cmd, src, fmt);
+    const bool real = RecordOpticalFlow(cmd, src, fmt, depth);
     FlowToRaster(cmd);
     g_motionSinceEvaluation = real;
     return real;

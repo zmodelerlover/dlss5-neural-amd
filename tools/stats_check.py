@@ -345,7 +345,7 @@ if not smooth.endswith("g_stats.smoothed |= 1u << slot;  // the temporal line (s
 motion = read("core/temporal/motion_sources.inc")
 if not ("GuideSource motionFrom = GuideSource::Estimated;" in motion
         and "motionFrom = g.guideMotion.external ? GuideSource::Effect : GuideSource::Game;" in motion
-        and "haveMotion = FlowMotion(cmd, colourSrc, colourFmt), motionFrom = GuideSource::Flow;" in motion):
+        and "haveMotion = FlowMotion(cmd, colourSrc, colourFmt, haveDepth && g.depthUsable.load()), motionFrom = GuideSource::Flow;" in motion):
     bad.append("motion_sources.inc: a branch does not say which source it is")
 if "static_cast<unsigned long long>(g_stats.now.refused), RefusalReason(r));" not in record:
     bad.append("neural.cpp: a refused pass does not say why")
