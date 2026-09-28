@@ -84,11 +84,11 @@ for path in temporal:
     if "inlineMode" in path.read_text(encoding="utf-8"):
         bad.append(f"{path.relative_to(ROOT).as_posix()}: decides on the menu's inlineMode")
 for name, text in (("RecordNetwork", record), ("BringUpEngines", bring)):
-    if "inlineMode.load()" in text.replace("rt::kInlineMode) = g.settings.inlineMode.load()", ""):
+    if "inlineMode.load()" in text.replace("rt::B->kInlineMode) = g.settings.inlineMode.load()", ""):
         bad.append(f"{name}: decides on the menu's inlineMode")
 
-latch = record.find("At<uint8_t>(r, rt::kInlineActive) != 1")
-if latch < 0 or not record.find("rt::kRecordFn") < latch < record.find("g.lastJob = jobAfter") \
+latch = record.find("At<uint8_t>(r, rt::B->kInlineActive) != 1")
+if latch < 0 or not record.find("rt::B->kRecordFn") < latch < record.find("g.lastJob = jobAfter") \
         or latch > record.find("++accepted"):
     bad.append("RecordNetwork: kInlineActive is not tested after the record and before the job counts")
 else:
@@ -109,7 +109,7 @@ if not fence or "RuntimeBusy" in fence.group(1) or re.search(r"\b500\b", gate.re
     bad.append("runtimes.inc: JobGate lets a job the runtime has not retired go on a timer")
 outstanding = code(body(runtimes, "int Outstanding("))
 if "Outstanding(m)" not in code(body(runtimes, "bool RuntimeBusy(")) or not all(
-        s in outstanding for s in ("rt::kJobId", "rt::kJobCounter")):
+        s in outstanding for s in ("rt::B->kJobId", "rt::B->kJobCounter")):
     bad.append("runtimes.inc: RuntimeBusy is not kJobId - kJobCounter read from each module")
 for path in sorted((ROOT / "core").rglob("*")):
     if path.suffix in (".cpp", ".h", ".inc"):

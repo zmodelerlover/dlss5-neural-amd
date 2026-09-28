@@ -80,7 +80,7 @@ UINT64 Submit(bool notify = false)
     ID3D12CommandList *lists[] {g.list[0].Get()};
     g.queue->ExecuteCommandLists(1, lists);
     if (notify)
-        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::kNotifyFn)(
+        reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtime) + rt::B->kNotifyFn)(
             g.queue.Get(), 1, lists);
     const auto value = ++g.ringSerial;
     Hr(g.queue->Signal(g.ringFence.Get(), value), "signal");
@@ -261,7 +261,7 @@ UINT WatchdogJob()
     if (g.runtime == nullptr)
         return 0;  // mochizuki: no danielblnc watchdog
     return static_cast<UINT>(InterlockedCompareExchange(
-        reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::kWatchdogJobB)), 0, 0));
+        reinterpret_cast<volatile LONG *>(&At<UINT>(g.runtime, rt::B->kWatchdogJobB)), 0, 0));
 }
 // The mochizuki runtime builds its network on a thread of its own and lets frames through without
 // it until then; both runners wait for it before they measure anything.

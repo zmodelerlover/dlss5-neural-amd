@@ -361,16 +361,6 @@ void Barrier(ID3D12GraphicsCommandList *c, ID3D12Resource *r, D3D12_RESOURCE_STA
 // updated two of them and the 32-bit bridge crashed on its first frame.
 #include "runtime_offsets.h"
 
-// v0.4.1 of DLSS-NR-on-AMD, lifted out of its setup by tools/extract_runtime.py and run
-// through tools/patch_runtime.py -- this is the hash of the patched file, which is what
-// the add-on loads. Every offset in runtime_offsets.h was re-derived against this build; no
-// v0.4.0 data address lands on the same field in it. v0.4.0 and anything else is refused by
-// hash rather than written into with the wrong addresses.
-constexpr unsigned char kRuntimeSha256[32] = {
-    0xc8, 0x80, 0x87, 0x16, 0xc2, 0x86, 0xa3, 0x4f, 0xe2, 0x5b, 0x8c, 0xf5, 0xb4, 0x1a, 0x6b, 0x0f,
-    0x40, 0xac, 0x1e, 0x12, 0x37, 0xb3, 0xac, 0x39, 0xb9, 0x03, 0xf0, 0xa9, 0x0c, 0xd4, 0xf2, 0xe9};
-constexpr size_t kRuntimeSize = 9916928;
-
 template <class T> T &At(HMODULE h, size_t rva)
 {
     return *reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(h) + rva);
@@ -396,52 +386,6 @@ using InitFn = bool(__fastcall *)(void *, const std::string *);
 using RecordFn = void(__fastcall *)(Packet *);
 using NotifyFn = void(__fastcall *)(ID3D12CommandQueue *, UINT, ID3D12CommandList *const *);
 using HipSetFn = int (*)(int);
-
-bool RuntimeHashMatches(const std::filesystem::path &file)
-{
-    // The runtime is one fixed-size binary, so anything of a different size is the wrong file --
-    // and that is knowable from the directory entry. Reading it in to find out pulls the whole of
-    // whatever was pointed at into memory first, which is a strange way to reject a wrong DLL.
-    std::error_code sizeError;
-    const auto size = std::filesystem::file_size(file, sizeError);
-    if (sizeError)
-        return false;
-    // Say which file was rejected and what it is, not just that something was. This check refuses
-    // any build of the runtime but the one whose layout these offsets were read out of, and a
-    // user who has a *newer* dlssnr_amd_pass1.dll hits it through no fault of their own -- the
-    // add-on then printed one cryptic line and shut down. Every offset in InitEngine is a raw
-    // write into that DLL's globals, so accepting a different build is not an option; saying
-    // plainly which build is wanted is.
-    if (size != kRuntimeSize)
-    {
-        Log("dlssnr_amd_pass1.dll is %llu bytes; this add-on is built against the %zu-byte build "
-            "and every address it writes belongs to that one. Refused.",
-            static_cast<unsigned long long>(size), kRuntimeSize);
-        return false;
-    }
-    std::ifstream in(file, std::ios::binary);
-    std::vector<unsigned char> data((std::istreambuf_iterator<char>(in)), {});
-    if (data.size() != kRuntimeSize)
-        return false;
-    BCRYPT_ALG_HANDLE alg {};
-    unsigned char digest[32] {};
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
-        return false;
-    const auto result =
-        BCryptHash(alg, nullptr, 0, data.data(), static_cast<ULONG>(data.size()), digest, 32);
-    BCryptCloseAlgorithmProvider(alg, 0);
-    if (result >= 0 && std::memcmp(digest, kRuntimeSha256, 32) == 0)
-        return true;
-    char got[80] {}, want[80] {};
-    for (int i = 0; i < 16; ++i)
-    {
-        std::snprintf(got + i * 2, 3, "%02x", digest[i]);
-        std::snprintf(want + i * 2, 3, "%02x", kRuntimeSha256[i]);
-    }
-    Log("dlssnr_amd_pass1.dll is the right size but a different build: SHA-256 starts %s..., and "
-        "this add-on is built against %s.... Refused.", got, want);
-    return false;
-}
 
 // One texture that lives on both devices at once. Created on D3D11 (the game's device owns it),
 // shared by NT handle, opened on ours. Ported from session.cpp, where this transport is measured
@@ -1884,33 +1828,33 @@ LONG CALLBACK NullJumpProbe(EXCEPTION_POINTERS *e)
 // weights. The same for the first module and for the per-pass copies.
 bool ArmRuntime(HMODULE h)
 {
-    At<ID3D12Device *>(h, rt::kDevice) = g.device.Get();
+    At<ID3D12Device *>(h, rt::B->kDevice) = g.device.Get();
     g.device->AddRef();
-    At<ID3D12CommandQueue *>(h, rt::kQueue) = g.queue.Get();
+    At<ID3D12CommandQueue *>(h, rt::B->kQueue) = g.queue.Get();
     g.queue->AddRef();
-    At<int>(h, rt::kHipDevice) = g.hipDevice;
-    At<uint8_t>(h, rt::kInlineMode) = g.settings.inlineMode.load() ? 1 : 0;
-    At<uint8_t>(h, rt::kInterop) = 1;
-    At<uint8_t>(h, rt::kEnabled) = 1;
-    At<uint8_t>(h, rt::kUseFsrInputs) = 1;
-    At<uint8_t>(h, rt::kUseDepth) = 0;
-    At<int>(h, rt::kTonemap) = RuntimeTonemap();
+    At<int>(h, rt::B->kHipDevice) = g.hipDevice;
+    At<uint8_t>(h, rt::B->kInlineMode) = g.settings.inlineMode.load() ? 1 : 0;
+    At<uint8_t>(h, rt::B->kInterop) = 1;
+    At<uint8_t>(h, rt::B->kEnabled) = 1;
+    At<uint8_t>(h, rt::B->kUseFsrInputs) = 1;
+    At<uint8_t>(h, rt::B->kUseDepth) = 0;
+    At<int>(h, rt::B->kTonemap) = RuntimeTonemap();
     // Pinned over dlssnr_on_amd.ini; runtime_offsets.h says why each matters. The runtime read the
     // file in DllMain, and its re-read every 120 presents is on the path the first patch removes.
-    At<int>(h, rt::kCpuWait) = 0;
-    At<int>(h, rt::kStyle) = 0;
-    At<int>(h, rt::kToneCurve) = 0;
-    At<float>(h, rt::kToneLift) = 0.0f;
+    At<int>(h, rt::B->kCpuWait) = 0;
+    At<int>(h, rt::B->kStyle) = 0;
+    At<int>(h, rt::B->kToneCurve) = 0;
+    At<float>(h, rt::B->kToneLift) = 0.0f;
 
     const std::string file = (ExeDirectory() / L"dlssnr_on_amd_weights.bin").string();
     if (g.hipSet(g.hipDevice) != 0 ||
-        !reinterpret_cast<InitFn>(reinterpret_cast<uintptr_t>(h) + rt::kInitFn)(
-            reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(h) + rt::kEngineObject), &file))
+        !reinterpret_cast<InitFn>(reinterpret_cast<uintptr_t>(h) + rt::B->kInitFn)(
+            reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(h) + rt::B->kEngineObject), &file))
     {
         Log("engine init failed.");
         return false;
     }
-    At<uint8_t>(h, rt::kReady) = 1;
+    At<uint8_t>(h, rt::B->kReady) = 1;
     return true;
 }
 
@@ -1974,11 +1918,11 @@ bool InitEngine()
         Log("missing: %ls", weights.c_str());
         return false;
     }
-    if (!RuntimeHashMatches(dll))
+    if (IdentifyRuntime(dll) == nullptr)
     {
         // Said in the panel too. This is the one failure a user can actually fix, and the log
-        // line above it says which file and which build, so pointing at the log is worth it.
-        g.status.reason = "dlssnr_amd_pass1.dll is not the danielblnc 0.4.1 build this add-on needs; "
+        // line above it says which file and which builds, so pointing at the log is worth it.
+        g.status.reason = "dlssnr_amd_pass1.dll is not a danielblnc build this add-on knows; "
                    "see amd-nr.log";
         Log("off: %s", g.status.reason);
         return false;
@@ -2015,7 +1959,7 @@ bool InitEngine()
     g.runtimeFile = loadFrom;
     g.engineReady = true;
     Log("engine ready.");
-    const int budget = At<int>(h, rt::kWaitBudgetMax);  // read only: the ini is the person's
+    const int budget = At<int>(h, rt::B->kWaitBudgetMax);  // read only: the ini is the person's
     Log("engine watchdog budget %d ms (InlineWaitMs)%s", budget, budget > 200 ? ". WARNING: over the "
         "engine's own 200 ms, a stuck job holds the game's queue that long every frame" : "");
 
@@ -2027,10 +1971,10 @@ bool InitEngine()
     // stays at whatever it was. Read-only -- this writes nothing.
     {
         char line[512];
-        int n = std::snprintf(line, sizeof(line), "engine floats 0x%zx..0x%zx:", rt::kFloatDumpFirst,
-                              rt::kFloatDumpLast);
-        for (size_t rva = rt::kFloatDumpFirst;
-             rva <= rt::kFloatDumpLast && n > 0 && n < static_cast<int>(sizeof(line));
+        int n = std::snprintf(line, sizeof(line), "engine floats 0x%zx..0x%zx:", rt::B->kFloatDumpFirst,
+                              rt::B->kFloatDumpLast);
+        for (size_t rva = rt::B->kFloatDumpFirst;
+             rva <= rt::B->kFloatDumpLast && n > 0 && n < static_cast<int>(sizeof(line));
              rva += 4)
             n += std::snprintf(line + n, sizeof(line) - n, " [%zx]=%.3f", rva,
                                static_cast<double>(At<float>(h, rva)));
@@ -2038,10 +1982,10 @@ bool InitEngine()
         // Dump the byte window the engine has just finished initialising. A field the engine
         // owns holds a plausible default; a field nothing uses holds whatever the loader left.
         // This is read-only and runs after init, so what it prints is the engine's own state.
-        n = std::snprintf(line, sizeof(line), "engine bytes 0x%zx..0x%zx:", rt::kByteDumpFirst,
-                          rt::kByteDumpLast);
-        for (size_t rva = rt::kByteDumpFirst;
-             rva <= rt::kByteDumpLast && n > 0 && n < static_cast<int>(sizeof(line));
+        n = std::snprintf(line, sizeof(line), "engine bytes 0x%zx..0x%zx:", rt::B->kByteDumpFirst,
+                          rt::B->kByteDumpLast);
+        for (size_t rva = rt::B->kByteDumpFirst;
+             rva <= rt::B->kByteDumpLast && n > 0 && n < static_cast<int>(sizeof(line));
              ++rva)
             n += std::snprintf(line + n, sizeof(line) - n, " %02x",
                                static_cast<unsigned>(At<uint8_t>(h, rva)));
@@ -2050,12 +1994,12 @@ bool InitEngine()
             "control. %zx UseAutoMask, %zx ToneChannels and %zx Scale are the fields the "
             "Engine tab writes; what they read back as here is the engine's own state before "
             "this add-on touches them.",
-            rt::kDepthInverted, rt::kUseAutoMask, rt::kToneChannels, rt::kScale);
+            rt::B->kDepthInverted, rt::B->kUseAutoMask, rt::B->kToneChannels, rt::B->kScale);
         Log("  written by this add-on: %zx tone, %zx structure, %zx skin. If one of those "
             "reads back as something this add-on never wrote, the engine owns it. To find out "
             "whether they change the picture, run the same scene twice with Skin at 0 and at 3 "
             "and compare the 'measure, residual' line -- if it does not move, the slider is inert.",
-            rt::kLocalTone, rt::kLocalStructure, rt::kSkinStructure);
+            rt::B->kLocalTone, rt::B->kLocalStructure, rt::B->kSkinStructure);
     }
     return true;
 }
@@ -2940,19 +2884,19 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // non-zero motion, which is not a coincidence, it is what temporal accumulation is for.
         // Auto still follows haveMotion, which is the sane default; the other two are explicit.
         const int tm = g.settings.temporalMode.load();
-        At<uint8_t>(r, rt::kTemporal) =
+        At<uint8_t>(r, rt::B->kTemporal) =
             static_cast<uint8_t>(tm == 1 ? 0 : tm == 2 ? 1 : (haveMotion ? 1 : 0));
         // Never written before. UseAutoMask is the engine's own character masking -- the same
         // field RenoDX exposes as "Character Mask" -- and it defaults to 1, so the add-on was
         // silently relying on the default. ToneChannels and Scale were not known to exist.
-        At<int>(r, rt::kUseAutoMask) = autoMask;
+        At<int>(r, rt::B->kUseAutoMask) = autoMask;
         // ToneChannels bits 4 and 2 were taken for the apply shader's timeout policy. On v0.3.0 and
         // v0.4.0 they are not: the runtime builds that shader's flag word from its own state, and a
         // timed-out inline frame after the first is shown with last frame's residual (see dropped
         // in tools/runtime-patches.json). The worker reads this word once, as a whole: at 0 it
         // zeroes LocalStructure before it reaches the network, and v0.3.0 zeroed LocalTone with it.
         // So bit 4 stays set, or the network would silently run with no structure control.
-        At<int>(r, rt::kToneChannels) = (g.settings.toneChannels.load() & ~2) | 4;
+        At<int>(r, rt::B->kToneChannels) = (g.settings.toneChannels.load() & ~2) | 4;
         // Scale IS a scale, and it is not a control of the network. It lands in the engine object
         // right after the control floats, and from there it goes to the post kernel that writes
         // the output, not to the pre kernel that feeds the network. Between 21/09 22:24 and 22/09
@@ -2962,24 +2906,24 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // effect, the Model or the pass count. Model B and C were at a quarter and a half of the
         // effect. The runtime's own default, 1/32, is what goes here; LoadSettings refuses
         // anything near zero.
-        At<float>(r, rt::kScale) = outScale;
-        At<int>(r, rt::kTonemap) = RuntimeTonemap();
-        At<uint8_t>(r, rt::kInlineMode) = g.settings.inlineMode.load() ? 1 : 0;
-        At<uint8_t>(r, rt::kUseDepth) = haveDepth && g.depthUsable.load() ? 1 : 0;  // SetDepthUsable
+        At<float>(r, rt::B->kScale) = outScale;
+        At<int>(r, rt::B->kTonemap) = RuntimeTonemap();
+        At<uint8_t>(r, rt::B->kInlineMode) = g.settings.inlineMode.load() ? 1 : 0;
+        At<uint8_t>(r, rt::B->kUseDepth) = haveDepth && g.depthUsable.load() ? 1 : 0;  // SetDepthUsable
         // DepthInverted. Both runtimes boot this at 1 -- the NVIDIA DLL writes options+260 = 1 when
         // the parameter is absent, and the AMD port's static initialiser sets it to 1. RenoDX sends
         // 0 explicitly, measured on ETS2 where its depth was a dummy, so neither value has been
         // shown right for a real buffer yet. Default 1, exposed under Depth so the comparison can
         // be made.
-        At<UINT>(r, rt::kDepthInverted) = g.settings.depthInverted.load() != 0 ? 1u : 0u;
-        At<uint8_t>(r, rt::kFsrFlagsSeen) = 1;
+        At<UINT>(r, rt::B->kDepthInverted) = g.settings.depthInverted.load() != 0 ? 1u : 0u;
+        At<uint8_t>(r, rt::B->kFsrFlagsSeen) = 1;
         // All three come from one place now, and that place is per-pass. Local Tone is written on
         // the first pass only -- which is what the original `i == 0 ? tone : 0.0f` here did, and
         // last session removed it as an asymmetry nobody had chosen. Somebody had: the reference
         // fork's PassProfiles.h makes exactly that choice, in one line, deliberately.
-        At<float>(r, rt::kLocalTone) = tune.tone;
-        At<float>(r, rt::kLocalStructure) = tune.structure;
-        At<float>(r, rt::kSkinStructure) = tune.skin;
+        At<float>(r, rt::B->kLocalTone) = tune.tone;
+        At<float>(r, rt::B->kLocalStructure) = tune.structure;
+        At<float>(r, rt::B->kSkinStructure) = tune.skin;
 
         Packet packet {};
         packet.list = cmd;
@@ -3002,18 +2946,18 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // the equality test below is comparing cmd against cmd whatever the engine did, and a
         // silently refused pass 2 would be counted as accepted. The job id is the field that
         // changes per evaluation, so an id that does not move is a pass that did not run.
-        const UINT jobBefore = At<UINT>(r, rt::kJobId);
-        reinterpret_cast<RecordFn>(reinterpret_cast<uintptr_t>(r) + rt::kRecordFn)(&packet);
-        const UINT jobAfter = At<UINT>(r, rt::kJobId);
+        const UINT jobBefore = At<UINT>(r, rt::B->kJobId);
+        reinterpret_cast<RecordFn>(reinterpret_cast<uintptr_t>(r) + rt::B->kRecordFn)(&packet);
+        const UINT jobAfter = At<UINT>(r, rt::B->kJobId);
 
-        if (At<uint8_t>(r, rt::kNativeFailure) != 0)
+        if (At<uint8_t>(r, rt::B->kNativeFailure) != 0)
         {
             nativeFailure = true;
             g.status.failed = true;
             Log("pass %u reported a native failure. Stopping.", i + 1);
             break;
         }
-        if (At<ID3D12CommandList *>(r, rt::kListMarker) != cmd)
+        if (At<ID3D12CommandList *>(r, rt::B->kListMarker) != cmd)
         {
             if (++g.status.skipped % 600 == 1)
                 Log("pass %u refused (%llu total)", i + 1,
@@ -3021,7 +2965,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             break;
         }
         // Same frame or nothing. Async never moves kJobCounter, so the job would read busy for ever.
-        if (At<uint8_t>(r, rt::kInlineActive) != 1)
+        if (At<uint8_t>(r, rt::B->kInlineActive) != 1)
         {
             g.status.unavailable = true;
             g.status.reason = "the engine could not run same-frame; see amd-nr.log";
@@ -3045,7 +2989,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
             Log("pass %u of %u: job id %u -> %u (%s), list marker %s", i + 1, wanted, jobBefore,
                 jobAfter, jobAfter != jobBefore ? "moved, the engine recorded something"
                                                : "DID NOT MOVE -- this pass may be a no-op",
-                At<ID3D12CommandList *>(r, rt::kListMarker) == cmd ? "ours" : "not ours");
+                At<ID3D12CommandList *>(r, rt::B->kListMarker) == cmd ? "ours" : "not ours");
 
         // Serial submission orders both the image dependency and the CPU tuning.
         // The legacy batch path below only orders resource accesses on the GPU.

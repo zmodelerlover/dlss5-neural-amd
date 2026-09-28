@@ -1,4 +1,4 @@
-// The files the runtime needs beside it before it loads: its own ini, and the copy that imports
+// The runtime's file before it loads: which build it is, its own ini, and the copy that imports
 // the private D3D12 instead of the system one. Included by neural.cpp where they used to be.
 
 // The engine reads dlssnr_on_amd.ini from DllMain, so it has to exist before LoadLibrary.
@@ -159,4 +159,68 @@ std::filesystem::path RuntimeCopyUsingPrivateD3D12(const std::filesystem::path &
     Log("runtime copied to %ls with its %s import pointed at %s (%zu occurrence(s)).",
         patched.filename().c_str(), kSystemD3D12Ansi, kPrivateD3D12Ansi, rewritten);
     return patched;
+}
+
+// Every build of DLSS-NR-on-AMD this add-on can drive is in runtime_offsets.h, each named by the
+// hash of its patched file: lifted out of its setup by tools/extract_runtime.py and run through
+// tools/patch_runtime.py. Anything else is refused by hash rather than written into with the wrong
+// addresses.
+
+// The builds this add-on knows, for the log: "0.4.2, 0.5.0".
+std::string KnownRuntimes()
+{
+    std::string out;
+    for (const auto &b : rt::kBuilds)
+        out += (out.empty() ? "" : ", ") + std::string(b.kVersion);
+    return out;
+}
+
+// Which build `file` is, by size and SHA-256, and from then on the one every address goes
+// through (rt::B); null for one this add-on does not know.
+const rt::Build *IdentifyRuntime(const std::filesystem::path &file)
+{
+    // The runtime is a fixed-size binary per build, so anything of another size is the wrong file
+    // -- and that is knowable from the directory entry. Reading it in to find out pulls the whole
+    // of whatever was pointed at into memory first, which is a strange way to reject a wrong DLL.
+    std::error_code sizeError;
+    const auto size = std::filesystem::file_size(file, sizeError);
+    if (sizeError)
+        return nullptr;
+    // Say which file was rejected and what it is, not just that something was. Every offset in
+    // InitEngine is a raw write into that DLL's globals, so accepting a build that is not in the
+    // table is not an option; saying plainly which builds are wanted is.
+    if (std::none_of(std::begin(rt::kBuilds), std::end(rt::kBuilds),
+                     [&](const rt::Build &b) { return b.kSize == size; }))
+    {
+        Log("dlssnr_amd_pass1.dll is %llu bytes, the size of no danielblnc build this add-on knows "
+            "(%s), and every address it writes belongs to one of those. Refused.",
+            static_cast<unsigned long long>(size), KnownRuntimes().c_str());
+        return nullptr;
+    }
+    std::ifstream in(file, std::ios::binary);
+    std::vector<unsigned char> data((std::istreambuf_iterator<char>(in)), {});
+    if (data.size() != size)
+        return nullptr;
+    BCRYPT_ALG_HANDLE alg {};
+    unsigned char digest[32] {};
+    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
+        return nullptr;
+    const auto result =
+        BCryptHash(alg, nullptr, 0, data.data(), static_cast<ULONG>(data.size()), digest, 32);
+    BCryptCloseAlgorithmProvider(alg, 0);
+    if (result < 0)
+        return nullptr;
+    char hex[65] {};
+    for (int i = 0; i < 32; ++i)
+        std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    for (const auto &b : rt::kBuilds)
+        if (b.kSize == size && std::strcmp(hex, b.kSha256) == 0)
+        {
+            rt::B = &b;
+            Log("runtime: danielblnc %s (%.16s...)", b.kVersion, hex);
+            return rt::B;
+        }
+    Log("dlssnr_amd_pass1.dll is the size of a known build but not one: SHA-256 starts %.16s..., and "
+        "this add-on knows %s. Refused.", hex, KnownRuntimes().c_str());
+    return nullptr;
 }

@@ -43,8 +43,8 @@ bool ArmHistory(HMODULE r, UINT slot)
 {
     const bool want = g.settings.useHistory.load() && (g.historyValid.load() & (1u << slot)) != 0 &&
                       g.history[slot] != nullptr;
-    At<uint8_t>(r, rt::kHistoryOn) = want ? 1 : 0;
-    At<void *>(r, rt::kHistory) = want ? static_cast<void *>(g.history[slot].Get()) : nullptr;
+    At<uint8_t>(r, rt::B->kHistoryOn) = want ? 1 : 0;
+    At<void *>(r, rt::B->kHistory) = want ? static_cast<void *>(g.history[slot].Get()) : nullptr;
     if (want && !g.loggedHistory)
     {
         g.loggedHistory = true;

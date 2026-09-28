@@ -78,7 +78,7 @@ ui::PanelStatus BridgeStatus(){
     ReadRuntime(s);
     s.mochizuki=w.mochizuki;
     if(w.mochizuki!=0)s.mochizukiMs=w.networkMs;
-    if(w.danielblnc!=0){s.danielblnc=rt::kVersion;s.danielblncMs=w.networkMs;}
+    if(w.danielblnc!=0&&w.danielblnc<=std::size(rt::kBuilds)){s.danielblnc=rt::kBuilds[w.danielblnc-1].kVersion;s.danielblncMs=w.networkMs;}
     return s;
 }
 

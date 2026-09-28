@@ -269,7 +269,7 @@ bool MzRecord(ID3D12GraphicsCommandList*& cmd, bool haveMotion, UINT passes,
 float DanielblncMs() {
     float sum = 0.0f;
     for (UINT i = 0; i < g.activePasses && i < State::kMaxPasses; ++i)
-        sum += At<float>(RuntimeFor(i), rt::kNetworkMs);
+        sum += At<float>(RuntimeFor(i), rt::B->kNetworkMs);
     return sum;
 }
 
@@ -281,7 +281,7 @@ void MzStatus(PanelStatus& st) {
     for (int r = 0; r < runtime_choice::kCount; ++r)
         st.runtimeInstalled[r] = mz.installed[r];
     if (!selected && g.runtime != nullptr) {
-        st.danielblnc = rt::kVersion;
+        st.danielblnc = rt::B->kVersion;
         st.danielblncMs = DanielblncMs();
     }
     if (!selected)

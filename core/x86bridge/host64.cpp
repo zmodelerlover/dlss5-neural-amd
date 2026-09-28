@@ -58,7 +58,7 @@ struct Host {
         s.scaleCap=g.scaleCap.load();
         s.reason=static_cast<uint32_t>(!g.status.unavailable?StandDown::None:g.loggedDeviceLost?StandDown::DeviceLost:standDown);
         ui::PanelStatus p;MzStatus(p);
-        s.mochizuki=p.mochizuki;s.danielblnc=p.danielblnc!=nullptr;s.networkMs=p.mochizuki!=0?p.mochizukiMs:p.danielblncMs;
+        s.mochizuki=p.mochizuki;s.danielblnc=p.danielblnc!=nullptr?static_cast<uint32_t>(rt::B-rt::kBuilds)+1:0;s.networkMs=p.mochizuki!=0?p.mochizukiMs:p.danielblncMs;
         return s;
     }
     void Snapshot(Kind kind,Result result=Result::Ready){

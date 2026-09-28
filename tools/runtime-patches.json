@@ -1,21 +1,30 @@
 {
-  "runtime": "DLSS-NR-on-AMD v0.4.1",
-  "original_sha256": "823063eb4c76b1334fd1800c41798873ae61d4016af0406f1f0b9dce57b1d376",
-  "original_size": 9916928,
-  "changes": [
+  "builds": [
     {
-      "offset": "0x65bd",
-      "before": "ff15f5410900",
-      "after": "31c090909090",
-      "reason": "disable the runtime's own setup thread. It exists to install detours on ExecuteCommandLists, the two CreateSwapChain overloads and the two Presents, so that the DLL can drive itself. This add-on drives it instead, and the two cannot both hold the wheel"
-    },
-    {
-      "offset": "0x91a2",
-      "before": "ff15300a0a00",
-      "after": "909090909090",
-      "reason": "the detour above calls the original ExecuteCommandLists before notifying. The add-on calls that notify entry itself, after its own submit, so the call here would execute the list a second time"
+      "runtime": "DLSS-NR-on-AMD v0.4.1",
+      "original_sha256": "823063eb4c76b1334fd1800c41798873ae61d4016af0406f1f0b9dce57b1d376",
+      "original_size": 9916928,
+      "patched_sha256": "c8808716c286a34fe25b8cf5b41a6b0f40ac1e1237b3ac39b903f0a90cd4f2e9",
+      "changes": [
+        {
+          "patch": "setup-thread",
+          "offset": "0x65bd",
+          "before": "ff15f5410900",
+          "after": "31c090909090"
+        },
+        {
+          "patch": "doubled-submit",
+          "offset": "0x91a2",
+          "before": "ff15300a0a00",
+          "after": "909090909090"
+        }
+      ]
     }
   ],
+  "why": {
+    "setup-thread": "disable the runtime's own setup thread. It exists to install detours on ExecuteCommandLists, the two CreateSwapChain overloads and the two Presents, so that the DLL can drive itself. This add-on drives it instead, and the two cannot both hold the wheel",
+    "doubled-submit": "the detour above calls the original ExecuteCommandLists before notifying. The add-on calls that notify entry itself, after its own submit, so the call here would execute the list a second time"
+  },
   "dropped": [
     {
       "was": "0x76c0e on v0.3.0, 0x85684 on v0.4.0: 'previous residual shown' rewritten as 'current input kept'",

@@ -44,37 +44,42 @@
 namespace rt
 {
 
-// The DLSS-NR-on-AMD release kRuntimeSha256 names, for the panel.
-constexpr char kVersion[] = "0.4.1";
+struct Build
+{
+// The DLSS-NR-on-AMD release, for the panel, and the patched file the add-on loads: its size and
+// SHA-256, which is how IdentifyRuntime tells the builds apart.
+const char *kVersion;
+size_t kSize;
+const char *kSha256;
 
 // -- Data ---------------------------------------------------------------------------------------
 
-constexpr size_t kDevice = 0xa98e0;       // ID3D12Device *, handed over before init
-constexpr size_t kQueue = 0xa98e8;        // ID3D12CommandQueue *, the present queue it records on
-constexpr size_t kEngineObject = 0xa98f8; // the object kInitFn takes as its first argument
-constexpr size_t kFrameCounter = 0xa9934;   // engine+0x3c (+0x38 on v0.3.0; that is a float now):
+size_t kDevice;                           // ID3D12Device *, handed over before init
+size_t kQueue;                            // ID3D12CommandQueue *, the present queue it records on
+size_t kEngineObject;                     // the object kInitFn takes as its first argument
+size_t kFrameCounter;                       // engine+0x3c (+0x38 on v0.3.0; that is a float now):
                                             // the evaluation count the pre-block kernel is handed --
                                             // its noise seed. The launch function bumps it after
                                             // every job (0x3803d); the record entry zeroes it after
                                             // the warm-up job (0x172c6)
-constexpr size_t kSelfCheckFrame = 0xa99fc; // engine+0x104 (+0xe0 on v0.3.0): the count on which
+size_t kSelfCheckFrame;                     // engine+0x104 (+0xe0 on v0.3.0): the count on which
                                             // the worker reads the pre-block back for its zero-bytes
                                             // self-check (cmp at 0x35142; seeded at 0x24e22)
 
-constexpr size_t kHistory = 0xa9a40;   // ID3D12Resource *, last frame's output
-constexpr size_t kHistoryOn = 0xa9a48; // whether to read it
+size_t kHistory;                       // ID3D12Resource *, last frame's output
+size_t kHistoryOn;                     // whether to read it
 
-constexpr size_t kReady = 0xa9d48;         // set once init succeeded; the record entry tests it
-constexpr size_t kNativeFailure = 0xa9d4a; // the engine gave up; the record entry tests it
+size_t kReady;                             // set once init succeeded; the record entry tests it
+size_t kNativeFailure;                     // the engine gave up; the record entry tests it
 
-constexpr size_t kInlineMode = 0xaa250; // 1 inline, 0 async. The runtime reads the ini key
+size_t kInlineMode;                     // 1 inline, 0 async. The runtime reads the ini key
                                         // `Async`, which is this inverted
-constexpr size_t kInlineActive = 0xaa251; // the engine's own verdict, latched only when it
+size_t kInlineActive;                     // the engine's own verdict, latched only when it
                                           // (re)creates its staging (0x1605d/0x160bb/0x1669c/
                                           // 0x166d1/0x18d00): 1 when kInlineMode asked and zero-copy
                                           // + the flag PSO came up. The record entry starts its
                                           // watchdog only on 1 (0x1783d)
-constexpr size_t kJobCounter = 0xaa284; // interlocked; how far the engine has got -- same-frame
+size_t kJobCounter;                     // interlocked; how far the engine has got -- same-frame
                                         // only. Its one non-zero store, the worker's retire
                                         // (0x1d455), sits behind the worker's inline sample (jz at
                                         // 0x1d363), so in async it never moves; that is why async
@@ -84,15 +89,15 @@ constexpr size_t kJobCounter = 0xaa284; // interlocked; how far the engine has g
 // GPU" of the runtime's "network job N done" log line (its fourth argument, read at 0x1de20). The
 // worker writes it when a job ends (0x1dd18) and nowhere else. The float beside it, 0xaa2ac, is
 // the line's "waiting for the capture" and is zeroed when a job starts.
-constexpr size_t kNetworkMs = 0xaa2b0;
+size_t kNetworkMs;                    
 
-constexpr size_t kWaitBudgetMax = 0xaa398; // int, InlineWaitMs as the engine took it: 200 when its
+size_t kWaitBudgetMax;                     // int, InlineWaitMs as the engine took it: 200 when its
                                            // ini has none, clamped to 50..5000 (store at 0x855c).
                                            // Read only: the ini is the person's. 0xaa39c is the
                                            // budget the worker lowers from it after timeouts
-constexpr size_t kWatchdogJobA = 0xaa418; // a pair of job ids its watchdog writes on a timeout --
-constexpr size_t kWatchdogJobB = 0xaa41c; // NOT a pointer, and writing through it crashes
-constexpr size_t kWatchdogFires = 0xaa448; // int, +1 each time that watchdog lets a job past the
+size_t kWatchdogJobA;                     // a pair of job ids its watchdog writes on a timeout --
+size_t kWatchdogJobB;                     // NOT a pointer, and writing through it crashes
+size_t kWatchdogFires;                     // int, +1 each time that watchdog lets a job past the
                                            // budget go (0x1f587, same-frame only); zeroed when the
                                            // module recreates its staging (0x18c29)
 
@@ -101,30 +106,30 @@ constexpr size_t kWatchdogFires = 0xaa448; // int, +1 each time that watchdog le
 // FSR frame-generation dispatch, which cannot happen here. 0 never waits. Pinned to 0: every
 // notify comes from the thread presenting the game's frame, the add-on paces the network itself
 // (RuntimeBusy), and v0.3.0 had no such wait at all.
-constexpr size_t kCpuWait = 0xaa478;
+size_t kCpuWait;                    
 
-constexpr size_t kInterop = 0xaa4a0;
-constexpr size_t kListMarker = 0xaa580; // ID3D12CommandList *, the list it accepted
-constexpr size_t kJobId = 0xaa58c;      // moves once per evaluation that really recorded.
+size_t kInterop;                    
+size_t kListMarker;                     // ID3D12CommandList *, the list it accepted
+size_t kJobId;                          // moves once per evaluation that really recorded.
                                         // kJobId - kJobCounter is the jobs in flight: the record
                                         // entry refuses at four on that subtraction (0x17928), and
                                         // the worker retires only a job it was notified of
 
 // The option struct, mapped by decompiling the runtime's own ini reader: the key string sits beside
 // the address it writes, so these are named rather than guessed.
-constexpr size_t kDepthInverted = 0xaa630; // int, the engine's own default of 1
-constexpr size_t kFsrFlagsSeen = 0xaa634;
-constexpr size_t kEnabled = 0xaa63c;        // ini `Enabled`
-constexpr size_t kTemporal = 0xaa63d;       // ini `Temporal`
-constexpr size_t kUseFsrInputs = 0xaa63e;   // ini `UseFsrInputs`
-constexpr size_t kUseDepth = 0xaa63f;       // ini `UseDepth`
-constexpr size_t kTonemap = 0xaa640;        // ini `Tonemap`
-constexpr size_t kLocalTone = 0xaa650;      // ini `LocalTone`,       default 0.0
-constexpr size_t kLocalStructure = 0xaa654; // ini `LocalStructure`,  default 1.0
-constexpr size_t kSkinStructure = 0xaa658;  // ini `SkinStructure`,   default -1.0
-constexpr size_t kScale = 0xaa65c;          // ini `Scale`,           default 0.03125
-constexpr size_t kUseAutoMask = 0xaa660;    // ini `UseAutoMask`,     default 1
-constexpr size_t kToneChannels = 0xaa664;   // ini `ToneChannels`,    default 0
+size_t kDepthInverted;                     // int, the engine's own default of 1
+size_t kFsrFlagsSeen;                    
+size_t kEnabled;                            // ini `Enabled`
+size_t kTemporal;                           // ini `Temporal`
+size_t kUseFsrInputs;                       // ini `UseFsrInputs`
+size_t kUseDepth;                           // ini `UseDepth`
+size_t kTonemap;                            // ini `Tonemap`
+size_t kLocalTone;                          // ini `LocalTone`,       default 0.0
+size_t kLocalStructure;                     // ini `LocalStructure`,  default 1.0
+size_t kSkinStructure;                      // ini `SkinStructure`,   default -1.0
+size_t kScale;                              // ini `Scale`,           default 0.03125
+size_t kUseAutoMask;                        // ini `UseAutoMask`,     default 1
+size_t kToneChannels;                       // ini `ToneChannels`,    default 0
 
 // Inserted by v0.3.3 and pinned to their defaults, because the runtime reads them from an ini that
 // the standalone runtime's own overlay writes them back into, so a game folder that once had it
@@ -135,20 +140,81 @@ constexpr size_t kToneChannels = 0xaa664;   // ini `ToneChannels`,    default 0
 // bytes as the add-on's own. UseGameExposure, the fourth, is not pinned: the record entry honours
 // it only when the packet carries an exposure texture (0x17e22), and this add-on passes none; a
 // framecheck run with it at 0 gave the same bytes.
-constexpr size_t kStyle = 0xaa668;     // ini `Style`, int, clamped to 0..2
-constexpr size_t kToneCurve = 0xaa66c; // ini `ToneCurve`, int: 0 reinhard, 1 aces
-constexpr size_t kToneLift = 0xaa670;  // ini `ToneLift`, float, clamped to 0..0.25
+size_t kStyle;                         // ini `Style`, int, clamped to 0..2
+size_t kToneCurve;                     // ini `ToneCurve`, int: 0 reinhard, 1 aces
+size_t kToneLift;                      // ini `ToneLift`, float, clamped to 0..0.25
 
-constexpr size_t kHipDevice = 0xaa760; // the device actually in use, not the ini's copy
+size_t kHipDevice;                     // the device actually in use, not the ini's copy
 
 // The window the log dumps once after init, to show the engine's own defaults read back.
-constexpr size_t kFloatDumpFirst = 0xaa648, kFloatDumpLast = 0xaa664;
-constexpr size_t kByteDumpFirst = 0xaa630, kByteDumpLast = 0xaa647;
+size_t kFloatDumpFirst, kFloatDumpLast;                              
+size_t kByteDumpFirst, kByteDumpLast;                              
 
 // -- Entry points -------------------------------------------------------------------------------
 
-constexpr size_t kNotifyFn = 0x9d80;  // the frame-notify the runtime would have detoured
-constexpr size_t kRecordFn = 0x14c40; // records one evaluation onto a command list
-constexpr size_t kInitFn = 0x26130;   // loads the weights
+size_t kNotifyFn;                     // the frame-notify the runtime would have detoured
+size_t kRecordFn;                     // records one evaluation onto a command list
+size_t kInitFn;                       // loads the weights
+};
+
+// Every build this add-on knows, told apart by the hash of the patched file. Each one's addresses
+// are proven against its own binary by tools/runtime_offsets_check.py; a field left out of a build
+// here would be zero, which the checker refuses. Designated initializers keep them in field order.
+inline constexpr Build kBuilds[] = {
+    {
+        .kVersion = "0.4.1",
+        .kSize = 9916928,
+        .kSha256 = "c8808716c286a34fe25b8cf5b41a6b0f40ac1e1237b3ac39b903f0a90cd4f2e9",
+        .kDevice = 0xa98e0,
+        .kQueue = 0xa98e8,
+        .kEngineObject = 0xa98f8,
+        .kFrameCounter = 0xa9934,
+        .kSelfCheckFrame = 0xa99fc,
+        .kHistory = 0xa9a40,
+        .kHistoryOn = 0xa9a48,
+        .kReady = 0xa9d48,
+        .kNativeFailure = 0xa9d4a,
+        .kInlineMode = 0xaa250,
+        .kInlineActive = 0xaa251,
+        .kJobCounter = 0xaa284,
+        .kNetworkMs = 0xaa2b0,
+        .kWaitBudgetMax = 0xaa398,
+        .kWatchdogJobA = 0xaa418,
+        .kWatchdogJobB = 0xaa41c,
+        .kWatchdogFires = 0xaa448,
+        .kCpuWait = 0xaa478,
+        .kInterop = 0xaa4a0,
+        .kListMarker = 0xaa580,
+        .kJobId = 0xaa58c,
+        .kDepthInverted = 0xaa630,
+        .kFsrFlagsSeen = 0xaa634,
+        .kEnabled = 0xaa63c,
+        .kTemporal = 0xaa63d,
+        .kUseFsrInputs = 0xaa63e,
+        .kUseDepth = 0xaa63f,
+        .kTonemap = 0xaa640,
+        .kLocalTone = 0xaa650,
+        .kLocalStructure = 0xaa654,
+        .kSkinStructure = 0xaa658,
+        .kScale = 0xaa65c,
+        .kUseAutoMask = 0xaa660,
+        .kToneChannels = 0xaa664,
+        .kStyle = 0xaa668,
+        .kToneCurve = 0xaa66c,
+        .kToneLift = 0xaa670,
+        .kHipDevice = 0xaa760,
+        .kFloatDumpFirst = 0xaa648,
+        .kFloatDumpLast = 0xaa664,
+        .kByteDumpFirst = 0xaa630,
+        .kByteDumpLast = 0xaa647,
+        .kNotifyFn = 0x9d80,
+        .kRecordFn = 0x14c40,
+        .kInitFn = 0x26130,
+    },
+};
+
+// The build in use, from the moment IdentifyRuntime has recognised dlssnr_amd_pass1.dll; null
+// before, so an address read too early faults at once instead of writing at the module's base.
+inline const Build *B = nullptr;
 
 }  // namespace rt

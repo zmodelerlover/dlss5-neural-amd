@@ -301,7 +301,7 @@ def need(ok, what):
         fails.append(what)
 
 
-need("At<uint8_t>(r, rt::kUseDepth) = haveDepth && g.depthUsable.load() ? 1 : 0;" in neural,
+need("At<uint8_t>(r, rt::B->kUseDepth) = haveDepth && g.depthUsable.load() ? 1 : 0;" in neural,
      "neural.cpp: kUseDepth does not follow the probe's verdict")
 need("depthUsable" not in neural[neural.index("bool haveDepth = false;"):neural.index("haveDepth = true;")],
      "neural.cpp: the gate is on the depth dispatch, so netDepth stops and the gate can never open")

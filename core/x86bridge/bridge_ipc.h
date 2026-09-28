@@ -56,7 +56,8 @@ struct WireStatus {
     float scaleCap=0;
     uint32_t reason=0;  // StandDown
     // The runtime's status column line: mochizuki as PanelStatus holds it (0 not in use), whether
-    // danielblnc is loaded, and the network's GPU time of whichever runs.
+    // the danielblnc build loaded (its index in rt::kBuilds + 1, 0 none), and the network's GPU time of
+    // whichever runs.
     int32_t mochizuki=0;uint32_t danielblnc=0;float networkMs=0;
 };
 struct StateSnapshot { WireSettings settings;WireStatus status; };

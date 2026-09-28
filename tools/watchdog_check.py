@@ -2,7 +2,7 @@
 the add-on down; InlineWaitMs is only ever read.
 
 The runtime's watchdog lets the game's queue go when a job outlasts InlineWaitMs and counts each
-time it does (rt::kWatchdogFires, one count per module). NoteWatchdog (core/addon/runtimes.inc)
+time it does (rt::B->kWatchdogFires, one count per module). NoteWatchdog (core/addon/runtimes.inc)
 takes the scale one step down after WatchdogStandDown retired evaluations in a row that each
 tripped it, and stands the add-on down only when that happens at the lowest scale. NoteJobCost
 (neural.cpp) steps on three jobs past 250 ms, and at the lowest counts only one the watchdog also
@@ -56,7 +56,7 @@ HARNESS = r"""
 #include <cstdio>
 // What the three notes read from the add-on. A module is a counter of fires at offset 0.
 struct State { static constexpr UINT kMaxPasses = 3; };
-namespace rt { constexpr size_t kWatchdogFires = 0; }
+namespace rt { struct Build { size_t kWatchdogFires; }; inline constexpr Build kStub { 0 }; inline const Build *B = &kStub; }
 template <class T> T &At(HMODULE h, size_t rva) {
     return *reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(h) + rva);
 }
@@ -220,12 +220,12 @@ else:
         bad.append("neural.cpp: WatchdogStandDown is not 8 both constructed and as LoadSettings' fallback")
     if "StepScaleDown(" not in note or "StepScaleDown(" not in cost or "g.scaleCap.store(" in cost:
         bad.append("NoteWatchdog and NoteJobCost do not both step the scale through StepScaleDown")
-    if "At<int>(h, rt::kWaitBudgetMax)" not in init or "budget > 200" not in init:
+    if "At<int>(h, rt::B->kWaitBudgetMax)" not in init or "budget > 200" not in init:
         bad.append("InitEngine: InlineWaitMs in force (kWaitBudgetMax) is not logged, or not warned over 200")
     for path in sorted((ROOT / "core").rglob("*")):
         if path.suffix in (".cpp", ".h", ".inc"):
             text = path.read_text(encoding="utf-8", errors="replace")
-            if re.search(r"rt::kWaitBudgetMax\)\s*=[^=]", text) or re.search(r"WritePrivateProfile\w*\([^;]*InlineWaitMs", text):
+            if re.search(r"rt::B->kWaitBudgetMax\)\s*=[^=]", text) or re.search(r"WritePrivateProfile\w*\([^;]*InlineWaitMs", text):
                 bad.append(f"{path.relative_to(ROOT).as_posix()}: writes InlineWaitMs, which is the person's")
     if not 0 <= ini.find("if (std::filesystem::exists(ini, ec))\n        return;") < ini.find("std::ofstream"):
         bad.append("EnsureEngineIni: an existing dlssnr_on_amd.ini is no longer left alone")

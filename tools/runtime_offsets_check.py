@@ -25,7 +25,9 @@ What it proves, in the order of how much each would have caught:
     it first to kWaitBudgetMax, the value InitEngine logs as the budget in force.
   * Every data offset lands in `.data` and every entry point in `.text`. `.rdata` is where a stale
     data offset goes to fault, so this is not a formality.
-  * The file is the build `kRuntimeSha256` names, and it has been through `patch_runtime.py`.
+  * The file is a build `kBuilds` names, by its hash, and it has been through `patch_runtime.py`.
+    Without a binary: every build names every address (a field left out compiles as zero), and
+    each is the patched_sha256 of a runtime-patches.json build.
   * The runtime names d3d12.dll in a table the add-on rewrites. The private-D3D12 copy renames it
     in the import and delay-import tables; v0.4.0 moved it from the first to the second while the
     add-on read only the first, and a runtime it cannot rename loads the system d3d12.dll -- the
@@ -90,16 +92,27 @@ def import_names(data):
     return out
 
 
-def header_offsets():
-    """{name: rva} from the header, split into data and entry points by the `Fn` suffix."""
+def header_builds():
+    """The address fields `struct Build` declares, and every entry of `kBuilds`: its version, size,
+    SHA-256 and {name: rva}, the rvas split into data and entry points by the `Fn` suffix."""
     text = HEADER.read_text(encoding="utf-8")
-    found = dict(re.findall(r"(k\w+)\s*=\s*0x([0-9a-fA-F]+)", text))
-    if not found:
-        raise ValueError(f"no offsets in {HEADER}")
-    data, code = {}, {}
-    for name, value in found.items():
-        (code if name.endswith("Fn") else data)[name] = int(value, 16)
-    return data, code
+    struct_body = re.search(r"struct Build\s*\{(.*?)\n\};", text, re.S).group(1)
+    fields = [n for decl in re.findall(r"^size_t ([^;]+);", struct_body, re.M)
+              for n in re.findall(r"k\w+", decl) if n != "kSize"]
+    table = re.search(r"kBuilds\[\]\s*=\s*\{(.*?)\n\};", text, re.S).group(1)
+    builds = []
+    for entry in re.split(r"\n    \{", table)[1:]:
+        values = dict(re.findall(r"\.(k\w+)\s*=\s*(0x[0-9a-fA-F]+|\d+|\"[^\"]*\")", entry))
+        data, code = {}, {}
+        for name, value in values.items():
+            if name.startswith(("kVersion", "kSize", "kSha256")):
+                continue
+            (code if name.endswith("Fn") else data)[name] = int(value, 16)
+        builds.append({"version": values["kVersion"].strip('"'), "size": int(values["kSize"]),
+                       "sha256": values["kSha256"].strip('"'), "data": data, "code": code})
+    if not fields or not builds:
+        raise ValueError(f"no struct Build or kBuilds in {HEADER}")
+    return fields, builds
 
 
 def stray_literals():
@@ -154,6 +167,20 @@ def main(argv):
     for path, number, value in stray:
         print(f"         {path}:{number} writes {value} -- name it in runtime_offsets.h instead")
 
+    # A field a build leaves out of its designated initializer compiles, as zero: an address at the
+    # module's base. Every build names every field, and each is a build runtime-patches.json makes.
+    fields, builds = header_builds()
+    spec = json.loads((ROOT / "tools/runtime-patches.json").read_text(encoding="utf-8"))
+    patched = {b["patched_sha256"]: b for b in spec["builds"]}
+    for build in builds:
+        named = {**build["data"], **build["code"]}
+        missing = [f for f in fields if not named.get(f)]
+        check(not missing, f"build {build['version']} names all {len(fields)} addresses"
+                           + ("" if not missing else "  -- missing or zero: " + ", ".join(missing)))
+        check(build["sha256"] in patched, f"build {build['version']}'s kSha256 is the patched_sha256 of a "
+                                          "runtime-patches.json build")
+    check(len({b["sha256"] for b in builds}) == len(builds), f"{len(builds)} builds, no two with one hash")
+
     if len(argv) == 1:
         print("\n" + ("PASS (sources only; pass the runtime to check it too)" if not bad
                       else f"FAIL: {len(bad)} check(s)"))
@@ -163,21 +190,18 @@ def main(argv):
     raw = dll.read_bytes()
     print(f"\n{dll}\n")
 
-    # -- The file is the build these offsets belong to -------------------------------------------
-    source = (ROOT / "core/addon/neural.cpp").read_text(encoding="utf-8", errors="replace")
-    digest = re.search(r"kRuntimeSha256\[32\]\s*=\s*\{(.*?)\}", source, re.S)
-    size = re.search(r"kRuntimeSize\s*=\s*(\d+)", source)
-    want_sha = bytes(int(b, 16) for b in re.findall(r"0x([0-9a-fA-F]{2})", digest.group(1))).hex()
-    want_size = int(size.group(1))
-
-    check(len(raw) == want_size, f"size {len(raw)} == kRuntimeSize {want_size}")
+    # -- The file is a build the header names, and these are its offsets -------------------------
     got = hashlib.sha256(raw).hexdigest()
-    check(got == want_sha, f"sha256 {got[:16]}... == kRuntimeSha256 {want_sha[:16]}...")
-    if got != want_sha or len(raw) != want_size:
-        print("\nthis is not the build these offsets belong to; nothing below would mean anything")
+    build = next((b for b in builds if b["sha256"] == got), None)
+    check(build is not None, f"sha256 {got[:16]}... is a build the header names ("
+                             + ", ".join(f"{b['version']} {b['sha256'][:16]}..." for b in builds) + ")")
+    if build is None:
+        print("\nthis is not a build these offsets belong to; nothing below would mean anything")
         return 1
+    check(len(raw) == build["size"], f"size {len(raw)} == kSize {build['size']} of {build['version']}")
+    print(f"\n  build {build['version']}\n")
 
-    data_off, code_off = header_offsets()
+    data_off, code_off = build["data"], build["code"]
     secs = {name: (va, vsize, rawp) for name, va, vsize, rawp in sections(raw)}
     text_va, text_vsize, text_raw = secs[".text"]
     data_va, data_vsize, _ = secs[".data"]
@@ -281,8 +305,7 @@ def main(argv):
           f"which the header calls kWaitBudgetMax ({data_off.get('kWaitBudgetMax', 0):#x})")
 
     # -- And the DLL went through patch_runtime.py -----------------------------------------------
-    spec = ROOT / "tools/runtime-patches.json"
-    for change in json.loads(spec.read_text())["changes"]:
+    for change in patched[got]["changes"]:
         off, after = int(change["offset"], 16), bytes.fromhex(change["after"])
         check(raw[off:off + len(after)] == after, f"patch at {change['offset']} applied")
 

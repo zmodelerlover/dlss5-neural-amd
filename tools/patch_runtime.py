@@ -8,10 +8,12 @@ moves and the offsets the add-on writes into stay valid. They neutralise two cal
 DLL was built to install its own hooks and to announce a submission it did not make. Driving it
 from an add-on means doing both ourselves.
 
-The offsets are file offsets into one exact build, and they moved again for v0.4.1: the setup
-thread's `call CreateThread` is at 0x65bd (0x667d on v0.4.0, 0x60a6 on v0.3.0, 0x6006 on
-v0.2.17), and the doubled ExecuteCommandLists call at 0x91a2 (0x9232, 0x8873, 0x8583). The script refuses a file whose hash is not
-`original_sha256`, so a stale pairing cannot be applied silently.
+The offsets are file offsets into one exact build and move with every release, so
+runtime-patches.json lists them per build (v0.4.1: the setup thread's `call CreateThread` at 0x65bd
+and the doubled ExecuteCommandLists call at 0x91a2; 0x667d and 0x9232 on v0.4.0, 0x60a6 and 0x8873
+on v0.3.0). The build is picked by the input's hash, and a file whose hash is no build's
+`original_sha256` is refused, so a stale pairing cannot be applied silently. The output has to hash
+to that build's `patched_sha256`, the `kSha256` its entry in runtime_offsets.h names.
 
 Three things this used to do and no longer does:
 
@@ -44,32 +46,38 @@ def main(argv):
     src, patches, dst = argv[1:]
 
     data = bytearray(open(src, "rb").read())
-    spec = json.load(open(patches))
+    spec = json.load(open(patches, encoding="utf-8"))
 
     have = hashlib.sha256(data).hexdigest()
-    if have != spec["original_sha256"]:
-        print(f"input is not the expected binary:\n  got  {have}\n  want {spec['original_sha256']}")
+    build = next((b for b in spec["builds"] if b["original_sha256"] == have), None)
+    if build is None:
+        print(f"input is no build runtime-patches.json knows:\n  got  {have}")
+        for b in spec["builds"]:
+            print(f"  want {b['original_sha256']}  ({b['runtime']})")
         return 1
+    print(f"input is {build['runtime']}")
 
-    for change in spec["changes"]:
+    for change in build["changes"]:
         offset = int(change["offset"], 16)
         before = bytes.fromhex(change["before"])
         after = bytes.fromhex(change["after"])
+        why = spec["why"][change["patch"]]
         if len(before) != len(after):
-            print(f"patch would change the size, which moves every RVA: {change['reason']}")
+            print(f"patch would change the size, which moves every RVA: {why}")
             return 1
         if data[offset:offset + len(before)] != before:
-            print(f"bytes at offset {change['offset']} do not match: {change['reason']}")
+            print(f"bytes at offset {change['offset']} do not match: {why}")
             return 1
         data[offset:offset + len(after)] = after
-        print(f"applied {change['reason']}")
+        print(f"applied at {change['offset']}: {change['patch']}")
 
-    open(dst, "wb").write(bytes(data))
     digest = hashlib.sha256(bytes(data)).hexdigest()
+    if digest != build["patched_sha256"]:
+        print(f"patched, it hashes to {digest}, not the {build['patched_sha256']} listed; not written")
+        return 1
+    open(dst, "wb").write(bytes(data))
     print(f"\nwrote:  {dst}")
-    print(f"sha256: {digest}")
-    print("\nput this hash in kRuntimeSha256, in core/addon/neural.cpp:")
-    print("{" + ", ".join("0x%02x" % b for b in bytes.fromhex(digest)) + "}")
+    print(f"sha256: {digest} (kSha256 of {build['runtime']} in core/addon/runtime_offsets.h)")
     return 0
 
 

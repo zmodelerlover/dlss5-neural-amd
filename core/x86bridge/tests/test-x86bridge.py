@@ -170,13 +170,13 @@ assert 'reshade_finish_effects>(OnFinishEffects)' in f and '{g.inEffects=false;}
 assert 'if(!settled){g_depthTally.clear()' in present and 'settled=true;const bool had[2]=' in present
 
 transport=h[h.index('    Result CopyOnly()'):h.index('    Result Neural()')]
-for call in ['InitHip(','InitEngine(','BringUpEngines(','RecordNetwork(','LoadLibrary','RuntimeHashMatches(']:assert call not in transport
+for call in ['InitHip(','InitEngine(','BringUpEngines(','RecordNetwork(','LoadLibrary','IdentifyRuntime(']:assert call not in transport
 assert 'cmd->CopyResource(g.bridge.crossLocal.Get(),g.bridge.in.on12.Get())' in transport
 assert 'cmd->CopyResource(g.bridge.out.on12.Get(),g.bridge.crossLocal.Get())' in transport
 assert 'Idle();return Result::Transport' in transport
 neural=h[h.index('    Result Neural()'):h.index('    Result FrameWork(')]
 assert neural.index('RecordNetwork(')<neural.index('CompositionIsFresh(')<neural.index('cmd->Close()')<neural.index('ExecuteCommandLists(')<neural.index('NotifyRuntimes(')<neural.index('WaitForWorkQueue(g.completion)')<neural.index('return fresh?')
-assert 'rt::kNotifyFn' not in neural  # every module that recorded is told, not only g.runtime
+assert 'rt::B->kNotifyFn' not in neural  # every module that recorded is told, not only g.runtime
 assert 'fresh=ok&&CompositionIsFresh(runNetwork)&&!g.noBackBuffer.load();' in neural and 'runNetwork&&g.activePasses' not in neural and 'g.fence->GetCompletedValue()>=g.completion' in neural
 # A same-frame answer still out at the timeout is a slow helper, not a dead one: left pending once,
 # the frame goes out as drawn, and the next present collects it before anything else uses the pipe.

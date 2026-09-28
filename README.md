@@ -167,7 +167,7 @@ tests and their thresholds are in the effect's own settings.
 | The add-on is not in the Add-ons tab | `ReShade.ini` has `DisabledAddons=` listing it under `[ADDON]`. ReShade writes that line if you ever untick the add-on. Delete the line. |
 | The status says the API is wrong | Only D3D11, D3D12, Vulkan and OpenGL are supported, plus D3D8 and D3D9 in 32-bit games through the bridge. Check for a per-game renderer override. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 is not installed. HIP 6 does not count. |
-| `dlssnr_amd_pass1.dll is the right size but a different build … Refused.` (or `… bytes; this add-on is built against …`) | The wrong `dlssnr_amd_pass1.dll`. Compare with `tools/SHA256SUMS.txt`. |
+| `dlssnr_amd_pass1.dll is the size of a known build but not one … Refused.` (or `… bytes, the size of no danielblnc build this add-on knows …`) | A `dlssnr_amd_pass1.dll` that is none of the builds the log names. Compare with `tools/SHA256SUMS.txt`. |
 | `missing:` followed by a file path | That file is not where the add-on looks. Put it at exactly that path. |
 | The game crashes with `887A0005` | A Windows driver reset. Lower the Scale. |
 | `bridge: gave up on … (FenceWaitCapMs=10000 …)` in the log, and the status says to restart | The GPU did not finish the add-on's work in 10 s, so it switched off rather than free what the GPU may still read. Restart the game. `FenceWaitCapMs=0` in `amd-nr.ini` waits for ever instead, as older versions did. On 32-bit games the helper stops at 4 s whatever the key says, `0` included, so it answers before the game's own 5 s timeout; there the line reads `FenceWaitCapMs=4000` and is in `amd-nr-x86-host.log`. |

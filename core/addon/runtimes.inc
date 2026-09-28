@@ -16,9 +16,9 @@ HMODULE RuntimeFor(UINT slot)
 // both. Same frame only: async never moves kJobCounter, which is why async is retired.
 int Outstanding(HMODULE m)
 {
-    return static_cast<int>(static_cast<UINT>(At<volatile LONG>(m, rt::kJobId)) -
+    return static_cast<int>(static_cast<UINT>(At<volatile LONG>(m, rt::B->kJobId)) -
                             static_cast<UINT>(InterlockedCompareExchange(
-                                reinterpret_cast<volatile LONG *>(&At<UINT>(m, rt::kJobCounter)), 0, 0)));
+                                reinterpret_cast<volatile LONG *>(&At<UINT>(m, rt::B->kJobCounter)), 0, 0)));
 }
 
 // Whether any module still has a job in flight. Asked of the runtime, not of what this add-on
@@ -37,7 +37,7 @@ void NotifyRuntimes(ID3D12CommandQueue *queue, UINT count, ID3D12CommandList *co
 {
     for (UINT i = 0; i < State::kMaxPasses; ++i)
         if ((g.recordedMask & (1u << i)) != 0 && g.runtimes[i] != nullptr)
-            reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtimes[i]) + rt::kNotifyFn)(
+            reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(g.runtimes[i]) + rt::B->kNotifyFn)(
                 queue, count, lists);
     g.recordedMask = 0;
 }
@@ -176,7 +176,7 @@ bool MzInit();
 void WaitForPreviousJob()
 {
     // mochizuki queues its network on g.queue ahead of g.completion, so the same hold paces it.
-    if (!MzSelected() && (g.runtime == nullptr || At<uint8_t>(g.runtime, rt::kInlineActive) != 1))
+    if (!MzSelected() && (g.runtime == nullptr || At<uint8_t>(g.runtime, rt::B->kInlineActive) != 1))
         return;
     // Not g.completionEvent: a timed-out SetEventOnCompletion signals late and would end a later
     // WaitFence early. A stale signal here only costs one more trip round the loop.
@@ -242,7 +242,7 @@ bool NoteWatchdog()
     for (UINT m = 0; m < State::kMaxPasses; ++m)
     {
         const HMODULE r = g.runtimes[m];
-        const UINT now = r != nullptr ? At<volatile UINT>(r, rt::kWatchdogFires) : 0;
+        const UINT now = r != nullptr ? At<volatile UINT>(r, rt::B->kWatchdogFires) : 0;
         fired |= now != seen[m] && now != 0;
         seen[m] = now;
     }
@@ -299,7 +299,7 @@ bool JobGate()
             if (g.runtimes[m] != nullptr && Outstanding(g.runtimes[m]) > 0)
                 Log("module %u: job %u still outstanding (the runtime has retired %u), %llu ms "
                     "after the last record; the network waits for it.", m,
-                    At<UINT>(g.runtimes[m], rt::kJobId), At<UINT>(g.runtimes[m], rt::kJobCounter),
+                    At<UINT>(g.runtimes[m], rt::B->kJobId), At<UINT>(g.runtimes[m], rt::B->kJobCounter),
                     static_cast<unsigned long long>(GetTickCount64() - g.lastJobAt));
     return false;
 }
