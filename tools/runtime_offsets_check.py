@@ -269,9 +269,11 @@ def main(argv):
     # The worker compares the two engine fields: `mov eax, [rsi+counter]` / `cmp eax, [rsi+check]`.
     counter = data_off.get("kFrameCounter", 0) - data_off.get("kEngineObject", 0)
     selfcheck = data_off.get("kSelfCheckFrame", 0) - data_off.get("kEngineObject", 0)
-    pattern = (b"\x8b\x46" + bytes([counter]) + b"\x3b\x86" + struct.pack("<I", selfcheck)
+    # Through any base register: rsi up to v0.4.2, r10 on 0.5.0 (`41 8b 42 4c 41 3b 82 ..`).
+    pattern = (rb"(?:\x41)?\x8b[\x40-\x47]" + re.escape(bytes([counter]))
+               + rb"(?:\x41)?\x3b[\x80-\x87]" + re.escape(struct.pack("<I", selfcheck))
                if 0 <= counter < 0x80 and selfcheck > 0 else b"")
-    check(bool(pattern) and pattern in raw[text_raw:text_raw + text_vsize],
+    check(bool(pattern) and re.search(pattern, raw[text_raw:text_raw + text_vsize]) is not None,
           f"the worker compares engine+{counter:#x} with engine+{selfcheck:#x}, which the header "
           f"calls kFrameCounter and kSelfCheckFrame")
 

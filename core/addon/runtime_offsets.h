@@ -46,6 +46,13 @@
 // (fast by default, reference on a GPU without the fast kernels) and NoiseHandoff (see seed.inc).
 // Code addresses quoted in the comments below are v0.4.1's.
 //
+// 0.5.0 is danielblnc's supporter build, and is not distributed: whoever has it supplies their own
+// file. It inserted 0x10 bytes near the start of the engine object (kFrameCounter is engine+0x4c,
+// kSelfCheckFrame +0x114) and moved the data block again. Mapped the same two ways from v0.4.2,
+// agreeing on every field both name. Its own overlay (OverlayKey) is drawn only from the Present
+// detours the setup thread installs, which the first patch removes, as on every build; the half-
+// precision weight copy it keeps is made on RDNA3 only (about 280 MB more per module there).
+//
 // When the runtime moves again: add its build to kBuilds and its patches to runtime-patches.json,
 // and run the checker against the patched file.
 
@@ -272,6 +279,58 @@ inline constexpr Build kBuilds[] = {
         .kNotifyFn = 0x9db0,
         .kRecordFn = 0x15040,
         .kInitFn = 0x28170,
+    },
+    // danielblnc's supporter build: not distributed, by this project or its installer. Whoever has
+    // it supplies their own version.dll (or its setup), patched by tools/patch_runtime.py.
+    {
+        .kVersion = "0.5.0",
+        .kSize = 38703616,
+        .kSha256 = "c808cdb04b4cf99e806f2989bb5b258696a51c89c084c500c957b055a66479b6",
+        .kDevice = 0xb5c18,
+        .kQueue = 0xb5c20,
+        .kEngineObject = 0xb5c30,
+        .kFrameCounter = 0xb5c7c,
+        .kSelfCheckFrame = 0xb5d44,
+        .kHistory = 0xb5d88,
+        .kHistoryOn = 0xb5d90,
+        .kReady = 0xb60c8,
+        .kNativeFailure = 0xb60ca,
+        .kInlineMode = 0xb65d0,
+        .kInlineActive = 0xb65d1,
+        .kJobCounter = 0xb6604,
+        .kNetworkMs = 0xb6630,
+        .kWaitBudgetMax = 0xb6718,
+        .kWatchdogJobA = 0xb6798,
+        .kWatchdogJobB = 0xb679c,
+        .kWatchdogFires = 0xb67c8,
+        .kCpuWait = 0xb6800,
+        .kInterop = 0xb6828,
+        .kListMarker = 0xb6908,
+        .kJobId = 0xb6914,
+        .kDepthInverted = 0xb69b8,
+        .kFsrFlagsSeen = 0xb69bc,
+        .kEnabled = 0xb69c4,
+        .kTemporal = 0xb69c5,
+        .kUseFsrInputs = 0xb69c6,
+        .kUseDepth = 0xb69c7,
+        .kTonemap = 0xb69c8,
+        .kLocalTone = 0xb69d8,
+        .kLocalStructure = 0xb69dc,
+        .kSkinStructure = 0xb69e0,
+        .kScale = 0xb69e4,
+        .kUseAutoMask = 0xb69e8,
+        .kToneChannels = 0xb69ec,
+        .kStyle = 0xb69f0,
+        .kToneCurve = 0xb69f4,
+        .kToneLift = 0xb69f8,
+        .kHipDevice = 0xb6ae8,
+        .kFloatDumpFirst = 0xb69d0,
+        .kFloatDumpLast = 0xb69ec,
+        .kByteDumpFirst = 0xb69b8,
+        .kByteDumpLast = 0xb69cf,
+        .kNotifyFn = 0xa000,
+        .kRecordFn = 0x15640,
+        .kInitFn = 0x29870,
     },
 };
 
