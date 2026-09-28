@@ -247,6 +247,11 @@ for name, parts in routes.items():
         bad.append(f"{name}: kStage ({caps or 'no Caps'}) does not say whether the route reads Stage")
     if ("g.noBridge.load()" in text or "CrossingReady(" in text) != ("kBridge" in caps):
         bad.append(f"{name}: kBridge ({caps or 'no Caps'}) does not say whether NoBridge keeps a bridge down")
+    # The engine's bring-up may already have said why (MzOff, the hash refusal); a route's own
+    # "could not bring the engine up" only fills a reason nobody gave.
+    engine = re.search(r'g\.status\.reason = "could not bring the engine up[^"]*";', text)
+    if not engine or not re.search(r"if \(\*g\.status\.reason == 0\)\s*\{?\s*" + re.escape(engine.group(0)), text):
+        bad.append(f"{name}: an engine that did not come up is reported over the reason the bring-up gave")
 reach = body(FACTORY.read_text(encoding="utf-8"), "RouteReach")
 if "!(caps & FrameTransport::kStage)" not in reach or "!(caps & FrameTransport::kBridge)" not in reach:
     bad.append("RouteReach: a Stage or NoBridge the route does not read is not said")

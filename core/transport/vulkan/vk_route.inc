@@ -255,8 +255,13 @@ void Present(command_queue *queue, swapchain *sc)
     if (!BringUpEngines(wanted))
     {
         g.status.unavailable = true;
-        g.status.reason = "could not bring the engine up on the Vulkan bridge";
-        Log("vulkan: %s", g.status.reason);
+        // Not over a reason the bring-up already gave: mochizuki's own words (MzOff), or the file
+        // the hash refusal names. "could not bring the engine up" names nothing.
+        if (*g.status.reason == 0)
+        {
+            g.status.reason = "could not bring the engine up on the Vulkan bridge";
+            Log("vulkan: %s", g.status.reason);
+        }
         return;
     }
     g.loadedPasses = wanted;

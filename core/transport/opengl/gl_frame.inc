@@ -177,8 +177,12 @@ void Present(command_queue *queue, swapchain *sc)
         if (!BringUpEngines(wanted))
         {
             g.status.unavailable = true;
-            g.status.reason = "could not bring the engine up on the OpenGL bridge";
-            Log("opengl: %s", g.status.reason);
+            // Not over a reason the bring-up already gave, as on the Vulkan route.
+            if (*g.status.reason == 0)
+            {
+                g.status.reason = "could not bring the engine up on the OpenGL bridge";
+                Log("opengl: %s", g.status.reason);
+            }
             return;
         }
         g.loadedPasses = wanted;

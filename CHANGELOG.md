@@ -85,8 +85,10 @@ header, as before. Both runtimes, danielblnc and mochizuki, go through everythin
 ### Crashes, hangs and the effect switching itself off
 
 - **On Vulkan and OpenGL, a route that stands down says so on the panel**, with its reason (the
-  device lacking an entry point, the textures not crossing, a work slot that could not be
-  recovered, and so on), where the panel went on reading Ready and only the log knew.
+  device lacking an entry point, the textures not crossing, a work slot that could not be recovered,
+  and so on), where the panel went on reading Ready and only the log knew. An engine that did not
+  come up keeps the reason it gave, mochizuki's own words or the `dlssnr_amd_pass1.dll` that was
+  refused, as on D3D11 and D3D12, instead of `could not bring the engine up on the Vulkan bridge`.
 - **When the game destroys the device the add-on runs on**, as PCSX2 and RPCS3 do when they switch
   game or renderer, the effect comes back on its own on the new device on D3D11, Vulkan and OpenGL:
   what was built on the old device is dropped, the history starts again, and the log says so once.
