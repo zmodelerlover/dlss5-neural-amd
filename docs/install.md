@@ -36,7 +36,7 @@ the setup carries the DLL inside the installer rather than after it (since v0.3.
 `tools/extract_runtime.py` finds it either way, and `tools/patch_runtime.py version.dll
 tools/runtime-patches.json dlssnr_amd_pass1.dll` applies this add-on's two patches.
 
-**danielblnc's 0.5.0 supporter build runs too, and is not distributed.** Nobody hands it out here:
+**danielblnc's 0.5.0 and 0.5.1 supporter builds run too, and are not distributed.** Nobody hands it out here:
 if you have it, the same two commands turn your own `version.dll` (or its setup) into the
 `dlssnr_amd_pass1.dll` the add-on accepts.
 

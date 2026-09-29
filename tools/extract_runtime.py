@@ -13,7 +13,7 @@ Where inside moved with v0.3.3, and the two layouts have nothing else in common:
   * v0.3.3 on: a Tauri installer with nothing appended. The DLL is a byte array in its .rdata,
     unaligned, straight after the strings "dlssnr_on_amd_weights.bin" and "nvngx_dlssnr.dll",
     with the rest of the installer after it. It sits at 0x2609c7 on v0.3.3, v0.4.0 and v0.4.1,
-    0x260a27 on v0.4.2, 0x261757 on v0.4.3 and 0x26175f on the 0.5.0 supporter build: never a
+    0x260a27 on v0.4.2, 0x261757 on v0.4.3 and 0x26175f on the 0.5.0 and 0.5.1 supporter builds: never a
     constant to rely on.
 
 So neither the file size nor the installer's end says where the DLL is; the DLL does. Every "MZ"
@@ -26,7 +26,7 @@ size) across *its* section table, not the file size and not the last section in 
 Keep the builder's tail, or on the new layout the rest of the .rdata, and every hash is wrong by
 bytes nobody documents.
 
-Verified against v0.3.0, v0.3.1, v0.3.3, v0.4.0, v0.4.1, v0.4.2, v0.4.3 and the 0.5.0 supporter build; the appended-only version this replaced was
+Verified against v0.3.0, v0.3.1, v0.3.3, v0.4.0, v0.4.1, v0.4.2, v0.4.3 and the 0.5.0 and 0.5.1 supporter builds; the appended-only version this replaced was
 verified against v0.2.14 to v0.3.0. Output hashes:
 
   v0.3.0  8321cae728d28cb7632d0d58d3d913e91132bf7645c126505698fbe4cd5a0138
@@ -38,8 +38,9 @@ verified against v0.2.14 to v0.3.0. Output hashes:
   v0.4.3  d1e320862a8763ac39e7ce194536d4b6c55ba61bae9e8a92753cec32df67a457
   v0.5.0  cddfb09e019347957bf7b96c95c0e900e8d3062dfaed697a8a96b0a039aec31a  (supporter build; the version.dll
           its setup drops is this same file)
+  v0.5.1  493b4a3b80a21f7255109172ab7bb01ba08d35f2941718f441768f1abfc48acd  (supporter build)
 
-The v0.4.1, v0.4.2, v0.4.3 and v0.5.0 ones are the `original_sha256` of their builds in runtime-patches.json,
+The v0.4.1, v0.4.2, v0.4.3, v0.5.0 and v0.5.1 ones are the `original_sha256` of their builds in runtime-patches.json,
 i.e. the files those builds' offsets were read out of. The v0.3.0 one is byte for byte the `version.dll` that setup drops, so
 a folder that already has one did not need the setup run again. The v0.3.3, v0.4.0 and v0.4.1 setups were
 never run to compare against what they drop.

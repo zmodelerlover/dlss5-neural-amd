@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.7.2 - 2026-09-28 - danielblnc's 0.5.1 supporter build
+
+Built on v0.7.1 with the same bridge protocol (v5) and nothing else changed: an `amd-nr.ini` you already
+have keeps every setting in it. Not tested in game; the runtime was driven without a game on an RX 9070 XT.
+
+- **danielblnc's 0.5.1 supporter build runs**, beside 0.5.0, v0.4.3, v0.4.2 and v0.4.1. Like 0.5.0 it
+  is not distributed: whoever has it supplies their own `version.dll` or setup, and
+  `tools/patch_runtime.py` patches it (`493b4a3b…` in, `af67f066…` out). Its addresses were mapped
+  from 0.5.0 by aligned instructions, one target per field, agree with the OptiScaler fork's
+  `kAmd051`, and pass `tools/runtime_offsets_check.py` against the patched file.
+
 ## v0.7.1 - 2026-09-28 - Motion measured by optical flow wherever a game gives none
 
 Built on v0.7.0, with the same runtimes (DLSS-NR-on-AMD v0.4.3, v0.4.2 and v0.4.1, and the 0.5.0

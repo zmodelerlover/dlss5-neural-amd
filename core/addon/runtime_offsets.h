@@ -63,6 +63,12 @@
 // both name. Its overlay is reached only from the Present detours the setup thread installs, as on
 // 0.5.0, so the first patch keeps it off too.
 //
+// 0.5.1 is danielblnc's next supporter build, not distributed either. The engine object is 0.5.0's
+// up to every member these name (kFrameCounter engine+0x4c, kSelfCheckFrame +0x114; members from +0x4e0
+// on moved +0x88, where none of these are). The data block moved +0x3010 up to kHistoryOn and +0x3098
+// from kReady on; Init moved, Notify, Record and both patch sites did not. Mapped from 0.5.0 by
+// aligned instructions, one target per field, and against the OptiScaler fork's kAmd051.
+//
 // When the runtime moves again: add its build to kBuilds and its patches to runtime-patches.json,
 // and run the checker against the patched file.
 
@@ -409,6 +415,57 @@ inline constexpr Build kBuilds[] = {
         .kNotifyFn = 0xa000,
         .kRecordFn = 0x15640,
         .kInitFn = 0x29870,
+    },
+    {
+        .kVersion = "0.5.1",
+        .kSize = 38569472,
+        .kSha256 = "af67f066a250da5cabce87d8c70ddb148b5149eaaf0225279dd8489773bc79b0",
+        .kDevice = 0xb8c28,
+        .kQueue = 0xb8c30,
+        .kEngineObject = 0xb8c40,
+        .kFrameCounter = 0xb8c8c,
+        .kSelfCheckFrame = 0xb8d54,
+        .kHistory = 0xb8d98,
+        .kHistoryOn = 0xb8da0,
+        .kReady = 0xb9160,
+        .kNativeFailure = 0xb9162,
+        .kInlineMode = 0xb9668,
+        .kInlineActive = 0xb9669,
+        .kJobCounter = 0xb969c,
+        .kNetworkMs = 0xb96c8,
+        .kWaitBudgetMax = 0xb97b0,
+        .kWatchdogJobA = 0xb9830,
+        .kWatchdogJobB = 0xb9834,
+        .kWatchdogFires = 0xb9860,
+        .kCpuWait = 0xb9898,
+        .kInterop = 0xb98c0,
+        .kListMarker = 0xb99a0,
+        .kJobId = 0xb99ac,
+        .kDepthInverted = 0xb9a50,
+        .kFsrFlagsSeen = 0xb9a54,
+        .kEnabled = 0xb9a5c,
+        .kTemporal = 0xb9a5d,
+        .kUseFsrInputs = 0xb9a5e,
+        .kUseDepth = 0xb9a5f,
+        .kTonemap = 0xb9a60,
+        .kLocalTone = 0xb9a70,
+        .kLocalStructure = 0xb9a74,
+        .kSkinStructure = 0xb9a78,
+        .kScale = 0xb9a7c,
+        .kUseAutoMask = 0xb9a80,
+        .kToneChannels = 0xb9a84,
+        .kStyle = 0xb9a88,
+        .kToneCurve = 0xb9a8c,
+        .kToneLift = 0xb9a90,
+        .kQuality = 0xb9a95,
+        .kHipDevice = 0xb9b80,
+        .kFloatDumpFirst = 0xb9a68,
+        .kFloatDumpLast = 0xb9a84,
+        .kByteDumpFirst = 0xb9a50,
+        .kByteDumpLast = 0xb9a67,
+        .kNotifyFn = 0xa000,
+        .kRecordFn = 0x15640,
+        .kInitFn = 0x2a0c0,
     },
 };
 
