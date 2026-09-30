@@ -204,6 +204,12 @@ if not ("g.releasedPrimary = sc;" in gone[gone.find("!resize && g.primarySwapcha
         and all(s in retake for s in ("DrainAndRelease()", "g.status.loggedOtherSwapchain = false", "g.primarySwapchain.store(sc)"))
         and "ReleaseSwapchainSized()" in body(life, "DrainAndRelease")):
     bad.append("lifecycle.inc: the primary's init after its destroy (Vulkan rebuild, GL restore) does not take the latch back")
+# A resize that failed, and a new swapchain made in its place (Where Winds Meet): that one takes the latch,
+# before the "another window" early-out, or the played window goes out raw and OnInitEffects reads the freed one.
+swap = init[init.find("gone != sc && gone == g.primarySwapchain.load()"):init.rfind("OtherSwapchain(sc)")]
+if not (swap and all(s in swap for s in ("g.primarySwapchain.store(sc)", "g.goneSwapchain.store(nullptr)",
+                                         "g.status.loggedOtherSwapchain = false"))):
+    bad.append("lifecycle.inc: a swapchain made in place of a primary whose resize failed does not take the latch")
 adopt = body(life, "OnInitEffects")
 if not 0 <= adopt.find("primary->get_hwnd() != runtime->get_hwnd()") < adopt.find("g.effects = runtime"):
     bad.append("OnInitEffects: another window's effect runtime is taken for the primary's frame")

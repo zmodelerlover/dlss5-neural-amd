@@ -59,6 +59,19 @@ void OnInitSwapchain(swapchain *sc, bool resize)
     void *gone = g.goneSwapchain.load();
     if (gone == sc || gone == nullptr)
         g.goneSwapchain.store(nullptr);
+    // The primary went down for a resize and another swapchain is announced instead: the resize failed
+    // and the game made a new one. Where Winds Meet does this on its way from the 1334x750 start window to
+    // the game's own size (its ResizeBuffers drops a flag the swapchain was made with, E_INVALIDARG).
+    // ReShade frees the old one without a second destroy, so a latch left on it held the played window
+    // out for good -- "no frames yet" -- and OnInitEffects called into the freed object and crashed.
+    if (gone != nullptr && gone != sc && gone == g.primarySwapchain.load())
+    {
+        g.goneSwapchain.store(nullptr);
+        g.releasedPrimary = nullptr;
+        g.primarySwapchain.store(sc);
+        g.status.loggedOtherSwapchain = false;
+        Log("the swapchain that went down for a resize was replaced by a new one; the add-on moves to it.");
+    }
     // The primary back from its destroy takes the latch again, from any window taken while it was
     // down, or the played window would go out raw until that one closed. What was built for that
     // window goes first: the routes hold one swapchain's worth. Keyed on the address, so a new

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.4 - 2026-09-30 - A game that replaces its window's swapchain keeps the network
+
+Built on v0.7.3 with the same runtimes and the same bridge protocol (v5): an `amd-nr.ini` you already
+have keeps every setting in it.
+
+- **A game that makes a new swapchain after a failed resize no longer loses the network.** Where Winds
+  Meet starts in a 1334x750 window, asks D3D11 to resize it with a flag the swapchain was not made with
+  (refused, `E_INVALIDARG`), and makes a new swapchain at its own size instead. ReShade frees the old
+  one without a second destroy, so the add-on stayed latched to it: the played window went out raw
+  ("no frames yet"), and reopening the game crashed when the effect runtime called into the freed
+  object. The add-on now moves to the swapchain made in its place (`core/addon/lifecycle.inc`), and
+  `tools/transport_check.py` holds it. Reproduced and checked on a D3D11 host that does exactly that
+  resize; not yet confirmed by the player who reported it.
+- When the D3D11 route cannot make its depth view, the log now says why: the error and the device
+  removed reason, which tells a GPU reset from a bad description.
+- The 32-bit pair is rebuilt from the same core; nothing in it changes behaviour.
+
 ## v0.7.3 - 2026-09-30 - No more crash on D3D11 games when the optical flow starts
 
 Built on v0.7.2 with the same runtimes and the same bridge protocol (v5): an `amd-nr.ini` you already

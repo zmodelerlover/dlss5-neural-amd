@@ -308,9 +308,12 @@ bool PrepareGuide(ID3D11Device* dev, ID3D11DeviceContext* ctx, Guide& guide, boo
         D3D11_UNORDERED_ACCESS_VIEW_DESC ud{};
         ud.Format = DXGI_FORMAT_R32_FLOAT;
         ud.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-        if (FAILED(dev->CreateUnorderedAccessView(guide.bridge.on11.Get(), &ud, &guide.uav))) {
+        const HRESULT hr = dev->CreateUnorderedAccessView(guide.bridge.on11.Get(), &ud, &guide.uav);
+        if (FAILED(hr)) {
             guide.failed = true;
-            Log("guide depth: UAV over the shared texture failed.");
+            // A lost device refuses every view; its reason is what tells a GPU hang from a bad desc.
+            Log("guide depth: UAV over the shared texture failed (0x%08lX, device removed reason 0x%08lX).",
+                static_cast<unsigned long>(hr), static_cast<unsigned long>(dev->GetDeviceRemovedReason()));
             return false;
         }
         guide.uavOf = guide.bridge.on11.Get();
