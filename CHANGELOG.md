@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.3 - 2026-09-30 - No more crash on D3D11 games when the optical flow starts
+
+Built on v0.7.2 with the same runtimes and the same bridge protocol (v5): an `amd-nr.ini` you already
+have keeps every setting in it, and the 32-bit pair is v0.7.2's, byte for byte.
+
+- **D3D11 games no longer crash as soon as the network starts.** On D3D11 the add-on brings D3D12 in
+  privately, as `dx12p.dll`, and the FidelityFX SDK looks up `D3D12.dll` by name to build its root
+  signatures. The lookup failed, the optical flow came up with no pipelines, and its first dispatch
+  called `SetPipelineState(null)` inside D3D12Core: the crash three players sent from D3D11 games.
+  The SDK now finds the add-on's own copy (`core/temporal/ffx_d3d12_module.h`, forced into the SDK's
+  sources only). Checked on a D3D11 host that crashed on the first frame before: 2,520 frames with
+  the optical flow on, no crash.
+- Nothing changes on D3D12, Vulkan or OpenGL, where `D3D12.dll` was always the one loaded.
+- If you set `OpticalFlow=0` in `amd-nr.ini` to get around the crash, you can take it out again.
+
 ## v0.7.2 - 2026-09-28 - danielblnc's 0.5.1 supporter build
 
 Built on v0.7.1 with the same bridge protocol (v5) and nothing else changed: an `amd-nr.ini` you already

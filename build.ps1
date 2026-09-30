@@ -144,8 +144,8 @@ $targets = @{
 if (-not $targets.ContainsKey($Target)) {
     throw "unknown target '$Target'; known: $(($targets.Keys | Sort-Object) -join ', ')"
 }
-$sources = @($targets[$Target] | ForEach-Object { Join-Path $root $_ }) + $ffxSources
-foreach ($s in $sources) { if (-not (Test-Path $s)) { throw "source not found: $s" } }
+$sources = @($targets[$Target] | ForEach-Object { Join-Path $root $_ })
+foreach ($s in $sources + $ffxSources) { if (-not (Test-Path $s)) { throw "source not found: $s" } }
 
 # The neural add-on is the product and carries the product's name; every other target is a
 # diagnostic and keeps its own, prefixed.
@@ -158,9 +158,18 @@ try {
     # Link the CRT statically. Some games, including Detroit: Become Human, ship an older
     # msvcp140.dll beside the executable; /MD lets that private copy override the runtime used
     # to build the add-on and can make DllMain fail after ReShade has registered the module.
-    & $cl /nologo /utf-8 /std:c++20 /EHsc /O2 /MT /W3 /DNDEBUG /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS `
-          /DNOMINMAX /DWIN32_LEAN_AND_MEAN @ffxFlags `
-          /Fo"$out\" $(if (-not $Exe) { '/LD' }) $sources /link $(if (-not $Exe) { '/DLL' }) /OUT:"$dll" `
+    $common = @('/nologo', '/utf-8', '/std:c++20', '/EHsc', '/O2', '/MT', '/W3', '/DNDEBUG', '/DUNICODE', '/D_UNICODE',
+                '/D_CRT_SECURE_NO_WARNINGS', '/DNOMINMAX', '/DWIN32_LEAN_AND_MEAN') + $ffxFlags
+    # The SDK's sources compile on their own, with ffx_d3d12_module.h forced in: it points their
+    # GetModuleHandleW(L"D3D12.dll") at the module the add-on's device came from (see the header).
+    $ffxObjects = @()
+    if ($ffxSources.Count -gt 0) {
+        & $cl @common /c /FI"$(Join-Path $root 'core\temporal\ffx_d3d12_module.h')" /Fo"$out\" $ffxSources
+        if ($LASTEXITCODE -ne 0) { throw "FidelityFX compilation failed ($LASTEXITCODE)" }
+        $ffxObjects = $ffxSources | ForEach-Object { Join-Path $out ([IO.Path]::GetFileNameWithoutExtension($_) + '.obj') }
+    }
+    & $cl @common `
+          /Fo"$out\" $(if (-not $Exe) { '/LD' }) $sources $ffxObjects /link $(if (-not $Exe) { '/DLL' }) /OUT:"$dll" `
           user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib
     if ($LASTEXITCODE -ne 0) { throw "compilation failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
