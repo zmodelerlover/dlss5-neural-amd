@@ -9,54 +9,8 @@ Texture2D<float4> res  : register(t1);
 Texture2D<float4> dbgs : register(t2);
 RWTexture2D<float4> dst : register(u0);
 SamplerState smp : register(s0);
-cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float intensity; uint pad; float limit; float fade; float colour; float guard; float gExp; float gCon; float gSat; };
+cbuffer C : register(b0) { uint dw; uint dh; uint sw; uint sh; uint mode; float k; float intensity; uint pad; float limit; float fade; float colour; float guard; };
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
-// Neural Rendering Model B and Model C, as cg2r_post_process_kernel applies them. Not an
-// impression of them: the three coefficients are read out of the descriptor table in
-// nvngx_dlssnr.dll and the operations are the ones its SASS performs, in its order. The full
-// derivation, with the disassembly, is in docs/styles-model-abc.md.
-//
-// Display-referred on purpose. Every step in the kernel ends in an FFMA.SAT, so the chain runs
-// on values already clamped to [0,1] -- which is the frame as it will be shown, not the linear
-// light the composition above works in.
-float3 NeuralStyle(float3 c)
-{
- // opts[75]: exposure in stops. MUFU.EX2 on the coefficient, then a saturating multiply.
- c = saturate(c * exp2(gExp));
- // opts[77]: contrast, as a blend towards a smoothstep S-curve. The kernel builds x*x*(3-2x)
- // and adds k times the difference, so a negative coefficient flattens rather than steepens.
- // The clamp is the kernel's own FADD.FTZ.SAT on the result, not a tidy-up: it is what the
- // saturation step below is handed, and a positive coefficient can overshoot [0,1] here.
- c = saturate(c + gCon * (c * c * (3.0 - 2.0 * c) - c));
- // opts[78]: saturation, as a multiply on HSL's S -- not HSV's. The kernel decomposes to HSL:
- // L = (max+min)/2, and S = d/(max+min) at or below the midpoint, d/(2-max-min) above it
- // (SASS 3ca0-3db0: FADD max+min, FMUL 0.5, then the two reciprocals under FSETP L > 0.5).
- // It scales S, then rebuilds through q = L<0.5 ? L(1+S) : L+S-L*S and p = 2L-q, which is
- // textbook HSL->RGB.
- //
- // Written here in the closed form of that round trip. Holding H and L while S scales moves
- // every channel along the line through L, because d = 2*S*min(L, 1-L) on both sides, so the
- // rebuilt channel is c_i' = L + (S'/S)(c_i - L) and the hue sectors cancel exactly.
- //
- // The saturate on S is the kernel's, and it is why this is not just a lerp: a coefficient
- // above zero can drive S past 1, and there it has to stop.
- //
- // HSV would anchor on max instead of L, which holds the brightest channel still and only
- // lifts the others. HSL pulls both ends towards L, so a bright saturated colour also loses
- // some of its peak. That is a visible difference on exactly the colours Models B and C are
- // there to touch, and it was HSV here until the kernel was read for it.
- float M = max(c.r, max(c.g, c.b));
- float m = min(c.r, min(c.g, c.b));
- float d = M - m;
- // The kernel's own guard is `max > min`: a grey has no hue to preserve and no saturation to
- // scale, and it is the only case where the reciprocal below would not exist.
- if (d > 1e-6) {
-  float L = (M + m) * 0.5;
-  float S = d / ((L > 0.5) ? (2.0 - M - m) : (M + m));
-  c = L + (saturate(S * (1.0 + gSat)) / S) * (c - L);
- }
- return saturate(c);
-}
 float3 ToLinear(float3 c){ return c <= 0.04045 ? c/12.92 : pow(abs(c+0.055)/1.055, 2.4); }
 float3 ToSrgb(float3 c){ return c <= 0.0031308 ? c*12.92 : 1.055*pow(abs(c), 1.0/2.4) - 0.055; }
 // The largest fraction of the correction that leaves every channel inside [0,1], applied to the
@@ -135,9 +89,6 @@ float3 CubeScale(float3 p, float3 t){
   else if (dbg == 5) d = dbgs.SampleLevel(smp,uv,0).xxx * max(intensity,1e-3);
   else               d = dbgs.SampleLevel(smp,uv,0).rgb;      // 1 input / 2 output / 6 network output mode
   d = saturate(d);
-  // Network Output is a picture, not a diagnostic: the Model's grade belongs on it, as it does on
-  // the composed frame. The debug views stay ungraded so they keep showing what the buffer holds.
-  if (dbg == 6 && (gExp != 0.0 || gCon != 0.0 || gSat != 0.0)) d = NeuralStyle(d);
   dst[p.xy] = float4(d, 1.0);
   return;
  }
@@ -195,14 +146,6 @@ float3 CubeScale(float3 p, float3 t){
   v = max(v, 0.0);
  }
  float3 outc = (mode != 0) ? ToSrgb(saturate(v)) : saturate(v);
- // Applied last, to the frame as it will be shown, and only when a style is selected -- with
- // Style=0 the coefficients are all zero and every operation above is its own identity, so
- // this is skipped rather than run to no effect.
- // No flag bit. Above bit 0 `pad` is the debug view here, and a bit taken from it would
- // silently switch the picture to a debug draw. The coefficients answer it themselves:
- // all three are exactly zero for Model A and for strength 0. That is also the question
- // NVIDIA's own sub_1800176E0 asks before it records this pass at all.
- if (gExp != 0.0 || gCon != 0.0 || gSat != 0.0) outc = NeuralStyle(outc);
  dst[p.xy] = float4(outc, 1.0);
 })";
 

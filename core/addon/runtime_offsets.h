@@ -173,10 +173,10 @@ size_t kScale;                              // ini `Scale`,           default 0.
 size_t kUseAutoMask;                        // ini `UseAutoMask`,     default 1
 size_t kToneChannels;                       // ini `ToneChannels`,    default 0
 
-// Inserted by v0.3.3 and pinned to their defaults, because the runtime reads them from an ini that
-// the standalone runtime's own overlay writes them back into, so a game folder that once had it
-// keeps them. Style goes to the network as Style/128, into the input v0.3.0 held at zero (worker
-// 0x1be8f); ToneCurve and ToneLift reshape the apply pass's tonemap when Tonemap is on (worker
+// Inserted by v0.3.3 and pinned to their defaults at init, because the runtime reads them from an ini
+// that the standalone runtime's own overlay writes them back into, so a game folder that once had it
+// keeps them. Style then follows the add-on's Style on every job: it goes to the network as
+// Style/128, into the input v0.3.0 held at zero (worker 0x1be8f); ToneCurve and ToneLift reshape the apply pass's tonemap when Tonemap is on (worker
 // 0x1be70, 0x1be7c). Measured with framecheck, the pins taken out: Style=2 moved the output by a
 // mean 0.008, ToneCurve=aces with ToneLift=0.25 by 0.009; pinned, an ini with both gives the same
 // bytes as the add-on's own. UseGameExposure, the fourth, is not pinned: the record entry honours

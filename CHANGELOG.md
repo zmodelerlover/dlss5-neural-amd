@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.7 - 2026-10-01 - danielblnc's Style reaches the network, and OpenGL games no longer crash on load
+
+Built on v0.7.6 with the same runtimes and the same bridge protocol (v5): an `amd-nr.ini` you already
+have keeps every setting in it.
+
+- **Style goes to the network.** The Style (Default, Natural, Cinematic; Experimental) was a colour grade on
+  the finished frame, an imitation of NVIDIA's Model B and C, while the runtime's own Style input stayed
+  pinned to 0. It is written on every job now, as in danielblnc's overlay and as the OptiScaler route does,
+  and a change restarts the temporal history. The grade is gone; `StyleStrength` stays in the settings table
+  only because the 32-bit wire carries it. mochizuki gets the same Style.
+- **OpenGL games no longer crash when they create their contexts** (Firestorm). As `opengl32.dll`, ReShade
+  loads and unloads add-ons with every context. The Vulkan device hook's helper thread, there only for the
+  Vulkan layer, kept the add-on loaded past that unload and then unloaded it from its own exit, which ran the
+  static CRT's thread cleanup in a module already gone (`amd-nr.addon64_unloaded`, `__vcrt_freefls`). The
+  thread is started only when ReShade runs as its Vulkan layer. `core/transport/vulkan/vk_devicehook.inc`.
+- The 32-bit pair is rebuilt from the same sources and protocol.
+
 ## v0.7.6 - 2026-10-01 - danielblnc's 0.6.0 supporter build, and 0.5.1 public
 
 Built on v0.7.5 with the same bridge protocol (v5): an `amd-nr.ini` you already have keeps every

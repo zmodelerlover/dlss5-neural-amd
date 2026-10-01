@@ -174,14 +174,12 @@ void GuardPerPass(PanelSettings &s)
 void LocalTone(PanelSettings &s)
 {
     ImGui::SliderFloat(T("Local tone", "Tom local"), &s.tone, 0.0f, 3.0f, "%.2f", 0);
-    Help("LocalToneStrength, the first control slot of the network, and -- clamped to 0..1 -- "
-         "the scale of the Model's grade. RenoDX ships it at 1.\n\n"
+    Help("LocalToneStrength, the first control slot of the network. RenoDX ships it at 1.\n\n"
          "An earlier sweep measured it inert on the network side, byte for byte. That reading "
          "was taken with the fifth control slot at an off-menu value and has not been repeated "
          "since.",
 
-         "LocalToneStrength, o primeiro slot de controle da rede e -- limitado a 0..1 -- a "
-         "escala do grade do Modelo. O RenoDX manda 1.\n\n"
+         "LocalToneStrength, o primeiro slot de controle da rede. O RenoDX manda 1.\n\n"
          "Uma varredura anterior mediu isto inerte do lado da rede, byte a byte. Essa leitura "
          "foi feita com o quinto slot de controle num valor fora do menu e não foi repetida "
          "desde então.");

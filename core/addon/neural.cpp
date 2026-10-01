@@ -660,12 +660,9 @@ struct State
         // luminance, so this cannot shift hue on its own: at 0 every pixel keeps the game's exact
         // colour and only its brightness carries the network's verdict.
         std::atomic<float> colourStrength;
-        // Neural Rendering Model A (0), B (1) or C (2). A is the neutral vector and what every
-        // release so far has drawn, so 0 is the default and selecting it changes nothing.
+        // danielblnc's Style, the network's style input: 0 Default, 1 Natural, 2 Cinematic.
         std::atomic<int> style;
-        // DLSSNR scales a style's coefficients by LocalToneStrength, clamped to [0,1], as
-        // (value - neutral) * t + neutral. Same knob, same range, so a style can be taken at part
-        // strength instead of only on or off.
+        // No longer read: the grade it scaled is gone. Kept because the 32-bit wire carries it.
         std::atomic<float> styleStrength;
         std::atomic<bool> bicubic;
         // Show the network's own answer instead of composing it onto the game's frame.
@@ -1001,8 +998,6 @@ State &g = *new State;
 // The measurement that says dropping it is the right answer rather than a trade: the correction's
 // own mean in that scene is 0.003. Leaving it out of a frame is below anyone's threshold;
 // putting it in the wrong place is not.
-bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat);
-float StyleGradeStrength();
 
 bool CompositionIsFresh(bool ranNetwork)
 {
@@ -1016,20 +1011,7 @@ bool CompositionIsFresh(bool ranNetwork)
     // make the mode flicker between two different pictures, which is worse than either.
     if (g.settings.debugView.load() != 0 || g.settings.networkOutput.load())
         return true;
-    if (ranNetwork && g.activePasses != 0)
-        return true;
-    // A style is colour grading on the finished frame, and it does not go stale: it is a function
-    // of the pixel in front of it, not of anything the network said. Gating it with the correction
-    // meant the grade came and went with the skip rate -- Model B's frame, then the game's own
-    // frame, then Model B's again -- which is a flicker in the one thing that is supposed to be
-    // constant. NVIDIA has no equivalent of a skipped frame here: its grading is inside the
-    // evaluate, so every frame it shows carries it.
-    //
-    // The correction is what is dropped on these frames, not the compose: RecordNetwork zeroes the
-    // residual for them, so what gets pasted is the game's own picture with the grade on it and
-    // nothing aimed at where the edges used to be.
-    float expo = 0.0f, con = 0.0f, sat = 0.0f;
-    return StyleCoefficients(g.settings.style.load(), StyleGradeStrength(), expo, con, sat);
+    return ranNetwork && g.activePasses != 0;
 }
 
 int RuntimeTonemap()
@@ -1128,23 +1110,11 @@ bool EnsureNeuralIni()
          "; effect, 1 being the network at full strength.\r\n"
          "Intensity=1\r\n"
          "\r\n"
-         "; --- Neural Rendering Model ---------------------------------------------------\r\n"
-         "; 0 = Model A, 1 = Model B, 2 = Model C, the same three DLSSNR.Style selects on\r\n"
-         "; NVIDIA. Deep Fried Chicken names the same three Default, Natural and Cinematic,\r\n"
-         "; in that order, so Natural is 1 and Cinematic is 2.\r\n"
-         "; On NVIDIA a model is two things: an input of the network (style/128, which is\r\n"
-         "; what changes lighting and detail there) and a grade on the finished frame. This\r\n"
-         "; add-on feeds the network tone, structure and skin and nothing else, so here a\r\n"
-         "; model is its grade only: B darkens by 0.1 stop, flattens contrast a quarter off\r\n"
-         "; its S-curve and takes a tenth of the saturation; C only takes 15 percent of the\r\n"
-         "; saturation, both scaled by Tone clamped to 0..1, constants read out of\r\n"
-         "; nvngx_dlssnr.dll.\r\n"
-         "; NR Preset does not exist here or on NVIDIA: the shipping DLL carries one set of\r\n"
-         "; weights (preset 1) and any other value falls back to it. docs/styles-model-abc.md.\r\n"
-         "Style=0\r\n"
-         "; Scales the grade half of the model towards neutral, on top of Tone. 1 is the full\r\n"
-         "; grade; 0 leaves the network input alone and removes only the colour change.\r\n"
-         "StyleStrength=1\r\n";
+         "; --- Style ---------------------------------------------------------------------\r\n"
+         "; danielblnc's Style, the look the network is asked for: 0 = Default, 1 = Natural,\r\n"
+         "; 2 = Cinematic, the same three DLSSNR.Style selects on NVIDIA. It goes to the\r\n"
+         "; network itself, as in his own overlay. Changing it drops the temporal history.\r\n"
+         "Style=0\r\n";
     f.close();
 
     // The rest of the keys, through the same writer the overlay's Save uses, so a file written
@@ -1209,16 +1179,6 @@ void LoadSettings()
     // an integer: 26 bits do not survive float. Masked, so a bit a newer build saved is dropped.
     g.settings.optional.store(static_cast<uint32_t>(GetPrivateProfileIntW(L"amd-nr", L"HiddenShown",
         static_cast<INT>(flag(L"Advanced", false) ? kOptAll : g.settings.optional.load()), ini.c_str())) & kOptAll);
-    {
-        // Stated in the log because a style is a small change to the whole frame, and a
-        // measurement run that does not say which one it drew cannot be compared to another.
-        float se = 0.0f, sc = 0.0f, ss = 0.0f;
-        if (StyleCoefficients(g.settings.style.load(), StyleGradeStrength(), se, sc, ss))
-            Log("Style=%d at strength %.2f: exposure %+.3f stops, contrast %+.3f, saturation "
-                "%+.3f, applied to the composed frame.",
-                g.settings.style.load(), static_cast<double>(StyleGradeStrength()),
-                static_cast<double>(se), static_cast<double>(sc), static_cast<double>(ss));
-    }
     // Per-pass profiles. Seeded from the globals so a pass whose override is switched on for the
     // first time starts where the chain already was, rather than at zero.
     for (UINT i = 0; i < State::kMaxPasses; ++i)
@@ -1667,6 +1627,7 @@ bool ArmRuntime(HMODULE h)
     At<int>(h, rt::B->kTonemap) = RuntimeTonemap();
     // Pinned over dlssnr_on_amd.ini; runtime_offsets.h says why each matters. The runtime read the
     // file in DllMain, and its re-read every 120 presents is on the path the first patch removes.
+    // Style then follows the add-on's own setting on every job.
     At<int>(h, rt::B->kCpuWait) = 0;
     At<int>(h, rt::B->kStyle) = 0;
     At<int>(h, rt::B->kToneCurve) = 0;
@@ -2295,43 +2256,6 @@ float EffectiveGuard()
     return base + static_cast<float>(running - 1);
 }
 
-// The Model B and Model C coefficients, and the strength scaling DLSSNR applies to them.
-//
-// These three numbers are not tuned here. They are the descriptor table in nvngx_dlssnr.dll,
-// read out of the image at record+108 (mask 0x34) and record+176 (mask 0x20), feeding slots 75,
-// 77 and 78 of the style vector -- exposure in stops, contrast towards a smoothstep, and HSV
-// saturation. docs/styles-model-abc.md has the disassembly that says which is which.
-//
-// The neutral value of all three slots is zero, so the runtime's (value - neutral) * t + neutral
-// reduces to value * t. Returns whether anything is actually being applied, so Style=0 and
-// StyleStrength=0 both skip the work instead of running an identity.
-// Scale (default 1/32) was taken for a style input on 21/09, on v0.3.0, because it sits right
-// after the four control floats in the engine object and the NVIDIA forward takes a fifth value,
-// style/128. It is not: it goes to the post kernel that writes the output, not to the network.
-// Writing style/128 there made Model A (0) return the input unchanged -- measured in ETS2:
-// residual mean 0.00024 against an input mean of 0.45 -- and cut Models B and C to a quarter and
-// a half. v0.3.3 gave the runtime a real one, its own ini key Style, sent to the network as
-// Style/128 in the lane v0.3.0 held at zero: unpinned, Style=2 moved framecheck's output by a mean
-// 0.008. ArmRuntime pins it to v0.3.0's zero over any ini, so a Model stays its grade and no more.
-//
-// How much of the model's grade is applied. The NVIDIA DLL scales a style's coefficients by
-// LocalToneStrength clamped to [0,1]; Model Strength sits on top of that, so at 1 the grade is
-// exactly what the runtime would do with the same Tone.
-float StyleGradeStrength()
-{
-    return g.settings.styleStrength.load() * std::clamp(g.settings.tone.load(), 0.0f, 1.0f);
-}
-
-bool StyleCoefficients(int style, float strength, float &expo, float &con, float &sat)
-{
-    expo = con = sat = 0.0f;
-    const float t = std::clamp(strength, 0.0f, 1.0f);
-    if (style == 1)        { expo = -0.10f * t; con = -0.25f * t; sat = -0.10f * t; }
-    else if (style == 2)   { sat = -0.15f * t; }
-    else                   return false;
-    return t > 0.0f;
-}
-
 // What one pass of the network is told. The globals unless that pass carries its own profile.
 struct PassTune
 {
@@ -2369,16 +2293,16 @@ PassTune TuningFor(UINT pass)
 // the values are written, so every road to them (overlay, ini reload, per-pass profile, taper,
 // the override) is one comparison instead of a reset in every handler. The first observation
 // only records; there is no history to drop yet.
-bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask)
+bool ControlsChanged(UINT slot, const PassTune &t, float outScale, int autoMask, int style)
 {
-    struct Ctl { float tone, structure, skin, scale; int mask; bool seen; };
+    struct Ctl { float tone, structure, skin, scale; int mask, style; bool seen; };
     static Ctl last[State::kMaxPasses] {};
     Ctl &l = last[std::min(slot, State::kMaxPasses - 1)];
     const auto moved = [](float a, float b) { return std::fabs(a - b) > 1e-5f; };
     const bool changed = l.seen && (moved(l.tone, t.tone) || moved(l.structure, t.structure) ||
                                     moved(l.skin, t.skin) || moved(l.scale, outScale) ||
-                                    l.mask != autoMask);
-    l = { t.tone, t.structure, t.skin, outScale, autoMask, true };
+                                    l.mask != autoMask || l.style != style);
+    l = { t.tone, t.structure, t.skin, outScale, autoMask, style, true };
     return changed;
 }
 #include "mochizuki.inc"
@@ -2431,8 +2355,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     // building a composition. Reusing it rather than adding a second one means the mode cannot
     // drift away from the picture that was actually tested. An explicit Debug View still wins,
     // so the diagnostics stay usable with the mode on.
-    // 6 rather than 2 so the shader can tell the mode from the debug view: same buffer, but the
-    // mode takes the Model's grade and the view does not.
+    // 6 rather than 2 so the shader can tell the mode from the debug view.
     const int dbg = g.settings.debugView.load() != 0 ? g.settings.debugView.load() : (g.settings.networkOutput.load() ? 6 : 0);
     if (dbg == 2 || dbg == 6)
     {
@@ -2632,12 +2555,13 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         const PassTune tune = TuningFor(i);
         const float outScale = g.settings.engineScale.load();
         const int autoMask = g.settings.autoMask.load();
-        if (ControlsChanged(slot, tune, outScale, autoMask))
+        const int style = std::clamp(g.settings.style.load(), 0, 2);
+        if (ControlsChanged(slot, tune, outScale, autoMask, style))
         {
             ResetTemporal("a pass's controls changed");
-            Log("pass %u: reset temporal history after control change (tone %.2f, structure %.2f, "
+            Log("pass %u: reset temporal history after control change (style %d, tone %.2f, structure %.2f, "
                 "skin %.2f, automask %d, output scale %.5f)",
-                i + 1, static_cast<double>(tune.tone), static_cast<double>(tune.structure),
+                i + 1, style, static_cast<double>(tune.tone), static_cast<double>(tune.structure),
                 static_cast<double>(tune.skin), autoMask, static_cast<double>(outScale));
         }
         PinSeed(r);
@@ -2687,6 +2611,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // the first pass only -- which is what the original `i == 0 ? tone : 0.0f` here did, and
         // last session removed it as an asymmetry nobody had chosen. Somebody had: the reference
         // fork's PassProfiles.h makes exactly that choice, in one line, deliberately.
+        At<int>(r, rt::B->kStyle) = style;
         At<float>(r, rt::B->kLocalTone) = tune.tone;
         At<float>(r, rt::B->kLocalStructure) = tune.structure;
         At<float>(r, rt::B->kSkinStructure) = tune.skin;
@@ -2897,21 +2822,16 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     auto ctable = heap->GetGPUDescriptorHandleForHeapStart();
     ctable.ptr += 8 * inc;
     cmd->SetComputeRootDescriptorTable(0, ctable);
-    float gexp = 0.0f, gcon = 0.0f, gsat = 0.0f;
-    StyleCoefficients(g.settings.style.load(), StyleGradeStrength(), gexp, gcon, gsat);
-    // On a frame the network sat out, the residual still holds the last one's answer. Compose
-    // runs anyway -- a selected style has to reach every frame that is shown, or it flickers --
-    // but with no correction, because one aimed at where the picture used to be reads as a trail.
-    // Zero intensity makes every step of the composition the identity, additive or ratio alike,
-    // so what comes out is the game's own frame with the grade on it. A debug view is exempt for
-    // the reason CompositionIsFresh gives: what it draws is a buffer, not a correction.
+    // On a frame the network sat out, the residual still holds the last one's answer: compose with
+    // no correction, because one aimed at where the picture used to be reads as a trail. Zero
+    // intensity makes every step of the composition the identity, additive or ratio alike. A debug
+    // view is exempt for the reason CompositionIsFresh gives: what it draws is a buffer.
     const bool stale = !(runNetwork && g.activePasses != 0) && dbg == 0 && !g.settings.networkOutput.load();
     const float composeStrength = stale ? 0.0f : strength;
-    // v0.6.0's packing, untouched: bit 0 is the filter and everything above it is the debug
-    // view, so there is no spare bit here and the style does not take one.
-    UINT cdims[15] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
+    // v0.6.0's packing, untouched: bit 0 is the filter and everything above it is the debug view.
+    UINT cdims[12] { w, h, nw, nh, static_cast<UINT>(encMode), 0, 0,
                      (g.settings.bicubic.load() ? 1u : 0u) | (static_cast<UINT>(dbg) << 1),
-                     0, 0, 0, 0, 0, 0, 0 };
+                     0, 0, 0, 0 };
     std::memcpy(&cdims[5], &kWhite, sizeof(float));
     std::memcpy(&cdims[6], &composeStrength, sizeof(float));
     const float rlimit = g.settings.residualLimit.load(), rfade = g.settings.residualFade.load();
@@ -2921,10 +2841,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
     const float guardEff = EffectiveGuard();
     std::memcpy(&cdims[10], &cstrength, sizeof(float));
     std::memcpy(&cdims[11], &guardEff, sizeof(float));
-    std::memcpy(&cdims[12], &gexp, sizeof(float));
-    std::memcpy(&cdims[13], &gcon, sizeof(float));
-    std::memcpy(&cdims[14], &gsat, sizeof(float));
-    cmd->SetComputeRoot32BitConstants(1, 15, cdims, 0);
+    cmd->SetComputeRoot32BitConstants(1, 12, cdims, 0);
     cmd->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
     Barrier(cmd, g.composed.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_COPY_SOURCE);

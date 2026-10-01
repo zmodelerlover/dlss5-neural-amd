@@ -58,6 +58,7 @@ X(uint32_t, depthNormalise, "DepthNormalise", 0, 0, 1)
 // macro takes a literal, so it is spelled out. LoadSettings masks it rather than clamping it.
 X(uint32_t, optional, "HiddenShown", 0, 0, 67108863)
 X(int32_t, style, "Style", 0, 0, 2)
+// Read by nothing since Style went to the network; kept so the wire layout stays the same.
 X(float, styleStrength, "StyleStrength", 1, 0, 1)
 // The temporal-stability controls (core/temporal/seed.inc, smooth.inc), on the wire since v5.
 X(int32_t, fixedSeed, "FixedSeed", 1, 0, 1)

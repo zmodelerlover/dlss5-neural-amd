@@ -320,6 +320,23 @@ void Install()
     if (InstallStaticImport())
         return;
 
+    // Only ReShade's Vulkan layer (ReShade64.dll / ReShade32.dll) puts us beside a Vulkan device. As a proxy
+    // (opengl32.dll, dxgi.dll, d3d*.dll) ReShade loads and unloads the add-on with every context, and the worker
+    // below would hold the module past its FreeLibrary and unload it on its own exit: Firestorm (OpenGL, with the
+    // driver's vulkan-1 loaded) then crashed in the static CRT's FLS callback of the unloaded module.
+    wchar_t host[MAX_PATH] {};
+    GetModuleFileNameW(reshade::internal::get_reshade_module_handle(), host, MAX_PATH);
+    const wchar_t *hostName = std::wcsrchr(host, L'\\');
+    hostName = hostName != nullptr ? hostName + 1 : host;
+    if (_wcsnicmp(hostName, L"ReShade", 7) != 0)
+    {
+        std::snprintf(g_installReport, sizeof(g_installReport),
+                      "vulkan: ReShade runs as %ls, not as the Vulkan layer; no vkCreateDevice hook.",
+                      hostName);
+        g_installKind.store(InstallKind::failed, std::memory_order_release);
+        return;
+    }
+
     // Hold our own module reference until the worker returns, so an explicit ReShade unload
     // cannot invalidate its code while it waits for the loader lock held by this DllMain.
     HMODULE self = nullptr;

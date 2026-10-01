@@ -11,53 +11,22 @@ namespace ui {
 namespace {
 
 // Live, and deliberately so: judging three looks by editing an ini and restarting is three
-// restarts, and on a host whose swapchain is in a child window Ctrl+Home cannot reload the file at
-// all. Here it is one click and the frame changes under you.
-//
-// Both namings, because both are in circulation for the same three values of the same NGX field:
-// RenoDX calls them Model A/B/C, Deep Fried Chicken calls them Default, Natural and Cinematic. A
-// guide written against one and an overlay showing the other is a person changing the wrong
-// control.
+// restarts. Both namings, because both are in circulation for the same three values: RenoDX calls
+// them Model A/B/C, danielblnc and Deep Fried Chicken call them Default, Natural and Cinematic.
 void Model(PanelSettings &s)
 {
     int style = s.style;
-    if (ImGui::Combo(T("Model", "Modelo"), &style,
-                     T("A - Default\0B - Natural\0C - Cinematic\0",
-                       "A - Default\0B - Natural\0C - Cinematic\0")))
+    if (ImGui::Combo(T("Style", "Estilo"), &style,
+                     T("Default (A)\0Natural (B)\0Cinematic (C)\0",
+                       "Default (A)\0Natural (B)\0Cinematic (C)\0")))
         s.style = std::clamp(style, 0, 2);
-    Help("The Neural Rendering Model -- the same three DLSSNR.Style selects on NVIDIA, but "
-         "not yet doing the same thing here, which is why it sits under Experimental.\n\n"
-         "On NVIDIA a model is two things: an input of the network, which is what moves "
-         "lighting and detail, and a grade on the finished frame. This add-on does not feed "
-         "the first to the network, so here a model is its grade only: B darkens "
-         "slightly, flattens contrast and removes a tenth of the saturation; C removes 15 "
-         "percent of the saturation. A colour change rather than a detail change, and a "
-         "smaller difference than on NVIDIA.\n\n"
-         "Two names for each: RenoDX writes Model A, B and C; Deep Fried Chicken writes "
-         "Default, Natural and Cinematic, in that order.",
+    Help("danielblnc's Style: the look the network is asked for, the same three DLSSNR.Style "
+         "selects on NVIDIA. It goes to the network itself, as in his own overlay, so it moves "
+         "lighting and skin as well as colour. Changing it restarts the temporal history.",
 
-         "O Modelo de Renderização Neural -- os mesmos três que o DLSSNR.Style seleciona na "
-         "NVIDIA, mas ainda não fazendo a mesma coisa aqui, e é por isso que está em "
-         "Experimental.\n\n"
-         "Na NVIDIA um modelo é duas coisas: uma entrada da rede, que é o que move iluminação "
-         "e detalhe, e um grade no quadro pronto. Este add-on não leva a primeira até a "
-         "rede, então aqui um modelo é só o grade dele: B escurece de "
-         "leve, achata o contraste e tira um décimo da saturação; C tira 15 por cento da "
-         "saturação. Mudança de cor em vez de mudança de detalhe, e diferença menor que na "
-         "NVIDIA.\n\n"
-         "Dois nomes para cada um: o RenoDX escreve Model A, B e C; o Deep Fried Chicken "
-         "escreve Default, Natural e Cinematic, nessa ordem.");
-
-    if (s.style == 0)
-        return;
-    float ss = s.styleStrength;
-    if (ImGui::SliderFloat(T("Strength", "Força"), &ss, 0.0f, 1.0f, "%.2f"))
-        s.styleStrength = std::clamp(ss, 0.0f, 1.0f);
-    Help("Scales the model's grade towards neutral. 1 is the full grade, 0 removes the colour "
-         "change entirely. Ours -- NVIDIA has no separate knob for this.",
-         "Escalona o grade do modelo em direção ao neutro. 1 é o grade inteiro, 0 tira a "
-         "mudança de cor por completo. É nosso -- a NVIDIA não tem controle separado para "
-         "isto.");
+         "O Style do danielblnc: o visual pedido à rede, os mesmos três que o DLSSNR.Style "
+         "seleciona na NVIDIA. Vai para a própria rede, como no overlay dele, então muda "
+         "iluminação e pele além da cor. Trocar reinicia o histórico temporal.");
 }
 
 void NetworkOutput(PanelSettings &s, const PanelStatus &status)

@@ -156,7 +156,7 @@ bool MzInit() {
 
 // The model's controls, from the same settings the danielblnc runtime reads: it is the same
 // network, so Structure, Tone, Skin, the character mask and the per-pass profiles mean the same.
-// Intensity, the limit, colour strength and the grade stay in compose, so the runtime's own detail
+// Style goes to the network as on danielblnc. Intensity, the limit and colour strength stay in compose, so the runtime's own detail
 // and colour strengths stay at 1. The OptiScaler host sends colour 0 instead; on the framecheck
 // frame Colour Strength 0 in compose gives the same mean change to 0.0001. Sent only on a change.
 void MzSendControls() {
@@ -169,6 +169,7 @@ void MzSendControls() {
     c.local_tone = first.tone;
     c.skin_structure = first.skin;
     c.automatic_mask = g.settings.autoMask.load() != 0 ? 1u : 0u;
+    c.style = static_cast<uint32_t>(std::clamp(g.settings.style.load(), 0, 2));
     // Encoding 0 hands the network the game's own sRGB values; 1 and 2 hand it linear light.
     c.linear_input = g.settings.encoding.load() == 0 ? 2u : 1u;
     for (UINT i = 1; i < State::kMaxPasses; ++i) {
@@ -190,8 +191,8 @@ void MzSendControls() {
     }
     mz.sent = c;
     mz.sentValid = true;
-    Log("mochizuki: controls structure %.2f, tone %.2f, skin %.2f, mask %u, linear input %s",
-        static_cast<double>(c.local_structure), static_cast<double>(c.local_tone),
+    Log("mochizuki: controls style %u, structure %.2f, tone %.2f, skin %.2f, mask %u, linear input %s",
+        c.style, static_cast<double>(c.local_structure), static_cast<double>(c.local_tone),
         static_cast<double>(c.skin_structure), c.automatic_mask,
         c.linear_input == 1 ? "on" : "off");
 }
