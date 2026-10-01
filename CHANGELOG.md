@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.7.5 - 2026-10-01 - shadPS4 no longer fails to create its Vulkan device
+
+Built on v0.7.4 with the same runtimes and the same bridge protocol (v5): an `amd-nr.ini` you already
+have keeps every setting in it.
+
+- **The Vulkan route no longer writes past the host's feature structs.** To turn timeline semaphores
+  on, the device hook looked for `VkPhysicalDeviceVulkan12Features` by structure type 49, which is
+  `VkPhysicalDeviceVulkan11Features` (1.2 is 51), and set the bit 164 bytes into a 64-byte struct.
+  shadPS4 chains the 1.1, 1.2 and 1.3 features, so the write landed in whatever followed: a feature
+  the card does not have (`vkCreateDevice` failed with `ErrorFeatureNotPresent`) or a pointer (a
+  crash), different from one shadPS4 build to the next. `core/transport/vulkan/vk_devicehook.inc`.
+- The 32-bit pair is v0.7.4's, unchanged: nothing in this fix reaches it.
+
 ## v0.7.4 - 2026-09-30 - A game that replaces its window's swapchain keeps the network
 
 Built on v0.7.3 with the same runtimes and the same bridge protocol (v5): an `amd-nr.ini` you already
