@@ -58,7 +58,7 @@ std::atomic<uint64_t> g_hostLuid { 0 };
 // shader*Array*Indexing, then the ten descriptorBinding*, runtimeDescriptorArray,
 // samplerFilterMinmax, scalarBlockLayout, imagelessFramebuffer, uniformBufferStandardLayout,
 // shaderSubgroupExtendedTypes, separateDepthStencilLayouts, hostQueryReset, timelineSemaphore.
-constexpr uint32_t kVulkan12Features = 49;
+constexpr uint32_t kVulkan12Features = 51;  // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES (49 is the 1.1 struct)
 constexpr size_t kTimelineSemaphoreOffset = 16 + 37 * 4;
 
 int __stdcall CreateDevice(VkPhysicalDevice gpu, const VkDeviceCreateInfo *info, const void *alloc,
