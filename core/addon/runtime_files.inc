@@ -167,7 +167,7 @@ std::filesystem::path RuntimeCopyUsingPrivateD3D12(const std::filesystem::path &
 // tools/patch_runtime.py. Anything else is refused by hash rather than written into with the wrong
 // addresses.
 
-// The builds this add-on knows, for the log: "0.4.1, 0.4.2, 0.4.3, 0.5.0, 0.5.1".
+// The builds this add-on knows, for the log: "0.4.1, 0.4.2, 0.4.3, 0.5.0, 0.5.1, 0.6.0".
 std::string KnownRuntimes()
 {
     std::string out;

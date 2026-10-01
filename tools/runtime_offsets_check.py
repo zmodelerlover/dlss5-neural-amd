@@ -49,6 +49,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "core/addon/runtime_offsets.h"
+BUILDS = ROOT / "core/addon/runtime_builds.inc"  # kBuilds, included by HEADER
 SOURCES = ROOT / "core"
 
 
@@ -101,7 +102,7 @@ def header_builds():
     word in the comment on the declaration's line: a build without the key names 0), and every
     entry of `kBuilds`: its version, size, SHA-256 and {name: rva}, the rvas split into data and
     entry points by the `Fn` suffix."""
-    text = HEADER.read_text(encoding="utf-8")
+    text = HEADER.read_text(encoding="utf-8") + "\n" + BUILDS.read_text(encoding="utf-8")
     struct_body = re.search(r"struct Build\s*\{(.*?)\n\};", text, re.S).group(1)
     decls = re.findall(r"^size_t ([^;]+);(.*)$", struct_body, re.M)
     fields = [n for decl, _ in decls for n in re.findall(r"k\w+", decl) if n != "kSize"]
@@ -134,7 +135,7 @@ def stray_literals():
     plus = re.compile(r"reinterpret_cast<uintptr_t>\([^)]+\)\s*\+\s*(0x[0-9a-fA-F]+)")
     out = []
     for path in sorted(SOURCES.rglob("*")):
-        if path.suffix.lower() not in (".cpp", ".h", ".hpp", ".inc", ".c", ".cc") or path == HEADER:
+        if path.suffix.lower() not in (".cpp", ".h", ".hpp", ".inc", ".c", ".cc") or path in (HEADER, BUILDS):
             continue
         for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
             for m in at.findall(line) + plus.findall(line):

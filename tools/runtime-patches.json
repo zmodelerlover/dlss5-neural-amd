@@ -99,6 +99,26 @@
           "after": "909090909090"
         }
       ]
+    },
+    {
+      "runtime": "DLSS-NR-on-AMD 0.6.0 (supporter build, not distributed)",
+      "original_sha256": "195c4a891b6eac4c1cb7671e10ff62bbbe2b17f1dfae1344dc5a6714e4775721",
+      "original_size": 56677888,
+      "patched_sha256": "430be589020685d03f0ad92194457bafe1a186bf658c8cfe2fb7a0bdb7592cc4",
+      "changes": [
+        {
+          "patch": "setup-thread",
+          "offset": "0x64ed",
+          "before": "ff157d800a00",
+          "after": "31c090909090"
+        },
+        {
+          "patch": "doubled-submit",
+          "offset": "0xa8c2",
+          "before": "ff1540380b00",
+          "after": "909090909090"
+        }
+      ]
     }
   ],
   "why": {

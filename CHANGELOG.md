@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.7.6 - 2026-10-01 - danielblnc's 0.6.0 supporter build, and 0.5.1 public
+
+Built on v0.7.5 with the same bridge protocol (v5): an `amd-nr.ini` you already have keeps every
+setting in it.
+
+- **danielblnc 0.5.1 is public** and is the runtime the installer puts in. It is the same file v0.7.2
+  already ran, so nothing in the add-on changed for it; `tools/SHA256SUMS.txt` now names it.
+- **danielblnc's 0.6.0 supporter build runs**, beside 0.5.1, 0.5.0, v0.4.3, v0.4.2 and v0.4.1. It is
+  not distributed: whoever has it supplies their own `version.dll` or setup, and
+  `tools/patch_runtime.py` patches it (`195c4a89…` in, `430be589…` out). It adds RX 6000 (RDNA2) cards,
+  which need AMD's HIP SDK 7.2 runtime. Mapped from 0.5.1 by aligned instructions, one target per
+  field; every entry point and both patch sites moved, and the engine's self-check frame is now
+  engine+0x128. `tools/runtime_offsets_check.py` passes on the patched file, and a D3D11 host ran it
+  for 4,937 frames at 1080p on an RX 9070 XT with the network's change measured. Not played in a
+  game, and not tried on an RDNA2 card.
+- The table of builds moved to `core/addon/runtime_builds.inc`, so `runtime_offsets.h` stays under
+  the line limit; the checker reads both.
+
 ## v0.7.5 - 2026-10-01 - shadPS4 no longer fails to create its Vulkan device
 
 Built on v0.7.4 with the same runtimes and the same bridge protocol (v5): an `amd-nr.ini` you already
