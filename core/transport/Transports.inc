@@ -131,6 +131,7 @@ FrameTransport* PrimaryRoute(device* dev, command_queue* queue, swapchain* sc) {
 #include "d3d12/D3D12Transport.inc"
 #include "d3d11/D3D11Guides.inc"
 #include "d3d11/D3D11Transport.inc"
+#include "d3d10/D3D10Transport.inc"
 #if AMDNR_WITH_VULKAN
 #include "vulkan/vk_route.inc"
 #include "vulkan/VulkanTransport.inc"
@@ -147,6 +148,8 @@ FrameTransport* TransportFor(device_api api) {
         return &d3d12route::transport;
     case device_api::d3d11:
         return &d3d11route::transport;
+    case device_api::d3d10:
+        return &d3d10route::transport;
 #if AMDNR_WITH_VULKAN
     case device_api::vulkan:
         return &vkroute::transport;
@@ -165,6 +168,7 @@ std::span<FrameTransport* const> AllTransports() {
     static FrameTransport* const all[]{
         &d3d12route::transport,
         &d3d11route::transport,
+        &d3d10route::transport,
 #if AMDNR_WITH_OPENGL
         &glroute::transport,
 #endif

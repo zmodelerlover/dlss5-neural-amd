@@ -310,6 +310,7 @@ void Present(command_queue *queue, swapchain *sc)
     g.bridge.workQueue->Signal(g.ringFence.Get(), g.ringSerial);
     g.completion = ++g.serial;
     g.bridge.workQueue->Signal(g.fence.Get(), g.completion);
+    ArmStallWatch();
     if (r.semaphores)
     {
         // The value GL waits for in BlitOut. A second signal rather than reusing g.fence,

@@ -7,7 +7,8 @@
 > framebuffer, and resize has been exercised with the effect on. It still carries no guides.
 >
 > **Shipped in v0.6.0**, and installable: the installer detects a 64-bit OpenGL game, routes it and
-> puts ReShade in as `opengl32.dll`. A 32-bit OpenGL game still has no route. What is left is under
+> puts ReShade in as `opengl32.dll`. A 32-bit OpenGL game takes the 32-bit pair, whose frontend
+> imports D3D11 textures instead (`core/x86bridge/gl32.inc`). What is left is under
 > [What is not done](#what-is-not-done).
 
 Everything below was measured on this machine rather than reasoned about. Where a number appears,

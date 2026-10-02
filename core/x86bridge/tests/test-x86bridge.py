@@ -4,7 +4,7 @@ import os,re,subprocess,tempfile,shutil
 root=Path(__file__).resolve().parents[3]
 new=root/'core/x86bridge'
 read=lambda path:path.read_text(encoding='utf-8-sig')
-f=read(new/'frontend32.cpp');h=read(new/'host64.cpp');ipc=read(new/'bridge_ipc.h');io=read(new/'bridge_io.h')
+f=''.join(read(new/n) for n in ('frontend32.cpp','d3d9_32.inc','routes32.inc','gl32.inc'));h=read(new/'host64.cpp');ipc=read(new/'bridge_ipc.h');io=read(new/'bridge_io.h')
 for word in ['d3d12','amdhip','dlssnr_amd_pass','Packet','RecordFn','ID3D11Device5','ID3D11DeviceContext4','OpenSharedFence','SetEventOnCompletion']:
  assert word.lower() not in f.lower(),word
 for word in ['VORT','Generic Depth','async_home','amd_last_nr','g.sent_n','retryAfter','soft_timeout','ping-pong']:

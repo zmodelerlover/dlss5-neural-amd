@@ -1,4 +1,35 @@
-# Changelog
+﻿# Changelog
+
+## v0.7.8 - 2026-10-02 - Direct3D 10 games, 32-bit OpenGL games, and a stand-down before a GPU freeze
+
+Built on v0.7.7 with the same runtimes and the same bridge protocol (v5).
+
+- **Direct3D 10 games**, 64-bit and 32-bit. D3D10 shares textures by legacy handle only, which
+  D3D12 cannot open, so the back buffer goes first to a D3D11 device of the add-on's own on the
+  game's adapter, through a texture the game's device shares, and from there over the D3D11 route
+  as it stands (`core/shared/d3d10_stage.h`, `core/transport/d3d10/`). Colour only: the game's
+  depth and motion are on its D3D10 device. ReShade goes in as `dxgi.dll`, as for D3D11.
+- **32-bit OpenGL games.** The 32-bit frontend makes a D3D11 device on the GPU the game's context
+  names by LUID, and the context imports its textures as `GL_HANDLE_TYPE_D3D11_IMAGE_EXT`; the frame
+  crosses by blit with the default framebuffer, as on the 64-bit OpenGL route
+  (`core/x86bridge/gl32.inc`). Measured first in a 32-bit process on an RX 9070 XT, Adrenalin
+  26.8.1: the bytes cross both ways. Colour only. ReShade goes in as the 32-bit `opengl32.dll`.
+- **One network job the GPU holds for 2 s stands the add-on down for the session.** Two players on an RX 9060 XT
+  with danielblnc's runtime (WWE 2K26, Cyberpunk 2077, Bellwright) saw single jobs take 3.8 to 4.2 s every 10 to 30
+  minutes; the game froze for those seconds, and two close together locked the whole PC. The job is timed from its
+  submission on a thread-pool timer, so a loading screen that presents nothing does not count
+  (`core/shared/stall_watch.h`). The panel says why and suggests the mochizuki runtime; `StallStandDownMs` in
+  `amd-nr.ini` sets the limit, 0 turns it off. The 32-bit helper does the same.
+- **D3D10.1 games that compile their shaders at run time no longer crash under ReShade** (Just Cause 2). ReShade
+  6.8.0 hooks `D3D10CompileShader` in both `d3d10.dll` and `d3d10_1.dll` and calls the wrong one's original, so the
+  two called each other until the stack ran out, with the add-on switched off. On `init_device`, where `d3d10_1.dll`
+  is loaded, the add-on puts `d3d10.dll`'s first bytes back from the file on disk
+  (`core/shared/d3d10_compile_unhook.h`); ReShade has no use for that hook.
+- In `hostcheck`, D3D10 (`amd-nr-hostcheck.exe d3d10`), built 64- and 32-bit, on a D3D10.1 device that compiles a shader through `d3d10_1.dll` as Just Cause 2 does. On the bench frame
+  the D3D10 route composes exactly what D3D11 does, byte for byte, 64-bit and 32-bit, and so does
+  32-bit OpenGL; with a resize mid-run and with `Async=0` too.
+- The 32-bit frontend's D3D9, D3D10 and OpenGL code moved out of `frontend32.cpp` into
+  `d3d9_32.inc` and `routes32.inc`.
 
 ## v0.7.7 - 2026-10-01 - danielblnc's Style reaches the network, and OpenGL games no longer crash on load
 

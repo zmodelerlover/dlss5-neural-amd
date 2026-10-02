@@ -219,9 +219,29 @@ void WaitForPreviousJob()
 // GPU-bound game keeps queued would skip every frame for good, and a list recorded behind it on
 // the same queue stacks no runtime job. One copy, because five had drifted: Vulkan and OpenGL
 // recorded on top of a late job, and never timed the jobs NoteJobCost needs to see.
+// After every submission that signals g.completion: the job is timed from here (stall_watch.h).
+void ArmStallWatch() { stallwatch::Watch::Get().Arm(g.fence.Get(), g.completion); }
+
 bool JobGate()
 {
     TickStats();
+    // One job the GPU held for seconds is the warning before the one that locks the machine
+    // (stall_watch.h): the network stands down for the session on it, before this frame records.
+    auto &stall = stallwatch::Watch::Get();
+    stall.limitMs.store(static_cast<UINT64>(g.settings.stallStandDownMs.load()));
+    if (const UINT64 held = stall.Tripped(); held != 0 && !g.status.unavailable)
+    {
+        static char why[200];
+        std::snprintf(why, sizeof(why),
+                      "the GPU held one network job for %.1f s, the warning before a freeze that locks "
+                      "the PC; off until the game restarts (try the mochizuki runtime; StallStandDownMs=0 "
+                      "turns this off)",
+                      static_cast<double>(held) / 1000.0);
+        g.status.unavailable = true;
+        g.status.reason = why;
+        Log("off: %s.", why);
+        return false;
+    }
     WaitForPreviousJob();
     const bool pending = RuntimeBusy() || (g.fence->GetCompletedValue() < g.completion &&
                                            GetTickCount64() - g.lastJobAt < 500);

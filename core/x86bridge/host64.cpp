@@ -224,6 +224,7 @@ struct Host {
     Check(g.bridge.workQueue->Signal(g.ringFence.Get(), g.ringSerial), "ring signal");
     g.completion = ++g.serial;
     Check(g.bridge.workQueue->Signal(g.fence.Get(), g.completion), "completion signal");
+    ArmStallWatch();
 
         // A wait that gave up (BoundWaits) stood the helper down: this frame is dropped, answered
         // Original, and its readbacks and textures stay where the GPU may still be using them.

@@ -116,10 +116,10 @@ if not (rearm >= 0 and "!= gameDevice" in destroy11[:rearm]
                                      "g.bridge.backOn11.Reset();", "g.guideDepthCs.Reset();"))):
     bad.append("D3D11 OnDestroyDevice: does not re-arm through GameDeviceGone and only then forget "
                "the game's device, context, fences and depth shader")
-step1 = body(d11, "void BridgeStep1(")
+step1, opened = body(d11, "void BridgeStep1("), body(d11, "bool OpenBridge(")
 if not ("if (g.bridge.failed || gameDevice != nullptr)" in step1
-        and 0 <= step1.find("g.bridge.workDevice == nullptr && !CreateWorkDevice(")
-        < step1.find("gameDevice = native;")):
+        and 0 <= step1.find("if (OpenBridge(native))") < step1.find("gameDevice = native;")
+        and "g.bridge.workDevice == nullptr && !CreateWorkDevice(" in opened):
     bad.append("BridgeStep1: a new game device is not opened beside the work device already up")
 removed = re.search(r"if \(FAILED\(g\.bridge\.game11->GetDeviceRemovedReason\(\)\)\) \{(.*?)\n        \}",
                     d11, re.S)

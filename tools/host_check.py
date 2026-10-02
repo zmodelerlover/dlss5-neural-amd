@@ -8,7 +8,7 @@ the baseline):
 
 The 32-bit bridge the same way: --a/--b name each build's amd-nr.addon32 (its amd-nr-host64.exe
 beside it), --tools the x86 build (build.ps1 -Arch x86), --reshade the 32-bit ReShade, and
---apis d3d9 d3d11, the two the bridge carries.
+--apis d3d9 d3d10 d3d11 opengl, the four the bridge carries.
 
 Each host presents the same frame with the effect on from the first frame; the capture add-on
 saves the composed back buffer after ReShade's banner is gone. The two builds must differ by no
@@ -23,7 +23,7 @@ the line per API is that still frame's flicker, the largest of R, G and B moving
 consecutive captures. Two APIs are SAME within noise when their captures differ on average by no
 more than 1.5 times the larger of the two's own frame-to-frame change, or half a code value, since
 the crossing formats differ (OpenGL crosses in RGBA8, D3D12 in the back buffer's own). Add the
-32-bit bridge's d3d9 and d3d11 with --addon32, --tools32 and --reshade32:
+32-bit bridge's d3d9, d3d10, d3d11 and opengl with --addon32, --tools32 and --reshade32:
   python tools/host_check.py --cross --b build/amd-nr.addon64 --tools build --reshade ... \
     --runtime-dir ... --input frame.ppm --output /new/directory [--frames 8]
 
@@ -38,7 +38,7 @@ import subprocess
 
 import numpy as np
 
-APIS = ("d3d9", "d3d11", "d3d12", "vulkan", "opengl")
+APIS = ("d3d9", "d3d10", "d3d11", "d3d12", "vulkan", "opengl")
 RESHADE_INI = """[ADDON]
 DisabledAddons=
 [GENERAL]
@@ -80,7 +80,7 @@ def run_one(args, api, addon, folder, keys, frames=1, base=BASE):
     shutil.copy2(addon, folder / f"amd-nr{ext}")
     if ext == ".addon32":
         shutil.copy2(addon.parent / "amd-nr-host64.exe", folder)
-    proxy = {"d3d9": "d3d9.dll", "d3d11": "dxgi.dll", "d3d12": "dxgi.dll", "opengl": "opengl32.dll"}
+    proxy = {"d3d9": "d3d9.dll", "d3d10": "dxgi.dll", "d3d11": "dxgi.dll", "d3d12": "dxgi.dll", "opengl": "opengl32.dll"}
     if api in proxy:
         shutil.copy2(args.reshade, folder / proxy[api])
     for filename in ("dlssnr_amd_pass1.dll", "dlssnr_on_amd_weights.bin", "dlssnr_on_amd.ini"):
@@ -140,7 +140,7 @@ def cross(args):
     legs = [(api, args.b, args) for api in args.apis]
     if args.addon32:
         x86 = argparse.Namespace(**{**vars(args), "tools": args.tools32, "reshade": args.reshade32})
-        legs += [(f"x86-{api}", args.addon32, x86) for api in ("d3d9", "d3d11")]
+        legs += [(f"x86-{api}", args.addon32, x86) for api in ("d3d9", "d3d10", "d3d11", "opengl")]
     runs, results = {}, {}
     for name, addon, leg in legs:
         shots = run_one(leg, name.removeprefix("x86-"), addon, args.output / name, {}, args.frames, CROSS)

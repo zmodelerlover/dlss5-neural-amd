@@ -160,6 +160,7 @@ struct Transport final : FrameTransport {
             g.status.failed = true;
             Log("completion fence Signal failed. Stopping.");
         }
+        ArmStallWatch();
 
         if (++g.status.frame <= 3 || g.status.frame % 120 == 0)
             Log("frame %llu processed (%llu skipped)",

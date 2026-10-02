@@ -5,5 +5,5 @@
   "core/diagnostics/vkbridge/vkbridge.cpp": 687,
   "core/diagnostics/vkprobe/vkprobe.cpp": 579,
   "core/shared/vk_raw.inc": 751,
-  "core/x86bridge/frontend32.cpp": 1048
+  "core/x86bridge/frontend32.cpp": 765
 }

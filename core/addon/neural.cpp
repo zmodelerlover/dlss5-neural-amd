@@ -18,6 +18,9 @@
 #include "../shared/log_export.h"
 #include "../shared/guide_choice.h"
 #include "../shared/d3d11_guides.h"
+#include "../shared/d3d10_stage.h"
+#include "../shared/d3d10_compile_unhook.h"
+#include "../shared/stall_watch.h"
 #include "../shared/raster_pin.h"
 #include "../shared/history_keys.h"
 #include "../ui/panel.h"
@@ -733,6 +736,7 @@ struct State
         std::atomic<bool> glSemaphores { true };
         std::atomic<int> fenceWaitCapMs { 10000 };  // ini-only as well: see WaitFence
         std::atomic<int> watchdogStandDown { 8 };   // ini-only as well: see NoteWatchdog
+        std::atomic<int> stallStandDownMs { 2000 }; // ini-only as well: see JobGate
         std::atomic<bool> d3d12Wait { true };        // ini-only as well: see WaitForPreviousJob
     } settings;
     UINT loadedPasses = 0;
@@ -1201,6 +1205,7 @@ void LoadSettings()
     const int capMs = static_cast<int>(num(L"FenceWaitCapMs", 10000.0f));  // under 1 s, one slow frame stands it down
     g.settings.fenceWaitCapMs.store(capMs <= 0 ? 0 : std::max(capMs, 1000));
     g.settings.watchdogStandDown.store(std::max(0, static_cast<int>(num(L"WatchdogStandDown", 8.0f))));
+    g.settings.stallStandDownMs.store(std::max(0, static_cast<int>(num(L"StallStandDownMs", 2000.0f))));
     g.settings.d3d12Wait.store(flag(L"D3D12Wait", true));
     if (!g.settings.d3d12Wait.load())
         Log("D3D12Wait=0: no present waits for the last evaluation, so expect more frames skipped as pending.");
@@ -3027,6 +3032,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         if (g.events & 4)
             reshade::register_event<reshade::addon_event::clear_depth_stencil_view>(OnClearDepth);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroySwapchain);
+        // Every device: nothing is done until d3d10_1.dll is in and the hook is there to undo.
+        reshade::register_event<reshade::addon_event::init_device>([](device *) {
+            if (const char *unhooked = d3d10unhook::RestoreCompileShader())
+                Log("%s.", unhooked);
+        });
         reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
         reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapchain);
         reshade::register_event<reshade::addon_event::init_effect_runtime>(OnInitEffects);
@@ -3045,6 +3055,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         // reserved is non-null when the process is exiting rather than unloading us.
         for (FrameTransport *transport : AllTransports())
             transport->OnAddonUnload(reserved != nullptr);
+        stallwatch::Watch::Get().Stop(reserved != nullptr);
         if (g_probe != nullptr)
             RemoveVectoredExceptionHandler(g_probe);
         if (g.events & 16)

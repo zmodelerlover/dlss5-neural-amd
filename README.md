@@ -16,7 +16,7 @@ Discord: <https://discord.gg/wYhvS3JSHM> - for DLSS 5 in general, not a support 
 | | |
 |---|---|
 | GPU | AMD RDNA3 or RDNA4 with the HIP 7 runtime (`amdhip64_7.dll`). HIP 6 does not work. A current Adrenalin driver includes it. Does nothing on NVIDIA or Intel. |
-| Renderer | Direct3D 11 works best. Direct3D 12 works, but ReShade is not a good way into a D3D12 game and it is not the route to recommend today; wait for the OptiScaler builds instead. Vulkan and OpenGL are experimental. 32-bit games are experimental, and 32-bit OpenGL is not supported at all. |
+| Renderer | Direct3D 11 works best. Direct3D 12 works, but ReShade is not a good way into a D3D12 game and it is not the route to recommend today; wait for the OptiScaler builds instead. Direct3D 10, Vulkan and OpenGL are experimental. 32-bit games are experimental: Direct3D 8, 9, 10 and 11, and OpenGL. |
 | ReShade | The build labelled "with full add-on support", version 6.x. The normal build cannot load add-ons. |
 | Disk | About 150 MB for the network weights. |
 
@@ -196,11 +196,12 @@ tests and their thresholds are in the effect's own settings.
 | What you see | What it means |
 |---|---|
 | The add-on is not in the Add-ons tab | `ReShade.ini` has `DisabledAddons=` listing it under `[ADDON]`. ReShade writes that line if you ever untick the add-on. Delete the line. |
-| The status says the API is wrong | Only D3D11, D3D12, Vulkan and OpenGL are supported, plus D3D8 and D3D9 in 32-bit games through the bridge. Check for a per-game renderer override. |
+| The status says the API is wrong | Only D3D10, D3D11, D3D12, Vulkan and OpenGL are supported, plus D3D8 and D3D9 in 32-bit games through the bridge. Check for a per-game renderer override. |
 | `HIP: amdhip64_7.dll failed to load` | HIP 7 is not installed. HIP 6 does not count. |
 | `dlssnr_amd_pass1.dll is the size of a known build but not one … Refused.` (or `… bytes, the size of no danielblnc build this add-on knows …`) | A `dlssnr_amd_pass1.dll` that is none of the builds the log names. Compare with `tools/SHA256SUMS.txt`. |
 | `missing:` followed by a file path | That file is not where the add-on looks. Put it at exactly that path. |
 | The game crashes with `887A0005` | A Windows driver reset. Lower the Scale. |
+| `off: the GPU held one network job for … s` | One evaluation sat on the GPU for seconds. Seen on an RX 9060 XT with danielblnc's runtime, about every 10 to 30 minutes, and two close together locked the PC, so the effect switches off for the session at the first. Switch **NR runtime** to mochizuki (RDNA4). `StallStandDownMs` in `amd-nr.ini` sets the limit (2000 ms); `0` turns it off. |
 | `bridge: gave up on … (FenceWaitCapMs=10000 …)` in the log, and the status says to restart | The GPU did not finish the add-on's work in 10 s, so it switched off rather than free what the GPU may still read. Restart the game. `FenceWaitCapMs=0` in `amd-nr.ini` waits for ever instead, as older versions did. On 32-bit games the helper stops at 4 s whatever the key says, `0` included, so it answers before the game's own 5 s timeout; there the line reads `FenceWaitCapMs=4000` and is in `amd-nr-x86-host.log`. |
 | `Standing down:` after `the network outlasted InlineWaitMs on 8 evaluations in a row … at scale 0.25, the lowest`, or after `the network took … at scale 0.25, the lowest` | The network kept outlasting `InlineWaitMs` (or took over 250 ms) even at the lowest scale, so the effect switched off rather than hold the game's queue every frame or risk a driver reset. Above the lowest scale the same streak only holds the scale a step lower (`… so the scale is held at …`). Restart the game and lower the Scale; if it stands down at 0.25 again, lower the resolution. `WatchdogStandDown=0` in `amd-nr.ini` turns the watchdog rule off. |
 | `engine watchdog budget … WARNING` | `InlineWaitMs` in `dlssnr_on_amd.ini` is over the runtime's own 200 ms. The add-on never changes that file once it exists; lower the value by hand (the add-on writes 100 into a new one). |
@@ -247,8 +248,8 @@ a game.
 
 - D3D11 is the only route where the game's own motion vectors reach the network, and the only one
   where the companion effect above can stand in for them. On D3D12 the add-on finds the game's
-  depth, captured before the game clears it, and measures motion by optical flow. On Vulkan and OpenGL, and on
-  32-bit D3D9 games, it only receives the final image. The panel leaves out the guide controls a
+  depth, captured before the game clears it, and measures motion by optical flow. On D3D10, Vulkan and OpenGL,
+  and on 32-bit D3D9 games, it only receives the final image. The panel leaves out the guide controls a
   route cannot use, and the log's `route:` line says what it reaches.
 - FSR upscaling is not implemented and is not planned.
 - On 32-bit D3D9 without D3D9Ex, each frame crosses system memory twice. That costs a few

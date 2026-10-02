@@ -1,4 +1,4 @@
-// Native D3D9/D3D11 x86 frontend. The D3D11 guide/staging code is core/shared, as neural.cpp's is.
+// Native D3D9/D3D10/D3D11/OpenGL x86 frontend. The D3D11 guide/staging code is core/shared, as neural.cpp's is.
 // See the upstream LICENSE; no engine or private runtime ABI lives in this translation unit.
 #include <imgui.h>
 #include <reshade.hpp>
@@ -24,12 +24,14 @@
 #include "../shared/log_export.h"
 #include "../shared/guide_choice.h"
 #include "../shared/d3d11_guides.h"
+#include "../shared/d3d10_stage.h"
+#include "../shared/d3d10_compile_unhook.h"
 #include <cstring>
 using Microsoft::WRL::ComPtr;
 using namespace reshade::api;
 namespace {
 FILE* logFile=nullptr;
-HMODULE addonModule=nullptr;
+HMODULE addonModule=nullptr;const char* d3d10Unhooked=nullptr;
 void Log(const char* fmt,...){if(!logFile)return;va_list a;va_start(a,fmt);vfprintf(logFile,fmt,a);va_end(a);fputc('\n',logFile);fflush(logFile);}
 std::filesystem::path Directory(){wchar_t b[32768]{};GetModuleFileNameW(addonModule,b,32768);return std::filesystem::path(b).parent_path();}
 bool DropRemote();
@@ -90,6 +92,8 @@ struct Front {
     ComPtr<ID3D11Texture2D> sharedIn11,sharedOut11,cpuIn11,cpuOut11;
     UINT stage9W=0,stage9H=0;D3DFORMAT stage9Fmt=D3DFMT_UNKNOWN;
     bool nativeD3D9=false,d3d9Shared=false;
+    // D3D10 and OpenGL, like D3D9, run on a D3D11 device of ours (routes32.inc); api is the game's.
+    ComPtr<ID3D10Device> game10;d3d10stage::Stage stage10;bool nativeD3D10=false,nativeGL=false;device_api api{};
     Guide guideDepth,guideMotion;Bridge colour,output;
     ComPtr<ID3D11ComputeShader> guideDepthCs;bool guideDepthCsFailed=false;
     std::atomic<bool> inEffects{false}; // ReShade is drawing its own effect chain; see OnBind
@@ -225,308 +229,9 @@ bool PrepareGuide(Guide& guide,bool isDepth){
         [&](UINT w,UINT h,DXGI_FORMAT fmt,bool uav){return guide.bridge.Ensure(g.game11.Get(),w,h,fmt,uav);},Log);
 }
 
-void ReleaseD3D9Stage()
-{
-    g.cpuIn11.Reset();
-    g.cpuOut11.Reset();
-    g.sharedIn11.Reset();
-    g.sharedOut11.Reset();
-    g.readback9.Reset();
-    g.upload9.Reset();
-    g.stageInSurface9.Reset();
-    g.stageOutSurface9.Reset();
-    g.stageIn9.Reset();
-    g.stageOut9.Reset();
-    g.stage9W = g.stage9H = 0;
-    g.stage9Fmt = D3DFMT_UNKNOWN;
-    g.d3d9Shared = false;
-}
-
-// The transport format for the classic CPU route. The X8 pair is carried as its A8 twin, which
-// is the same four bytes a pixel with one channel the game does not read -- and the reason
-// is not tidiness: B8G8R8X8_UNORM has no typed UAV at all on this hardware, so the x64 host had
-// nowhere to write the corrected image and stopped rather than draw garbage. Measured on a Radeon
-// RX 9070 XT, driver 32.0.31041: format 88 reports uav=0 typed_store=0, format 87 reports both.
-// That is what a D3D9 game with an X8R8G8B8 back buffer -- Oblivion, and most of its generation --
-// ran into. The X8B8G8R8 pair below was already carried as R8G8B8A8_UNORM for the same reason.
-DXGI_FORMAT D3D9CpuFormat(D3DFORMAT format)
-{
-    switch (format)
-    {
-    case D3DFMT_A8R8G8B8:
-    case D3DFMT_X8R8G8B8:
-        return DXGI_FORMAT_B8G8R8A8_UNORM;
-    case D3DFMT_A8B8G8R8:
-    case D3DFMT_X8B8G8R8:
-        return DXGI_FORMAT_R8G8B8A8_UNORM;
-    default:
-        return DXGI_FORMAT_UNKNOWN;
-    }
-}
-
-bool FindD3D9Adapter(IDirect3DDevice9 *device9, ComPtr<IDXGIAdapter1> &match)
-{
-    D3DDEVICE_CREATION_PARAMETERS creation {};
-    ComPtr<IDirect3D9> d3d9;
-    if (FAILED(device9->GetCreationParameters(&creation)) ||
-        FAILED(device9->GetDirect3D(&d3d9)))
-        return false;
-    const HMONITOR monitor = d3d9->GetAdapterMonitor(creation.AdapterOrdinal);
-    if (monitor == nullptr)
-        return false;
-
-    ComPtr<IDXGIFactory1> factory;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
-        return false;
-    for (UINT adapterIndex = 0;; ++adapterIndex)
-    {
-        ComPtr<IDXGIAdapter1> adapter;
-        if (factory->EnumAdapters1(adapterIndex, &adapter) == DXGI_ERROR_NOT_FOUND)
-            break;
-        for (UINT outputIndex = 0;; ++outputIndex)
-        {
-            ComPtr<IDXGIOutput> output;
-            if (adapter->EnumOutputs(outputIndex, &output) == DXGI_ERROR_NOT_FOUND)
-                break;
-            DXGI_OUTPUT_DESC desc {};
-            if (SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor == monitor)
-            {
-                match = adapter;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-bool InitD3D9Bridge(device *reshadeDevice)
-{
-    // ReShade's API object already exposes the original D3D9 device from get_native(). Querying
-    // the private proxy-only unwrapped IID here fails with E_NOINTERFACE on that original object.
-    auto *native = reinterpret_cast<IDirect3DDevice9 *>(reshadeDevice->get_native());
-    if (native == nullptr)
-        return false;
-    g.game9 = native;
-
-    ComPtr<IDXGIAdapter1> adapter;
-    if (!FindD3D9Adapter(native, adapter))
-        return false;
-    DXGI_ADAPTER_DESC1 adapterDesc {};
-    if (FAILED(adapter->GetDesc1(&adapterDesc)))
-        return false;
-
-    const D3D_FEATURE_LEVEL levels[] = {
-        D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
-        D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0
-    };
-    D3D_FEATURE_LEVEL level {};
-    HRESULT hr = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, static_cast<UINT>(std::size(levels)),
-        D3D11_SDK_VERSION, &g.game11, &level, &g.game11ctx);
-    if (hr == E_INVALIDARG)
-        hr = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels + 1,
-            static_cast<UINT>(std::size(levels) - 1), D3D11_SDK_VERSION,
-            &g.game11, &level, &g.game11ctx);
-    if (FAILED(hr) || g.game11 == nullptr || g.game11ctx == nullptr)
-        return false;
-
-    g.luid = adapterDesc.AdapterLuid;
-    g.nativeD3D9 = true;
-    g.guideDepth.name = "depth"; g.guideMotion.name = "motion";
-    Log("x86bridge native D3D9 interop on LUID=%08lX:%08lX feature=%04X. D3D9 route: colour only; "
-        "no depth path on this API; motion estimated: no game MV path on this API",
-        g.luid.HighPart, g.luid.LowPart, static_cast<unsigned>(level));
-    return true;
-}
-
-HRESULT FlushAndWait9();
 bool FlushAndWait11(){return d3d11guides::FlushAndWait11(g.game11.Get(),g.game11ctx.Get());}
-
-bool EnsureD3D9Stage(UINT width, UINT height, D3DFORMAT format, DXGI_FORMAT &dxgiFormat)
-{
-    if (g.stageIn9 != nullptr && g.stage9W == width && g.stage9H == height &&
-        g.stage9Fmt == format)
-    {
-        D3D11_TEXTURE2D_DESC desc {};
-        auto *texture = g.d3d9Shared ? g.sharedIn11.Get() : g.cpuIn11.Get();
-        if (texture == nullptr)
-            return false;
-        texture->GetDesc(&desc);
-        dxgiFormat = desc.Format;
-        return true;
-    }
-
-    ReleaseD3D9Stage();
-    HANDLE inputHandle = nullptr, outputHandle = nullptr;
-    const bool shared = SUCCEEDED(g.game9->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET,
-                            format, D3DPOOL_DEFAULT, &g.stageIn9, &inputHandle)) &&
-        inputHandle != nullptr &&
-        SUCCEEDED(g.game9->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, format,
-                            D3DPOOL_DEFAULT, &g.stageOut9, &outputHandle)) &&
-        outputHandle != nullptr &&
-        SUCCEEDED(g.stageIn9->GetSurfaceLevel(0, &g.stageInSurface9)) &&
-        SUCCEEDED(g.stageOut9->GetSurfaceLevel(0, &g.stageOutSurface9)) &&
-        SUCCEEDED(g.game11->OpenSharedResource(inputHandle, IID_PPV_ARGS(&g.sharedIn11))) &&
-        SUCCEEDED(g.game11->OpenSharedResource(outputHandle, IID_PPV_ARGS(&g.sharedOut11)));
-    if (shared)
-    {
-        D3D11_TEXTURE2D_DESC inputDesc {}, outputDesc {};
-        g.sharedIn11->GetDesc(&inputDesc);
-        g.sharedOut11->GetDesc(&outputDesc);
-        if (inputDesc.Width == width && inputDesc.Height == height &&
-            inputDesc.SampleDesc.Count == 1 && inputDesc.Format != DXGI_FORMAT_UNKNOWN &&
-            outputDesc.Width == width && outputDesc.Height == height &&
-            outputDesc.SampleDesc.Count == 1 && outputDesc.Format == inputDesc.Format)
-        {
-            g.d3d9Shared = true;
-            dxgiFormat = inputDesc.Format;
-        }
-        else
-            ReleaseD3D9Stage();
-    }
-
-    if (!g.d3d9Shared)
-    {
-        ReleaseD3D9Stage();
-        dxgiFormat = D3D9CpuFormat(format);
-        if (dxgiFormat == DXGI_FORMAT_UNKNOWN ||
-            FAILED(g.game9->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, format,
-                D3DPOOL_DEFAULT, &g.stageIn9, nullptr)) ||
-            FAILED(g.game9->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, format,
-                D3DPOOL_DEFAULT, &g.stageOut9, nullptr)) ||
-            FAILED(g.stageIn9->GetSurfaceLevel(0, &g.stageInSurface9)) ||
-            FAILED(g.stageOut9->GetSurfaceLevel(0, &g.stageOutSurface9)) ||
-            FAILED(g.game9->CreateOffscreenPlainSurface(width, height, format, D3DPOOL_SYSTEMMEM,
-                &g.readback9, nullptr)) ||
-            FAILED(g.game9->CreateOffscreenPlainSurface(width, height, format, D3DPOOL_SYSTEMMEM,
-                &g.upload9, nullptr)))
-        {
-            ReleaseD3D9Stage();
-            return false;
-        }
-        D3D11_TEXTURE2D_DESC cpu {};
-        cpu.Width = width;
-        cpu.Height = height;
-        cpu.MipLevels = cpu.ArraySize = cpu.SampleDesc.Count = 1;
-        cpu.Format = dxgiFormat;
-        cpu.Usage = D3D11_USAGE_STAGING;
-        cpu.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        if (FAILED(g.game11->CreateTexture2D(&cpu, nullptr, &g.cpuIn11)))
-        {
-            ReleaseD3D9Stage();
-            return false;
-        }
-        cpu.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        if (FAILED(g.game11->CreateTexture2D(&cpu, nullptr, &g.cpuOut11)))
-        {
-            ReleaseD3D9Stage();
-            return false;
-        }
-    }
-    g.stage9W = width;
-    g.stage9H = height;
-    g.stage9Fmt = format;
-    Log("bridge: native D3D9 %ux%u fmt %u <-> D3D11 fmt %u using %s staging",
-        width, height, static_cast<unsigned>(format), static_cast<unsigned>(dxgiFormat),
-        g.d3d9Shared ? "shared GPU" : "classic CPU-compatible");
-    return true;
-}
-
-HRESULT UploadD3D9Frame(IDirect3DSurface9 *backBuffer)
-{
-    HRESULT hr = g.game9->StretchRect(backBuffer, nullptr, g.stageInSurface9.Get(), nullptr,
-        D3DTEXF_NONE);
-    if (FAILED(hr))
-        return hr;
-    if (g.d3d9Shared)
-    {
-        if (FAILED(hr = FlushAndWait9()))
-            return hr;
-        g.game11ctx->CopyResource(g.stageIn11.Get(), g.sharedIn11.Get());
-        return S_OK;
-    }
-    if (FAILED(hr = g.game9->GetRenderTargetData(g.stageInSurface9.Get(), g.readback9.Get())))
-        return hr;
-    D3DLOCKED_RECT source {};
-    D3D11_MAPPED_SUBRESOURCE destination {};
-    if (FAILED(hr = g.readback9->LockRect(&source, nullptr, D3DLOCK_READONLY)))
-        return hr;
-    const HRESULT mapped = g.game11ctx->Map(g.cpuIn11.Get(), 0, D3D11_MAP_WRITE, 0, &destination);
-    const size_t rowBytes = static_cast<size_t>(g.stage9W) * 4;
-    if (FAILED(mapped) || source.Pitch <= 0 || static_cast<size_t>(source.Pitch) < rowBytes ||
-        (SUCCEEDED(mapped) && destination.RowPitch < rowBytes))
-    {
-        if (SUCCEEDED(mapped))
-            g.game11ctx->Unmap(g.cpuIn11.Get(), 0);
-        g.readback9->UnlockRect();
-        return FAILED(mapped) ? mapped : E_UNEXPECTED;
-    }
-    for (UINT y = 0; y < g.stage9H; ++y)
-        std::memcpy(static_cast<unsigned char *>(destination.pData) + destination.RowPitch * y,
-            static_cast<const unsigned char *>(source.pBits) + source.Pitch * y, rowBytes);
-    g.game11ctx->Unmap(g.cpuIn11.Get(), 0);
-    g.readback9->UnlockRect();
-    g.game11ctx->CopyResource(g.stageIn11.Get(), g.cpuIn11.Get());
-    return S_OK;
-}
-
-HRESULT DownloadD3D9Frame(IDirect3DSurface9 *backBuffer)
-{
-    if (g.d3d9Shared)
-    {
-        g.game11ctx->CopyResource(g.sharedOut11.Get(), g.stageOut11.Get());
-        if (!FlushAndWait11())
-            return E_FAIL;
-    }
-    else
-    {
-        g.game11ctx->CopyResource(g.cpuOut11.Get(), g.stageOut11.Get());
-        if (!FlushAndWait11())
-            return E_FAIL;
-        D3D11_MAPPED_SUBRESOURCE source {};
-        D3DLOCKED_RECT destination {};
-        HRESULT hr = g.game11ctx->Map(g.cpuOut11.Get(), 0, D3D11_MAP_READ, 0, &source);
-        if (FAILED(hr))
-            return hr;
-        const HRESULT locked = g.upload9->LockRect(&destination, nullptr, 0);
-        const size_t rowBytes = static_cast<size_t>(g.stage9W) * 4;
-        if (FAILED(locked) || destination.Pitch <= 0 ||
-            (SUCCEEDED(locked) && static_cast<size_t>(destination.Pitch) < rowBytes) ||
-            source.RowPitch < rowBytes)
-        {
-            if (SUCCEEDED(locked))
-                g.upload9->UnlockRect();
-            g.game11ctx->Unmap(g.cpuOut11.Get(), 0);
-            return FAILED(locked) ? locked : E_UNEXPECTED;
-        }
-        for (UINT y = 0; y < g.stage9H; ++y)
-            std::memcpy(static_cast<unsigned char *>(destination.pBits) + destination.Pitch * y,
-                static_cast<const unsigned char *>(source.pData) + source.RowPitch * y, rowBytes);
-        g.upload9->UnlockRect();
-        g.game11ctx->Unmap(g.cpuOut11.Get(), 0);
-        if (FAILED(hr = g.game9->UpdateSurface(g.upload9.Get(), nullptr, g.stageOutSurface9.Get(), nullptr)))
-            return hr;
-    }
-    HRESULT hr = g.game9->StretchRect(g.stageOutSurface9.Get(), nullptr, backBuffer, nullptr,
-        D3DTEXF_NONE);
-    return FAILED(hr) ? hr : FlushAndWait9();
-}
-
-HRESULT FlushAndWait9()
-{
-    if (g.game9 == nullptr)
-        return E_POINTER;
-    ComPtr<IDirect3DQuery9> query;
-    HRESULT hr = g.game9->CreateQuery(D3DQUERYTYPE_EVENT, &query);
-    if (FAILED(hr))
-        return hr;
-    if (query == nullptr)
-        return E_UNEXPECTED;
-    if (FAILED(hr = query->Issue(D3DISSUE_END)))
-        return hr;
-    return d3d11guides::PollQuery([&] { return query->GetData(nullptr, 0, D3DGETDATA_FLUSH); });
-}
+#include "d3d9_32.inc"
+#include "routes32.inc"
 
 void Settings(){
     if(g.settings)return;g.settings=true;
@@ -554,6 +259,7 @@ void Settings(){
     probe.Arm((GetEnvironmentVariableW(L"AMDNR_X86BRIDGE_TIMING",timingFlag,8)==1&&timingFlag[0]==L'1')
               ||GetPrivateProfileIntW(L"amd-nr",L"Timing",0,ini.c_str())!=0);
     Log("x86bridge native x86 protocol=%u mode=%s StartOn=%d ToggleKey=%d ToggleMods=%d probe=%s present=%s",x86bridge::Version,g.transport?"TRANSPORT_ONLY":"NEURAL",g.enabled,g.toggleKey,g.toggleMods,probe.on?"on":"off",g.async?"pipelined":"same-frame");
+    if(d3d10Unhooked)Log("x86bridge: %s",d3d10Unhooked);
 }
 bool StartHost(){
     if(g.process)return WaitForSingleObject(g.process.value,0)==WAIT_TIMEOUT;
@@ -714,7 +420,7 @@ bool CollectPending(x86bridge::Ack& a,bool& got){
 }
 void ReleaseLocal(){
     g_depthTally.clear();g_motionTally.clear();ClearGuide(g.guideDepth);ClearGuide(g.guideMotion);
-    ReleaseD3D9Stage();
+    ReleaseD3D9Stage();g.stage10.Release();gl32::Release();
     g.colour.Destroy();g.output.Destroy();g.stageIn11.Reset();g.stageOut11.Reset();g.stageW=g.stageH=0;
     g.stageFmt=DXGI_FORMAT_UNKNOWN;
 }
@@ -737,7 +443,7 @@ bool OnClear(command_list* cmd,resource_view dsv,const float*,const uint8_t*,uin
     if(g.enabled&&!g.failed&&!g.hidden&&controls.shadow.useGameGuides&&controls.shadow.useDepth)d3d11guides::SnapshotDepthBeforeClear(cmd,dsv,g.game11.Get(),g.guideDepth);return false;}
 // Released after g.lock is let go: the D3D9 route's private D3D11 device re-enters OnDestroyDevice on
 // its last release, which takes g.lock again; std::mutex throws, and D3D9 games went down on exit.
-struct Retired{ComPtr<ID3D11ComputeShader> cs;ComPtr<ID3D11Device> d11;ComPtr<ID3D11DeviceContext> ctx;ComPtr<IDirect3DDevice9> d9;};void Retire(Retired& r){r.cs.Swap(g.guideDepthCs);r.d11.Swap(g.game11);r.ctx.Swap(g.game11ctx);r.d9.Swap(g.game9);}
+struct Retired{ComPtr<ID3D11ComputeShader> cs;ComPtr<ID3D11Device> d11;ComPtr<ID3D11DeviceContext> ctx;ComPtr<IDirect3DDevice9> d9;ComPtr<ID3D10Device> d10;};void Retire(Retired& r){r.cs.Swap(g.guideDepthCs);r.d11.Swap(g.game11);r.ctx.Swap(g.game11ctx);r.d9.Swap(g.game9);r.d10.Swap(g.game10);g.nativeD3D9=g.nativeD3D10=g.nativeGL=false;g.api={};}
 void OnDestroy(swapchain* sc,bool resize){
     Retired retired;std::lock_guard lock(g.lock);if(sc!=g.active)return;
     Log("x86bridge retiring swapchain resize=%d",resize);
@@ -774,7 +480,7 @@ void OnDestroy(swapchain* sc,bool resize){
     ReleaseLocal();
     if(!resize){
         if(g.process&&!g.failed){x86bridge::Ack a;x86bridge::Request(g.pipe.value,g.process.value,x86bridge::Kind::Quit,nullptr,0,a);}
-        StopHost();g.active=nullptr;controls.runtime=nullptr;Retire(retired);g.nativeD3D9=false;g.guideDepthCsFailed=false;
+        StopHost();g.active=nullptr;controls.runtime=nullptr;Retire(retired);g.guideDepthCsFailed=false;
     }
     Log("x86bridge swapchain retired resize=%d",resize);
 }
@@ -812,17 +518,19 @@ void OnDestroyDevice(device* dev){
     if(dev==nullptr)return;
     Retired retired;std::lock_guard lock(g.lock);
     const uint64_t native=dev->get_native();
-    const uint64_t ours=g.nativeD3D9?reinterpret_cast<uint64_t>(g.game9.Get())
+    // Not OpenGL's: a replaced context is found at the next present (gl32::Bind).
+    const uint64_t ours=g.nativeGL?0:g.nativeD3D9?reinterpret_cast<uint64_t>(g.game9.Get())
+                                    :g.nativeD3D10?reinterpret_cast<uint64_t>(g.game10.Get())
                                     :reinterpret_cast<uint64_t>(g.game11.Get());
     if(ours==0||native!=ours)return;
     Log("x86bridge releasing on device destroy (no destroy_swapchain arrived)");
     StopHost();
     ReleaseLocal();
-    g.active=nullptr;controls.runtime=nullptr;Retire(retired);g.nativeD3D9=false;g.guideDepthCsFailed=false;
+    g.active=nullptr;controls.runtime=nullptr;Retire(retired);g.guideDepthCsFailed=false;
 }
 void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,const rect*){
     if(!sc)return;auto* dev=sc->get_device();const auto api=dev->get_api();
-    if(api!=device_api::d3d11&&api!=device_api::d3d9)return;
+    if(api!=device_api::d3d11&&api!=device_api::d3d9&&api!=device_api::d3d10&&api!=device_api::opengl)return;
     std::lock_guard lock(g.lock);Settings();
     // One active swapchain per process, never mix resource owners. Another window's presents leave before anything shared: the period probe, the tallies, the alt-tab and minimised tests.
     if(!g.active){g.active=sc;g.reset=true;}else if(g.active!=sc){static bool said=false;if(!said)Log("x86bridge: a present on a second swapchain goes out as the game drew it, until the first is destroyed; said once");said=true;return;}
@@ -885,8 +593,11 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     if(g.hidden){g.hidden=false;g.reset=true;}
     if((!g.enabled&&!controls.syncRequested&&!controls.synced)||g.failed){g.reset=true;g_depthTally.clear();g_motionTally.clear();return;}
     if(!g.game11){
+        g.api=api;
         if(api==device_api::d3d9){
             if(!InitD3D9Bridge(dev)){Fault("native D3D9/D3D11 interop initialization failed");return;}
+        }else if(api==device_api::d3d10||api==device_api::opengl){
+            if(!(api==device_api::d3d10?InitD3D10Bridge(dev):InitGLBridge())){Fault("native D3D10 or OpenGL/D3D11 interop initialization failed");return;}
         }else{
             g.game11=reinterpret_cast<ID3D11Device*>(dev->get_native());
             if(!g.game11){Fault("D3D11 device absent");return;}g.game11->GetImmediateContext(&g.game11ctx);
@@ -895,7 +606,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
             g.luid=d.AdapterLuid;g.guideDepth.name="depth";g.guideMotion.name="motion";Log("x86bridge D3D11 route: depth and motion from the game's own buffers when it renders them (Read from the game), motion estimated otherwise; Feed.fx does not cross the bridge");
         }
     }
-    if(g.nativeD3D9!=(api==device_api::d3d9)){Fault("graphics API changed for active bridge");return;}
+    if(api!=g.api){Fault("graphics API changed for active bridge");return;}
     if(!StartHost()){Fault("helper missing, launch failed, or host died");return;}
     // Before SyncControls, which uses the same pipe. In same-frame mode only a late answer is ever
     // pending; the split is measured either way so a log says how much of the helper's work the
@@ -906,7 +617,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     const double collectMs=probe.Split();
     if(!SyncControls()){Fault("control protocol synchronization failed");return;}
     if(!g.enabled){g.reset=true;return;}
-    ComPtr<ID3D11Texture2D> bb;ComPtr<IDirect3DSurface9> bb9;
+    ComPtr<ID3D11Texture2D> bb;ComPtr<IDirect3DSurface9> bb9;ID3D10Resource* bb10=nullptr;
     UINT width=0,height=0;DXGI_FORMAT format=DXGI_FORMAT_UNKNOWN;
     if(g.nativeD3D9){
         D3DSURFACE_DESC d9{};
@@ -914,6 +625,9 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
             FAILED(bb9->GetDesc(&d9))||!d9.Width||!d9.Height){g.reset=true;return;}
         width=d9.Width;height=d9.Height;
         if(!EnsureD3D9Stage(width,height,d9.Format,format)){Fault("D3D9 staging unavailable or unsupported back-buffer format");return;}
+    }else if(ColourOnlyRoute()){
+        const char* fault=nullptr;
+        if(!TakeBackBuffer(dev,sc,width,height,format,bb10,fault)){if(fault)Fault(fault);else g.reset=true;return;}
     }else{
         const auto back=sc->get_current_back_buffer();if(!back.handle){g.reset=true;return;}
         if(FAILED(reinterpret_cast<ID3D11Resource*>(back.handle)->QueryInterface(IID_PPV_ARGS(&bb)))){Fault("backbuffer texture unavailable");return;}
@@ -927,6 +641,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
     if(g.nativeD3D9){
         const HRESULT uploadHr=UploadD3D9Frame(bb9.Get());
         if(FAILED(uploadHr)){if(DeferD3D9Failure("input copy",uploadHr))return;FaultHresult("D3D9 input copy did not complete",uploadHr);return;}
+    }else if(ColourOnlyRoute()){if(const char* fault=Upload(bb10)){Fault(fault);return;}
     }else g.game11ctx->CopyResource(g.stageIn11.Get(),bb.Get());
     g.game11ctx->CopyResource(g.colour.on11.Get(),g.stageIn11.Get());
     settled=true;const bool had[2]={g.guideDepth.chosen!=nullptr&&controls.shadow.useDepth!=0,g.guideMotion.chosen!=nullptr&&controls.shadow.useMotion!=0};if(SettleGuide(g.guideDepth,g_depthTally,Log))g.guideTaken|=had[0]?5:1;if(SettleGuide(g.guideMotion,g_motionTally,Log))g.guideTaken|=had[1]?6:2;
@@ -975,6 +690,7 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
         if(g.nativeD3D9){
             const HRESULT downloadHr=DownloadD3D9Frame(bb9.Get());
             if(FAILED(downloadHr)){if(DeferD3D9Failure("output copy",downloadHr))return;FaultHresult("D3D9 output copy did not complete",downloadHr);return;}
+        }else if(ColourOnlyRoute()){if(const char* fault=Download(bb10)){Fault(fault);return;}
         }else{
             g.game11ctx->CopyResource(bb.Get(),g.stageOut11.Get());
             if(!FlushAndWait11()){Fault("return D3D11 queue not drained");return;}
@@ -994,14 +710,14 @@ void OnPresent(command_queue*,swapchain* sc,const rect*,const rect*,uint32_t,con
         const double n=static_cast<double>(probe.frames);
         Log("x86bridge stage probe over %u frames: input+prepare %.2f ms, host %.2f ms, output %.2f ms, bridge total %.2f ms (%s, %s)",
             probe.frames,probe.input/n,probe.host/n,probe.output/n,(probe.input+probe.host+probe.output)/n,
-            g.nativeD3D9?(g.d3d9Shared?"D3D9 shared GPU staging":"D3D9 classic CPU-compatible staging"):"D3D11 direct",
+            g.nativeD3D9?(g.d3d9Shared?"D3D9 shared GPU staging":"D3D9 classic CPU-compatible staging"):g.nativeD3D10?"D3D10 shared GPU staging":g.nativeGL?"OpenGL imported D3D11 textures":"D3D11 direct",
             g.async?"pipelined":"same-frame");
         probe.Drop();
     }
 }
 }
 extern "C" __declspec(dllexport) const char* NAME="AMD Neural Rendering (32-bit)";
-extern "C" __declspec(dllexport) const char* DESCRIPTION="Native D3D9/D3D11 x86 to original x64 neural engine; same-frame CPU barriers.";
+extern "C" __declspec(dllexport) const char* DESCRIPTION="Native D3D9/D3D10/D3D11/OpenGL x86 to original x64 neural engine; same-frame CPU barriers.";
 // The frontend's side of frontend_port.h: the few things the panel adapter reads or switches.
 namespace frontend32 {
 Controls32 controls;
@@ -1009,7 +725,7 @@ std::mutex& FrameLock(){return g.lock;}
 bool HostFailed(){return g.failed;}
 void RetryHost(){g.failed=false;}
 bool Pipelined(){return g.async;}
-bool NativeD3D9(){return g.nativeD3D9;}
+const char* ColourOnly(){return ColourOnlyRoute();}
 void SwitchPipelining(bool on){SetAsync(on);}
 void ApplyOperational(){OperationalSettings();}
 std::vector<std::string> GuideCandidates(){
@@ -1028,6 +744,7 @@ BOOL APIENTRY DllMain(HMODULE module,DWORD reason,LPVOID){
     if(reason==DLL_PROCESS_ATTACH){
         addonModule=module;
         if(!reshade::register_addon(module))return FALSE;
+        reshade::register_event<reshade::addon_event::init_device>([](device*){if(const char* done=d3d10unhook::RestoreCompileShader())d3d10Unhooked=done;});
         reshade::register_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(OnBind);
         reshade::register_event<reshade::addon_event::reshade_begin_effects>(OnBeginEffects);
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(OnFinishEffects);

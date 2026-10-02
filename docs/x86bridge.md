@@ -99,7 +99,7 @@ The D3D11 frame order remains capture -> D3D11 FlushAndWait -> FRAME -> original
 
 The probe only measures. It is off by default, adds no query, flush or wait of its own, and reads only boundaries the frame already crosses -- a wait added here would land inside the `IDirect3DDevice9::Reset` window this frontend deliberately keeps clear. Measure before changing anything: altering the requested raster without knowing which stage costs what is exactly how the reverted alignment experiment happened.
 
-Native builds cover D3D9 and D3D11 x86. D3D8 is experimental and follows `game D3D8 -> d3d8to9 -> ReShade D3D9 -> native D3D9 frontend`; the neural bridge itself does not implement a second D3D8 renderer. Live D3D8/D3D9 interop, fullscreen transitions, MSAA behavior, classic-D3D9 staging performance and GPU/UI behavior still require manual game validation.
+Native builds cover D3D9, D3D10, D3D11 and OpenGL x86. D3D10 and OpenGL run, as D3D9 does, on a D3D11 device of the frontend's own on the game's adapter (`routes32.inc`): D3D10 through a texture its device shares by legacy handle, OpenGL through D3D11 textures its context imports (`gl32.inc`). Colour only. D3D8 is experimental and follows `game D3D8 -> d3d8to9 -> ReShade D3D9 -> native D3D9 frontend`; the neural bridge itself does not implement a second D3D8 renderer. Live D3D8/D3D9 interop, fullscreen transitions, MSAA behavior, classic-D3D9 staging performance and GPU/UI behavior still require manual game validation.
 
 
 ## Incremental update: Factory Defaults and additive installer
