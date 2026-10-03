@@ -275,9 +275,24 @@ bool InitHip()
     if (g.hipSet != nullptr)
         return true;
     HMODULE hip = LoadLibraryExW(L"amdhip64_7.dll", nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    DWORD hipError = hip == nullptr ? GetLastError() : 0;
+    // RX 6000 drivers ship HIP 6 only; the AMD HIP SDK brings HIP 7, sets HIP_PATH and leaves PATH alone. Loaded
+    // here by full path, the runtime's own load by name finds the same module.
+    wchar_t hipPath[MAX_PATH];
+    const DWORD hipPathLength = GetEnvironmentVariableW(L"HIP_PATH", hipPath, MAX_PATH);
+    if (hip == nullptr && hipPathLength > 0 && hipPathLength < MAX_PATH)
+    {
+        hip = LoadLibraryExW((std::filesystem::path(hipPath) / L"bin" / L"amdhip64_7.dll").c_str(), nullptr,
+                             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        if (hip == nullptr)
+            hipError = GetLastError();
+        else
+            Log("HIP: amdhip64_7.dll from HIP_PATH (%ls)", hipPath);
+    }
     if (hip == nullptr)
     {
-        Log("HIP: amdhip64_7.dll failed to load (error %lu). AMD HIP 7 is required.", GetLastError());
+        Log("HIP: amdhip64_7.dll failed to load (error %lu), from the system or HIP_PATH. AMD HIP 7 is required "
+            "(RX 6000: the AMD HIP SDK 7.2).", hipError);
         return false;
     }
     auto count = reinterpret_cast<int (*)(int *)>(GetProcAddress(hip, "hipGetDeviceCount"));

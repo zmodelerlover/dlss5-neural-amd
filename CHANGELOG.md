@@ -1,5 +1,16 @@
 ﻿# Changelog
 
+## v0.7.9 - 2026-10-03 - RX 6000 cards with AMD's HIP SDK
+
+Built on v0.7.8 with the same runtimes and the same bridge protocol (v5).
+
+- **RX 6000 (RDNA2) cards with the HIP SDK 7.2.** Their drivers ship HIP 6.4 only, and the SDK that brings HIP 7 sets
+  `HIP_PATH` and leaves `PATH` alone, so `amdhip64_7.dll` was not found and the add-on stood down with
+  `HIP: amdhip64_7.dll failed to load (error 126)` while danielblnc's own setup, which looks under `HIP_PATH`, worked.
+  The add-on now loads it from `HIP_PATH\bin` when the system has none, and the runtime then finds the same module
+  (`core/addon/runtime_files.inc`). The 32-bit helper does the same.
+- danielblnc's 0.6.0 is public and is the runtime the installer puts in.
+
 ## v0.7.8 - 2026-10-02 - Direct3D 10 games, 32-bit OpenGL games, and a stand-down before a GPU freeze
 
 Built on v0.7.7 with the same runtimes and the same bridge protocol (v5).

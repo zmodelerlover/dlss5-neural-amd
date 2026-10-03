@@ -15,7 +15,7 @@ Discord: <https://discord.gg/wYhvS3JSHM> - for DLSS 5 in general, not a support 
 
 | | |
 |---|---|
-| GPU | AMD RDNA3 or RDNA4 with the HIP 7 runtime (`amdhip64_7.dll`). HIP 6 does not work. A current Adrenalin driver includes it. Does nothing on NVIDIA or Intel. |
+| GPU | AMD RDNA2, RDNA3 or RDNA4 with the HIP 7 runtime (`amdhip64_7.dll`). HIP 6 does not work. A current Adrenalin driver includes it on RX 7000 and RX 9000; RX 6000 (RDNA2) needs AMD's HIP SDK 7.2, which the add-on finds through `HIP_PATH`. Does nothing on NVIDIA or Intel. |
 | Renderer | Direct3D 11 works best. Direct3D 12 works, but ReShade is not a good way into a D3D12 game and it is not the route to recommend today; wait for the OptiScaler builds instead. Direct3D 10, Vulkan and OpenGL are experimental. 32-bit games are experimental: Direct3D 8, 9, 10 and 11, and OpenGL. |
 | ReShade | The build labelled "with full add-on support", version 6.x. The normal build cannot load add-ons. |
 | Disk | About 150 MB for the network weights. |
@@ -104,16 +104,13 @@ at once, is saved as `Quality` in `amd-nr.ini` (1 fast, 0 reference) and is used
 
 ## Which danielblnc runtime
 
-The add-on runs **DLSS-NR-on-AMD 0.5.1**, which the installer puts in, and still runs **0.5.0**, **v0.4.3**,
+The add-on runs **DLSS-NR-on-AMD 0.6.0**, which the installer puts in, and still runs **0.5.1**, **0.5.0**, **v0.4.3**,
 **v0.4.2** and **v0.4.1**, so a folder that keeps an older `dlssnr_amd_pass1.dll` goes on working. It tells the builds apart
 by hash and refuses any other; the status column says which one runs.
 
-It also runs **0.6.0**, the build danielblnc gives his supporters, which adds RX 6000 (RDNA2) cards; on those it
-needs the HIP SDK 7.2 runtime from AMD's site, since their drivers ship HIP 6.4 only. **It is not distributed**, by this
-project or by the installer: if you have it, you supply your own `version.dll` or its
-`dlssnr_on_amd_setup.exe`. In the installer, pick the supporter build (**0.6.0**, your own files) in the
-game's panel and choose the file; it checks the file, patches it for the add-on and keeps a copy
-for your other games. By hand:
+0.6.0 adds RX 6000 (RDNA2) cards; on those it needs the HIP SDK 7.2 runtime from AMD's site, since their drivers ship
+HIP 6.4 only. The SDK sets `HIP_PATH` and leaves `PATH` alone, and the add-on loads `amdhip64_7.dll` from
+`HIP_PATH\bin` when the system has none. To patch a runtime by hand:
 
 ```
 python tools/extract_runtime.py dlssnr_on_amd_setup.exe version.dll      (only for the setup)
@@ -197,7 +194,7 @@ tests and their thresholds are in the effect's own settings.
 |---|---|
 | The add-on is not in the Add-ons tab | `ReShade.ini` has `DisabledAddons=` listing it under `[ADDON]`. ReShade writes that line if you ever untick the add-on. Delete the line. |
 | The status says the API is wrong | Only D3D10, D3D11, D3D12, Vulkan and OpenGL are supported, plus D3D8 and D3D9 in 32-bit games through the bridge. Check for a per-game renderer override. |
-| `HIP: amdhip64_7.dll failed to load` | HIP 7 is not installed. HIP 6 does not count. |
+| `HIP: amdhip64_7.dll failed to load` | HIP 7 is not installed. HIP 6 does not count. On RX 6000, install AMD's HIP SDK 7.2 and restart the game. |
 | `dlssnr_amd_pass1.dll is the size of a known build but not one … Refused.` (or `… bytes, the size of no danielblnc build this add-on knows …`) | A `dlssnr_amd_pass1.dll` that is none of the builds the log names. Compare with `tools/SHA256SUMS.txt`. |
 | `missing:` followed by a file path | That file is not where the add-on looks. Put it at exactly that path. |
 | The game crashes with `887A0005` | A Windows driver reset. Lower the Scale. |
