@@ -1,5 +1,27 @@
 ﻿# Changelog
 
+## v0.7.10 - 2026-10-04 - Async on 64-bit games, NR back on after a GPU freeze, mochizuki by default on RX 9000
+
+Built on v0.7.9 with the same runtimes. Bridge protocol v6: the helper's status carries the stand-down time.
+
+- **Timing: Same frame or Async, on the 64-bit add-on too** (Performance). Async sets `Inline=0` in `amd-nr.ini`:
+  the game's GPU queue no longer waits for the network, and its answer lands one frame later. danielblnc traces
+  the freezes some players met to those D3D-HIP waits, so Async may avoid them. A frame that comes while the network
+  is still on the previous one goes out as the game drew it. The runtime takes its timing when it starts, so a
+  change applies the next time the game starts. On the 32-bit bridge Timing keeps its meaning.
+- **The stall check switches the network off instead of standing the add-on down for the session.** Enabled or the
+  hotkey turns it on again, with a fresh watch; the panel says how long the GPU held the job. The 32-bit frontend
+  hears of it through the status (`stallMs`) and switches off on its side as well.
+- danielblnc's runtime is the default only where mochizuki is not installed: with no `NrBackend` in `amd-nr.ini`,
+  an installed mochizuki (RX 9000) runs.
+- **A mochizuki build that died falls back to danielblnc.** `MochizukiNrRuntime.dll` keeps `dlssnr-amd\build.pending`
+  while it builds; when a start finds it (the driver crashed the last build), the add-on runs danielblnc, writes
+  `NrBackend=danielblnc`, renames the marker to `build.failed` and says so in the panel. Picking mochizuki again
+  tries once more, and that build logs every shader it compiles. On the 32-bit bridge the helper falls back and the
+  log says so.
+- Pairs with mochizuki 0.4.10-amd-nr, which builds again on AMD driver 32.0.32015.
+- `framecheck` runs async (`Inline=0`) and counts the frames the engine skipped.
+
 ## v0.7.9 - 2026-10-03 - RX 6000 cards with AMD's HIP SDK
 
 Built on v0.7.8 with the same runtimes and the same bridge protocol (v5).
@@ -1628,7 +1650,7 @@ being fixed.
 
 ### New tools
 
-Two standalone programs, built with `.uild.ps1 -Target <name> -Exe`. Neither needs a game.
+Two standalone programs, built with `.\build.ps1 -Target <name> -Exe`. Neither needs a game.
 
 - **`vkprobe`** asks the installed Vulkan driver whether it will let Vulkan import D3D12 textures
   and D3D12 fences, per format and per handle type, and prints a table. That is the precondition

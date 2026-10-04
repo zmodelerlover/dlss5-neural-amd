@@ -319,7 +319,7 @@ bool StateRequest(x86bridge::Kind kind,const void* body=nullptr,uint32_t bytes=0
     x86bridge::Ack ack;x86bridge::StateSnapshot snapshot;
     if(!x86bridge::Request(g.pipe.value,g.process.value,kind,body,bytes,ack)||
        !x86bridge::Receive(g.pipe.value,g.process.value,&snapshot,sizeof(snapshot)))return false;
-    if(ack.result!=x86bridge::Result::Ready)return false;
+    if(ack.result!=x86bridge::Result::Ready)return false;if(snapshot.status.stallMs!=0&&controls.status.stallMs==0&&g.enabled){g.enabled=false;g.reset=true;OperationalChanged();Log("x86bridge: the helper's GPU held one network job for %u ms; NR is off until it is switched on again",snapshot.status.stallMs);}  // the helper's stall watch switched the network off: so does Enabled here
     controls.status=snapshot.status;if(d3d11guides::FallBackToPreClear(g.guideDepth,controls.status.depthActive==2,controls.status.depthActive==3,Log))g.guideTaken|=1;  // withheld, or varied
     if(replace){controls.shadow=snapshot.settings;controls.sentRevision=snapshot.settings.settings_revision;controls.synced=true;OperationalSettings();}
     return true;

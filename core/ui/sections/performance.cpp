@@ -12,8 +12,26 @@ namespace ui {
 
 namespace {
 
-// Same frame versus pipelined, on the 32-bit bridge only: whether this process waits for the helper
-// at all. The network itself runs same-frame on every route, so the 64-bit panel has no Timing.
+// Same frame versus async. On the 32-bit bridge: whether this process waits for the helper at all (the
+// helper itself runs same-frame). On the 64-bit add-on: whether the game's queue waits for the network.
+void NetworkTiming(PanelSettings &s)
+{
+    int timing = s.inlineMode != 0 ? 0 : 1;
+    if (Risk r(kDanger, s.inlineMode != 0 && s.scale > 1.0f);
+        ImGui::Combo(T("Timing", "Momento"), &timing,
+                     T("Same frame\0Async\0", "Mesmo quadro\0Assíncrono\0")))
+        s.inlineMode = timing == 0 ? 1u : 0u;
+    Help("Same frame: the game's GPU queue waits for the network every frame, and the result goes on that "
+         "same frame. Async: the queue does not wait, and the result lands one frame later. danielblnc traces "
+         "the freezes some players met to those waits, so Async may avoid them; it does not promise to. Saved "
+         "to amd-nr.ini (Inline), and it takes effect the next time the game starts.",
+
+         "Mesmo quadro: a fila da GPU do jogo espera a rede a cada quadro, e o resultado vai no mesmo quadro. "
+         "Assíncrono: a fila não espera, e o resultado chega um quadro depois. O danielblnc atribui a essas "
+         "esperas os travamentos que alguns jogadores tiveram, então o Assíncrono pode evitá-los, sem garantia. "
+         "Fica salvo no amd-nr.ini (Inline) e vale a partir da próxima vez que o jogo abrir.");
+}
+
 void Timing(PanelSettings &s)
 {
     int timing = s.inlineMode != 0 ? 0 : 1;
@@ -210,6 +228,8 @@ void DrawPerformance(PanelSettings &s, const PanelStatus &status, PanelActions &
         return;
     if (status.helperProcess)
         Timing(s);
+    else
+        NetworkTiming(s);
     Scale(s, actions);
     Raster(s, status);
     Passes(s, status);

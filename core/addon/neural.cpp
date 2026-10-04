@@ -965,6 +965,8 @@ struct State
     // NoteJobCost. scaleCap is 0 when the person's own Scale is being honoured in full.
     bool jobRunning = false;
     std::atomic<float> scaleCap { 0.0f };
+    // How long the job that last stood the network down was held, in ms; 0 once it runs again.
+    std::atomic<uint32_t> standDownMs { 0 };
     std::atomic<UINT64> worstJobMs { 0 };
     UINT longJobs = 0;
     UINT junkProbes = 0, flatProbes = 0;
@@ -1197,7 +1199,8 @@ void LoadSettings()
         swprintf_s(key, L"Pass%uSkin", i + 1);
         g.settings.passSkin[i].store(num(key, g.settings.skin.load()));
     }
-    if (!flag(L"Inline", true)) Log("Inline=0 ignored: every route runs the engine same-frame");
+    if (!g.settings.inlineMode.load())
+        Log("Inline=0: the engine runs async, so the game's queue does not wait for the network");
     g.settings.useFeedEffect.store(flag(L"FeedEffect", g.settings.useFeedEffect.load()));
     g.noBackBuffer.store(flag(L"NoBackBuffer", g.noBackBuffer.load()));
     g.noBridge.store(flag(L"NoBridge", g.noBridge.load()));
@@ -1624,7 +1627,7 @@ bool ArmRuntime(HMODULE h)
     At<ID3D12CommandQueue *>(h, rt::B->kQueue) = g.queue.Get();
     g.queue->AddRef();
     At<int>(h, rt::B->kHipDevice) = g.hipDevice;
-    At<uint8_t>(h, rt::B->kInlineMode) = g.settings.inlineMode.load() ? 1 : 0;
+    At<uint8_t>(h, rt::B->kInlineMode) = RuntimeInline() ? 1 : 0;
     At<uint8_t>(h, rt::B->kInterop) = 1;
     At<uint8_t>(h, rt::B->kEnabled) = 1;
     At<uint8_t>(h, rt::B->kUseFsrInputs) = 1;
@@ -2603,7 +2606,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         // anything near zero.
         At<float>(r, rt::B->kScale) = outScale;
         At<int>(r, rt::B->kTonemap) = RuntimeTonemap();
-        At<uint8_t>(r, rt::B->kInlineMode) = g.settings.inlineMode.load() ? 1 : 0;
+        At<uint8_t>(r, rt::B->kInlineMode) = RuntimeInline() ? 1 : 0;
         At<uint8_t>(r, rt::B->kUseDepth) = haveDepth && g.depthUsable.load() ? 1 : 0;  // SetDepthUsable
         // DepthInverted. Both runtimes boot this at 1 -- the NVIDIA DLL writes options+260 = 1 when
         // the parameter is absent, and the AMD port's static initialiser sets it to 1. RenoDX sends
@@ -2663,8 +2666,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                     static_cast<unsigned long long>(g_stats.now.refused), RefusalReason(r));
             break;
         }
-        // Same frame or nothing. Async never moves kJobCounter, so the job would read busy for ever.
-        if (At<uint8_t>(r, rt::B->kInlineActive) != 1)
+        // Same frame was asked and the engine could not: it latched async (no zero-copy or flag PSO).
+        if (RuntimeInline() && At<uint8_t>(r, rt::B->kInlineActive) != 1)
         {
             g.status.unavailable = true;
             g.status.reason = kNotSameFrame;

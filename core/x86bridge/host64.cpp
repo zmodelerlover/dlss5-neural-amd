@@ -16,7 +16,7 @@ struct Host {
     WireSettings factoryDefaults{};
     uint64_t settingsRevision=1,lastCommand=0;
     StandDown standDown=StandDown::Other;  // what Neural() saw stand the helper down, for WireStatus
-    void ForceInline(){g.settings.inlineMode.store(true);}  // the table holds Inline at 1 already; LoadSettings logs an Inline=0
+    void ForceInline(){g.settings.inlineMode.store(true);}  // the helper runs the engine same-frame whatever Inline says; the frontend has its own Async
     // The fence waits end before the frontend's IpcTimeoutMs, or the frontend kills this process
     // mid-wait with our work still on the GPU: FenceWaitCapMs is held to 4 s, 0 (for ever) included.
     // A wait that gives up stands the helper down (WaitFence) and the frame is answered Original.
@@ -62,6 +62,7 @@ struct Host {
             :why==kNotSameFrame?StandDown::NotSameFrame:standDown);
         ui::PanelStatus p;MzStatus(p);
         s.mochizuki=p.mochizuki;s.danielblnc=p.danielblnc!=nullptr?static_cast<uint32_t>(rt::B-rt::kBuilds)+1:0;s.networkMs=p.mochizuki!=0?p.mochizukiMs:p.danielblncMs;
+        s.stallMs=g.standDownMs.load();
         return s;
     }
     void Snapshot(Kind kind,Result result=Result::Ready){

@@ -364,6 +364,7 @@ void RunSequence(const std::filesystem::path &dir, const std::map<std::string, s
         if (!k.empty()) kinds.push_back(k);
     }
     const int dumpFrom = std::stoi(get("from", "0"));
+    int refusedAsync = 0;
 
     UINT w = 0, h = 0;
     ReadPpm(Numbered(dir, "frame", 0, ".ppm"), w, h);
@@ -412,8 +413,11 @@ void RunSequence(const std::filesystem::path &dir, const std::map<std::string, s
         UINT64 waited = 0;
         const double gpu = clock.Frame(source.Get(), run, waited);
         const double wall = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        if (run)
+        // In async the engine skips a frame while too many are in flight; that frame shows without the network.
+        if (run && RuntimeInline())
             Check(g.activePasses == WantedPasses(), "runtime refused a pass");
+        else if (run && g.activePasses != WantedPasses())
+            ++refusedAsync;
         csv << f << ',' << s << ',' << (run ? 1 : 0) << ',' << (run ? g.activePasses : 0) << ','
             << g.historyValid.load() << ',' << g.lastJob << ',' << WatchdogJob() << ',' << gpu << ','
             << wall << ',' << waited << '\n';
@@ -428,6 +432,8 @@ void RunSequence(const std::filesystem::path &dir, const std::map<std::string, s
             std::fflush(stdout);
         }
     }
+    if (!RuntimeInline())
+        std::printf("async: the engine skipped %d of %d frames while too many were in flight\n", refusedAsync, frames);
 }
 } // namespace framecheck
 

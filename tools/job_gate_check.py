@@ -1,18 +1,15 @@
-"""Every route runs the engine same-frame, and nothing decides as if it might not.
+"""The engine's timing is the session's, latched once, and nothing decides on the menu flag.
 
 In the engine's async mode kJobCounter never moves: its one non-zero store sits behind the worker's
-sample of kInlineActive (runtime_offsets.h). A job recorded async therefore read busy until the
-old 500 ms reset, ~2 evaluations a second, while history copied the frame's input and the output
-smooth blended it; with no reset it would read busy for ever. So async is retired, and these hold
-it retired:
-  - LoadSettings reads `Inline` only to say it ignores 0; the settings table holds the flag at 1
-    (default 1, range 1..1) for the ini, both panels and the bridge's wire, and nothing in neural.cpp
-    stores it by hand;
+sample of kInlineActive (runtime_offsets.h). So busy in async is the fence alone (RuntimeBusy), and the
+timing the runtime was started with (RuntimeInline, read once a session) is the only one anything uses:
+  - the settings table takes `Inline` 0 or 1 (default 1) for the ini, both panels and the bridge's wire,
+    LoadSettings logs an Inline=0, and nothing in neural.cpp stores it by hand;
   - no history, smooth or pass-control decision reads the menu flag (core/temporal/, RecordNetwork,
     BringUpEngines);
   - RecordNetwork reads the module's own latched kInlineActive after each record, stands down
-    (unavailable, break) when it is not 1, and does so before the job is counted as ours;
-  - the 64-bit panel has no Timing: only the 32-bit bridge draws it, as its pipelining switch.
+    (unavailable, break) when a same-frame session finds it not 1, and does so before the job is counted;
+  - the 32-bit bridge draws Timing (its pipelining switch), the 64-bit panel NetworkTiming (Inline).
 
 And the run/skip decision is made in one place. Five copies had drifted (Vulkan and OpenGL recorded
 on top of a late job and never timed one), so each route (D3D12, D3D11, Vulkan, OpenGL, the 32-bit
@@ -85,12 +82,12 @@ temporal = sorted((ROOT / "core/temporal").glob("*.inc"))
 if not (record and bring and draw and temporal):
     bad.append("could not find RecordNetwork, BringUpEngines, DrawPerformance or core/temporal")
 
-if 'X(uint32_t, inlineMode, "Inline", 1, 1, 1)' not in (ROOT / "core/x86bridge/settings_fields.inc").read_text(encoding="utf-8"):
-    bad.append("settings_fields.inc: Inline is not held at 1 (default 1, range 1..1)")
+if 'X(uint32_t, inlineMode, "Inline", 1, 0, 1)' not in (ROOT / "core/x86bridge/settings_fields.inc").read_text(encoding="utf-8"):
+    bad.append("settings_fields.inc: Inline is not 0 or 1 with default 1")
 if "inlineMode.store(" in neural:
-    bad.append("neural.cpp stores inlineMode; the ini's Inline=0 must be ignored, not taken")
-if not re.search(r'if \(!flag\(L"Inline", true\)\) Log\(', neural):
-    bad.append("LoadSettings no longer logs an Inline=0 it ignores")
+    bad.append("neural.cpp stores inlineMode by hand; the settings table reads it")
+if 'Log("Inline=0: the engine runs async' not in neural:
+    bad.append("LoadSettings no longer logs an Inline=0")
 for path in temporal:
     if "inlineMode" in path.read_text(encoding="utf-8"):
         bad.append(f"{path.relative_to(ROOT).as_posix()}: decides on the menu's inlineMode")
@@ -107,8 +104,9 @@ else:
     if "g.status.unavailable = true;" not in then or "g.status.reason" not in then:
         bad.append("RecordNetwork: a latched async does not stand down with a reason")
 
-if not re.search(r"if \(status\.helperProcess\)\s*\n\s*Timing\(s\);", draw) or draw.count("Timing(") != 1:
-    bad.append("performance.cpp: Timing is drawn outside the 32-bit bridge's helperProcess")
+if not re.search(r"if \(status\.helperProcess\)\s*\n\s*Timing\(s\);\s*\n\s*else\s*\n\s*NetworkTiming\(s\);", draw) \
+        or len(re.findall(r"\bTiming\(", draw)) != 1:
+    bad.append("performance.cpp: Timing only on the 32-bit bridge's helperProcess, NetworkTiming elsewhere")
 
 gate = code(body(runtimes, "bool JobGate("))
 if not all(s in gate for s in ("WaitForPreviousJob();", "RuntimeBusy()", "NoteJobCost(", "DeviceLost()")):
@@ -305,8 +303,9 @@ else:
 if bad:
     print("FAIL\n  " + "\n  ".join(bad))
     sys.exit(1)
-print("PASS same frame only: Inline=0 ignored, no decision on the menu flag, a latched async stands "
-      "down, Timing only on the 32-bit bridge, one JobGate on each of the five routes, busy from the "
+print("PASS one timing a session: Inline 0 or 1, no decision on the menu flag, a same-frame session "
+      "that finds async stands down, Timing on the 32-bit bridge and NetworkTiming on 64-bit, one JobGate "
+      "on each of the five routes, busy from the "
       "runtime's own count, no timed let-go of a runtime job, a pause clears the job latch, every "
       "failed Close retires its job, one pass-count latch that drains, loads missing copies live, "
       "latches a failed one and resets history")

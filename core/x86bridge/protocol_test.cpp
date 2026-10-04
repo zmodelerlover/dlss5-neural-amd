@@ -22,7 +22,7 @@ int main(){
     WireSettings restored;std::memcpy(&restored,&settings,sizeof(settings));assert(std::memcmp(&settings,&restored,sizeof(settings))==0);
     WireStatus status{};status.processed=0xfedcba9876543210ULL;status.depthActive=1;status.depthMin=.25f;status.stillPct=72;
     WireStatus statusCopy;std::memcpy(&statusCopy,&status,sizeof(status));assert(std::memcmp(&status,&statusCopy,sizeof(status))==0);
-    settings.scale=99;settings.toggleMods=99;settings.enabled=42;settings.tonemap=-90;settings.motionScale=-99;settings.inlineMode=0;
+    settings.scale=99;settings.toggleMods=99;settings.enabled=42;settings.tonemap=-90;settings.motionScale=-99;settings.inlineMode=7;
     assert(NormalizeSettings(settings));assert(settings.scale==2&&settings.toggleMods==7&&settings.enabled==1&&settings.inlineMode==1&&settings.skin==-1);
     // The wire keeps what the 64-bit route keeps (settings_fields.inc): no bound where it has none, its
     // wider Edge Fade, a per-pass Skin at the -1 automatic, and the temporal rows and Quality at
@@ -48,6 +48,8 @@ int main(){
     // The codes are the wire's: a frontend reads them as numbers, so they are never renumbered.
     assert(static_cast<uint32_t>(StandDown::FenceWait)==5&&static_cast<uint32_t>(StandDown::TooSlow)==6&&static_cast<uint32_t>(StandDown::NotSameFrame)==7);
     status.mochizuki=2;status.danielblnc=0;status.networkMs=6.8f;std::memcpy(&statusCopy,&status,sizeof(status));assert(statusCopy.reason==2&&statusCopy.mochizuki==2&&statusCopy.networkMs==6.8f);
-    printf("PASS protocol v5 WireSettings=240 WireStatus=128 StateSnapshot=368 WireCommand=16; roundtrips, table ranges, NaN/Inf, old-version rejection, revisions, command dedup, stand-down code, runtime line\n");
+    status.stallMs=3646;std::memcpy(&statusCopy,&status,sizeof(status));assert(statusCopy.stallMs==3646&&statusCopy.networkMs==6.8f);
+    static_assert(Version==6&&sizeof(WireStatus)==132&&sizeof(StateSnapshot)==372);
+    printf("PASS protocol v6 WireSettings=240 WireStatus=132 StateSnapshot=372 WireCommand=16; roundtrips, table ranges, NaN/Inf, old-version rejection, revisions, command dedup, stand-down code, runtime line, stall time\n");
     printf("PASS fixed-width layouts Header=16 Hello=16 Texture=24 Build=104 Frame=32 Ack=48; malformed/version/old-frame/generation rejected; transport is explicit; pointer_bits=%zu\n",sizeof(void*)*8);
 }

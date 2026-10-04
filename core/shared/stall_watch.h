@@ -2,7 +2,7 @@
 // A network job the GPU has not finished long after it was submitted. Two players on an RX 9060 XT
 // with danielblnc's runtime saw single jobs take 3.8 to 4.2 s, every 10 to 30 minutes; the game
 // froze for those seconds and came back, until two came 14 s apart and the whole machine locked,
-// power button included. One is the warning, so the network stands down for the session on it.
+// power button included. One is the warning, so the network stands down on it; the player can switch it on again.
 //
 // Timed on a thread-pool timer from the submission, not at the next present: while the GPU is held
 // the game presents nothing either, and a loading screen that presents nothing looks the same from
@@ -73,6 +73,15 @@ struct Watch {
 
     // How long the job that stood the network down had been running; 0 while none has.
     UINT64 Tripped() const { return trippedMs.load(); }
+
+    // After a stand-down, so the network can be switched on again in the same session: the job that
+    // tripped it is forgotten, and the next submission starts the clock afresh.
+    void Clear() {
+        std::lock_guard guard(lock);
+        fence = nullptr;
+        value = 0;
+        trippedMs.store(0);
+    }
 
     // When the module unloads without the process ending: no tick may run after it. At process
     // exit the timer goes with everything else.

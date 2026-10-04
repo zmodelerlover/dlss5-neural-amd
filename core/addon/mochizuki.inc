@@ -29,6 +29,7 @@ struct Mochizuki {
     ID3D12Device* device = nullptr; // the device the session was created on
     void* lastJob = nullptr;
     std::string reason, said;
+    bool crashed = false; // the last network build here never finished; this run took danielblnc
 };
 // Never destroyed, like g: its session and module outlive anything that could run at exit.
 Mochizuki &mz = *new Mochizuki;
@@ -38,13 +39,22 @@ bool MzSelected() {
         mz.chosen = runtime_choice::Read(ExeDirectory());
         for (int r = 0; r < runtime_choice::kCount; ++r)
             mz.installed[r] = runtime_choice::Installed(ExeDirectory(), r);
-        // The installer takes mochizuki's files out when it is unticked and leaves amd-nr.ini to the
+        // The installer takes mochizuki's files out on a card that is not RX 9000 and leaves amd-nr.ini to the
         // person, so an ini can still name it here: run danielblnc then, rather than nothing.
         mz.selected =
             mz.chosen == runtime_choice::kMochizuki && mz.installed[runtime_choice::kMochizuki] ? 1
                                                                                                 : 0;
-        if (mz.selected == 1)
-            Log("runtime: mochizuki (NrBackend=mochizuki in amd-nr.ini)");
+        if (mz.selected == 1 && runtime_choice::MochizukiBuildDied(ExeDirectory())) {
+            mz.selected = 0;
+            mz.chosen = runtime_choice::kDanielblnc;
+            mz.crashed = true;
+            runtime_choice::Write(ExeDirectory(), mz.chosen);
+            Log("runtime: danielblnc. mochizuki's last network build in this folder never finished: the game crashed "
+                "or was closed while it compiled (mochizuki_nr.log ends on \"building the network\"). NrBackend is "
+                "danielblnc in amd-nr.ini now; pick mochizuki again to retry, and its log will name every shader it "
+                "compiles.");
+        } else if (mz.selected == 1)
+            Log("runtime: mochizuki (NrBackend=mochizuki in amd-nr.ini, or no NrBackend and mochizuki installed)");
         else if (mz.chosen == runtime_choice::kMochizuki)
             Log("runtime: amd-nr.ini names mochizuki, but MochizukiNrRuntime.dll or dlssnr-amd\\dlssnr.bin "
                 "is not here; running danielblnc");
@@ -282,6 +292,7 @@ void MzStatus(PanelStatus& st) {
     const bool selected = MzSelected();
     st.runtimeActive = mz.selected;
     st.runtimeChosen = mz.chosen;
+    st.mochizukiCrashed = mz.crashed;
     for (int r = 0; r < runtime_choice::kCount; ++r)
         st.runtimeInstalled[r] = mz.installed[r];
     if (!selected && g.runtime != nullptr) {

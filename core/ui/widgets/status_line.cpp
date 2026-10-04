@@ -31,7 +31,12 @@ void StatusLine(const PanelStatus &status, const PanelSettings &s)
     case RunState::Ready:
         break;
     }
-    if (s.enabled == 0)
+    if (s.enabled == 0 && status.standDownSeconds > 0)
+        ImGui::TextColored(kWarn,
+                           T("off: the GPU held one network job for %.1f s; tick Enabled to try again",
+                             "desligado: a GPU segurou um job da rede por %.1f s; marque Ligado para tentar de novo"),
+                           status.standDownSeconds);
+    else if (s.enabled == 0)
         ImGui::TextDisabled("%s", T("off", "desligado"));
     else if (status.processed == 0)
         ImGui::TextColored(kWarn, "%s", T("no frames yet", "nenhum quadro ainda"));

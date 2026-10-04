@@ -101,7 +101,14 @@ void Runtime(const PanelStatus &status, PanelActions &actions)
          "mochizuki roda como shaders Vulkan com instruções de matriz FP8, só em RDNA4 (RX 9000), e "
          "constrói a rede na primeira vez em cada jogo, o que leva até um minuto. Cada um precisa "
          "dos próprios arquivos na pasta do jogo. Vale quando o jogo for aberto de novo.");
-    if (chosen >= 0 && chosen < 2 && !status.runtimeInstalled[chosen])
+    if (status.mochizukiCrashed && chosen == 0)
+        Note(kWarn, T("mochizuki's last start here went down while it built the network (the game crashed or was "
+                      "closed), so this one runs danielblnc. Pick mochizuki again to retry; its log will then name "
+                      "every shader it compiles.",
+                      "A última abertura com o mochizuki aqui caiu enquanto ele montava a rede (o jogo travou ou "
+                      "foi fechado), então esta roda o danielblnc. Escolha o mochizuki de novo para tentar outra "
+                      "vez; o log dele vai mostrar cada shader que compilar."));
+    else if (chosen >= 0 && chosen < 2 && !status.runtimeInstalled[chosen])
         Note(kWarn, T("Not installed in this game's folder.", "Não está instalado na pasta deste jogo."));
     else if (status.runtimeActive >= 0 && chosen != status.runtimeActive)
         Note(kWarn, T("Restart the game to switch.", "Reinicie o jogo para trocar."));

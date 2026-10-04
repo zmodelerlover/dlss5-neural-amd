@@ -48,7 +48,7 @@ ui::PanelStatus BridgeStatus(){
         :code==SD::TooSlow?"the network was too slow even at the lowest scale; restart the game to re-enable"
         :code==SD::NotSameFrame?"the engine could not run same-frame; amd-nr-x86-host.log says why"
         :"the helper stood down; amd-nr-x86-host.log says why";
-    s.processed=w.processed;s.skipped=w.skipped;
+    s.processed=w.processed;s.skipped=w.skipped;s.standDownSeconds=static_cast<float>(w.stallMs)/1000.0f;
     // Where the 64-bit panel prints the profile it picked for this game. This frontend has no
     // profile table and is not getting one -- what it can say instead is which of the two things it
     // does it is doing, which is the answer to "why is this faster than it was".

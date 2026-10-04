@@ -11,8 +11,9 @@ X(uint32_t, enabled, "", 0, 0, 1)
 X(uint32_t, startOn, "StartOn", 0, 0, 1)
 X(uint32_t, disableOnAltTab, "DisableOnAltTab", 0, 0, 1)
 X(uint32_t, serialPasses, "SerialPasses", 1, 0, 1)
-// The engine runs same-frame on every route: an Inline=0 left in an ini reads as 1.
-X(uint32_t, inlineMode, "Inline", 1, 1, 1)
+// 1 the engine runs same-frame (the game's queue waits for the network), 0 async (the network's answer
+// lands a frame later). The 32-bit helper always runs same-frame; its frontend has its own Async.
+X(uint32_t, inlineMode, "Inline", 1, 0, 1)
 X(uint32_t, passTaper, "PassTaper", 0, 0, 1)
 X(uint32_t, guardTracksPasses, "GuardPerPass", 0, 0, 1)
 X(uint32_t, bicubic, "Bicubic", 1, 0, 1)

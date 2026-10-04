@@ -21,6 +21,7 @@ PanelStatus ReadPanelStatus()
     std::lock_guard guard(g.lock);
     st.run = g.status.unavailable ? RunState::Unavailable : g.status.failed ? RunState::Error : RunState::Ready;
     st.reason = g.status.reason;
+    st.standDownSeconds = static_cast<float>(g.standDownMs.load()) / 1000.0f;
     st.processed = g.status.frame - std::min(g.status.frame, g.status.skipped);  // a skip is a present too
     st.skipped = g.status.skipped;
     st.routeNote = ProfileForThisProcess().note;

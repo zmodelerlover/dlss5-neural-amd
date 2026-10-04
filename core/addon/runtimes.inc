@@ -14,7 +14,16 @@ HMODULE RuntimeFor(UINT slot)
 // The jobs module m has taken and not finished, by its own count: kJobId moves on each record, and
 // the worker moves kJobCounter as it retires them, strictly in order. The record entry refuses a
 // job on the same subtraction at four in flight (runtime_offsets.h, kJobId), and teardown zeroes
-// both. Same frame only: async never moves kJobCounter, which is why async is retired.
+// The engine's timing for this session: Inline as the ini had it when the engine first started. The
+// engine latches same-frame or async only when it builds its staging, so a change waits for the next start.
+bool RuntimeInline()
+{
+    static const bool inlineMode = g.settings.inlineMode.load();
+    return inlineMode;
+}
+
+// both. Same frame only: async never moves kJobCounter, so in async nothing is outstanding to this add-on
+// and the engine keeps its own queue (it skips a frame when too many are in flight).
 int Outstanding(HMODULE m)
 {
     return static_cast<int>(static_cast<UINT>(At<volatile LONG>(m, rt::B->kJobId)) -
@@ -26,6 +35,8 @@ int Outstanding(HMODULE m)
 // remembers recording: a job it forgot is still in the queue, and the next one retires after it.
 bool RuntimeBusy()
 {
+    if (!RuntimeInline())
+        return false;
     for (HMODULE m : g.runtimes)
         if (m != nullptr && Outstanding(m) > 0)
             return true;
@@ -226,22 +237,24 @@ bool JobGate()
 {
     TickStats();
     // One job the GPU held for seconds is the warning before the one that locks the machine
-    // (stall_watch.h): the network stands down for the session on it, before this frame records.
+    // (stall_watch.h): the network switches off before this frame records, the panel says why,
+    // and Enabled or the hotkey switches it on again with a fresh watch.
     auto &stall = stallwatch::Watch::Get();
     stall.limitMs.store(static_cast<UINT64>(g.settings.stallStandDownMs.load()));
-    if (const UINT64 held = stall.Tripped(); held != 0 && !g.status.unavailable)
+    if (const UINT64 held = stall.Tripped(); held != 0)
     {
-        static char why[200];
-        std::snprintf(why, sizeof(why),
-                      "the GPU held one network job for %.1f s, the warning before a freeze that locks "
-                      "the PC; off until the game restarts (try the mochizuki runtime; StallStandDownMs=0 "
-                      "turns this off)",
-                      static_cast<double>(held) / 1000.0);
-        g.status.unavailable = true;
-        g.status.reason = why;
-        Log("off: %s.", why);
+        g.settings.enabled.store(false);
+        g.standDownMs.store(static_cast<uint32_t>(std::min<UINT64>(held, UINT32_MAX)));
+        stall.Clear();
+        Log("off: the GPU held one network job for %.1f s, the warning before a freeze that can lock the PC; "
+            "switch it on again to retry, or try the mochizuki runtime (StallStandDownMs=0 turns this check off).",
+            static_cast<double>(held) / 1000.0);
         return false;
     }
+    // The 32-bit helper gets here while its frontend has not yet heard of the stand-down.
+    if (!g.settings.enabled.load())
+        return false;
+    g.standDownMs.store(0);
     WaitForPreviousJob();
     const bool pending = RuntimeBusy() || (g.fence->GetCompletedValue() < g.completion &&
                                            GetTickCount64() - g.lastJobAt < 500);

@@ -103,6 +103,8 @@ struct PanelStatus
 {
     RunState run = RunState::Ready;
     std::string reason;
+    // How long the GPU held the network job that switched it off, while it stays off; 0 otherwise.
+    float standDownSeconds = 0;
     uint64_t processed = 0, skipped = 0;
 
     // First line of the right column: the per-game profile on the add-on, what the bridge is doing
@@ -162,6 +164,8 @@ struct PanelStatus
     // network started (-1 before), and which of the two are in the game's folder.
     int runtimeChosen = 0, runtimeActive = -1;
     bool runtimeInstalled[2] {};
+    // mochizuki's last network build in this folder never finished, so this run took danielblnc.
+    bool mochizukiCrashed = false;
 };
 
 // What the panel asks for and cannot do itself: the owner of each is on the adapter's side --

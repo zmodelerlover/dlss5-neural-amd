@@ -78,10 +78,13 @@ The main controls:
   A change applies live, with one long frame for each copy of the runtime a count needs the
   first time, loaded one a frame (about 150 MB of VRAM each, kept until the game exits).
 - **Limit** — caps how much the image is changed. Default 0.25. In the **Debug** section.
-- **Timing** — 32-bit games only. It chooses presentation: pipelined is the default, because
-  it measured 16% to 41% faster in three games and costs one frame of lag and nothing else.
-  It is saved as `Async` in `amd-nr.ini`. The network itself runs same-frame on every route:
-  a 64-bit game has no Timing, and an `Inline=0` left in `amd-nr.ini` is ignored and logged.
+- **Timing** — on a 64-bit game, **Same frame** (the default) or **Async**, saved as `Inline` in
+  `amd-nr.ini`. Async stops the game's GPU queue from waiting for the network every frame, and the answer
+  lands one frame later; danielblnc traces the freezes some players met to those waits. A frame that comes
+  while the network is still busy goes out as the game drew it, so a slower card gets the effect on fewer
+  frames. It applies the next time the game starts. On a 32-bit game Timing chooses presentation instead:
+  pipelined is the default, because it measured 16% to 41% faster in three games and costs one frame of
+  lag and nothing else; it is saved as `Async`.
 
 The defaults are a reasonable starting point. For a steady picture they turn on **Temporal**
 (`Temporal=2`), **Fixed seed** (`FixedSeed=1`) and **Output smoothing** at 0.80 with a 10/255
@@ -92,7 +95,7 @@ says so. To go back, set Temporal to Auto,
 untick Fixed seed and slide Output smoothing to off, or write `Temporal=0`, `FixedSeed=0` and
 `OutputSmooth=0` in `amd-nr.ini`.
 
-The panel shows fifteen controls, fourteen on a 64-bit game, which has no Timing. Everything
+The panel shows fifteen controls. Everything
 else it can do is one tick away under **More settings** at the bottom, and all of it is
 editable in `amd-nr.ini` either way.
 
@@ -127,13 +130,15 @@ The add-on can also run the network through `MochizukiNrRuntime.dll`, the runtim
 [DLSSNR-AMD](https://github.com/mochizuki0323/DLSSNR-AMD) by mochizuki0323. That is a Vulkan port of
 the same network, with FP8 matrix instructions that only RDNA4 (RX 9000) has. It needs no HIP.
 
-AMD-NR-ReShade Installer v0.6.3 and later put it in when you tick **mochizuki** in a game's sheet
-(RDNA4 cards only). By hand, put `MochizukiNrRuntime.dll` and its `dlssnr-amd\` folder (shaders and
+AMD-NR-ReShade Installer v0.7.11 and later put it in on every RDNA4 card (v0.6.3 to v0.7.10 when you
+ticked **mochizuki** in a game's sheet). By hand, put `MochizukiNrRuntime.dll` and its `dlssnr-amd\` folder (shaders and
 `dlssnr.bin`, generated from your own `nvngx_dlssnr.dll` 310.8.0) next to the game's executable.
 Then pick **mochizuki (Vulkan)** in **NR runtime**, under Language in the panel. The panel says when
 the one picked is not in the game's folder. The choice is saved to `amd-nr.ini` as
-`NrBackend=mochizuki` (or `danielblnc`, the default) and applies when the game is started again. With
-`NrBackend=mochizuki` and its files gone, the add-on runs danielblnc.
+`NrBackend=mochizuki` or `danielblnc` and applies when the game is started again. With no `NrBackend`,
+an installed mochizuki runs; with `NrBackend=mochizuki` and its files gone, the add-on runs danielblnc.
+If a start dies while the network is building (a driver crash), the next start runs danielblnc, writes
+`NrBackend=danielblnc` and says so in the panel; picking mochizuki again tries once more.
 
 The first time in each game the network takes up to a minute to build, and frames go out untouched
 until it is ready; the status column says "mochizuki: building the network" meanwhile, then the
