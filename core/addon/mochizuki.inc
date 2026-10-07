@@ -30,10 +30,13 @@ struct Mochizuki {
     void* lastJob = nullptr;
     std::string reason, said;
     bool crashed = false; // the last network build here never finished; this run took danielblnc
-    // The last Scale and Passes a network ran at; since when PrepareFrame has refused with no build
-    // under way (0 while it runs or builds), and why; and what the panel says after a revert.
+    // The Scale and Passes the running network was built at, taken when a frame first runs on a network
+    // of a new extent (builtW/H/Passes): the old network can still run a frame after a change, and that
+    // frame says nothing about the new values. Since when PrepareFrame has refused with no build under
+    // way (0 while it runs or builds), and why; and what the panel says after a revert.
     float goodScale = 0.0f;
     int goodPasses = 0;
+    uint32_t builtW = 0, builtH = 0, builtPasses = 0;
     ULONGLONG refusedSince = 0;
     std::string refusal, reverted;
 };
@@ -243,6 +246,14 @@ void MzRefused() {
                   static_cast<double>(scale), passes, static_cast<double>(mz.goodScale), mz.goodPasses);
     mz.reverted = line;
     mz.refusedSince = 0;
+    // Into amd-nr.ini as well: the overlay saved the refused values as they settled, and the next
+    // launch would build at them again with nothing here to put them back.
+    static _locale_t c = _create_locale(LC_NUMERIC, "C");
+    wchar_t v[32]{};
+    const std::wstring ini = (ExeDirectory() / L"amd-nr.ini").wstring();
+    if (c != nullptr && _swprintf_s_l(v, 32, L"%.4g", c, static_cast<double>(mz.goodScale)) > 0)
+        WritePrivateProfileStringW(L"amd-nr", L"Scale", v, ini.c_str());
+    WritePrivateProfileStringW(L"amd-nr", L"Passes", std::to_wstring(mz.goodPasses).c_str(), ini.c_str());
     Log("mochizuki: the network was refused for 3 s at Scale %.2f, Passes %d (%s); back to Scale %.2f, "
         "Passes %d, the last it ran at", static_cast<double>(scale), passes, err,
         static_cast<double>(mz.goodScale), mz.goodPasses);
@@ -319,8 +330,14 @@ bool MzRecord(ID3D12GraphicsCommandList*& cmd, bool haveMotion, UINT passes,
     g.historyValid.fetch_or(1u);
     accepted = passes;
     mz.refusedSince = 0;
-    mz.goodScale = g.settings.scale.load();
-    mz.goodPasses = g.settings.passes.load();
+    MochizukiNrInfo info{};
+    info.struct_size = sizeof info;
+    if (mz.getInfo != nullptr && mz.getInfo(mz.session, &info) == LMXXF_NR_OK &&
+        (info.frame_w != mz.builtW || info.frame_h != mz.builtH || info.max_passes != mz.builtPasses)) {
+        mz.builtW = info.frame_w, mz.builtH = info.frame_h, mz.builtPasses = info.max_passes;
+        mz.goodScale = g.settings.scale.load();
+        mz.goodPasses = g.settings.passes.load();
+    }
     return true;
 }
 
