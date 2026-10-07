@@ -40,6 +40,7 @@ struct Host {
 #define X(type,name,key,def,low,high) g.settings.name.store(s.name);
 #include "settings_fields.inc"
 #undef X
+        g.settings.inlineMode.store(1);  // as ForceInline: the table lets Inline be 0 since v0.7.10, and the helper still runs same-frame
         for(unsigned i=0;i<3;++i){g.settings.passOverride[i].store(s.passOverride[i]!=0);g.settings.passStructure[i].store(s.passStructure[i]);g.settings.passTone[i].store(s.passTone[i]);g.settings.passSkin[i].store(s.passSkin[i]);}
         if(historyChanged)ResetTemporal("a setting from the 32-bit panel changed");
         settingsRevision=s.settings_revision;return true;

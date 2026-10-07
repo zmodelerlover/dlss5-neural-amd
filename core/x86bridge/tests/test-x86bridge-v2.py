@@ -101,8 +101,9 @@ for gone in ['void Tag(','enum Known','Tag(k']:
  assert gone not in ui,gone
 assert 'hasFeedEffect' not in adapter and 'bool hasFeedEffect = false;' in ui
 assert 'status.hasFeedEffect && Shown(s, kOptFeed)' in ui
-# Game guides and depth default off in PanelStatus; the adapter must raise them off D3D9.
-assert 's.hasGameGuides=s.hasDepth=!NativeD3D9();' in adapter
+# Game guides and depth default off in PanelStatus; the adapter raises them on D3D11 only, where the
+# game's guides are on the device the frame crosses from (D3D9, D3D10 and OpenGL are colour only).
+assert 's.hasGameGuides=s.hasDepth=ColourOnly()==nullptr;' in adapter
 for wanted in ['More settings','RightLine(','GroupShown(','EffectiveScale(','Export logs to desktop','kOptMeasure']:
  assert wanted in ui,wanted
 # Autosave: armed only once a control has settled, and only against what is already on disk. Without
