@@ -1,5 +1,39 @@
 ﻿# Changelog
 
+## Unreleased
+
+Built on v0.7.10 with the same runtimes and the same bridge protocol (v6).
+
+- **The add-on no longer imports dxgi.dll** (issue #22, Dragon Age: Inquisition; not yet run in the game). The add-on imported `CreateDXGIFactory1` and
+  `CreateDXGIFactory2` from `dxgi.dll`, and with ReShade as `d3d11.dll` the game quit at start with
+  `DXGI_ERROR_INVALID_CALL` (0x887A0001), as NFS 2015 once did over `d3d12.dll`. The factory is resolved where it is
+  first wanted (`core/shared/dxgi_entry.h`), the FidelityFX optical flow's included, and the add-on imports only
+  kernel32, user32, shell32, ole32 and bcrypt; `tools/import_table_check.py` fails a build that imports more.
+- **`amd-nr.log` goes to `%LOCALAPPDATA%\amd-nr` when the game's folder is not writable** (a game under Program
+  Files), and its first line says so. Export logs looks there first.
+- **danielblnc 0.6.0 gets a defined pre-exposure.** Its Record reads a float at packet+0x60, FSR's pre-exposure
+  (`UsePreExposure=1`, its default), one past the 0x60 bytes the add-on handed it, so it read stack bytes. The
+  packet is 0x68 bytes with 1 there; `tools/runtime_offsets_check.py` counts the runtime's reads at +0x60 and holds
+  the packet to them. Older builds stop at 0x60 and are unchanged.
+- **AMD_Neural_Feed.fx's motion needs the provider its `AMDNR_MV_PROVIDER` samples** (issues #18, #7). Any
+  provider being on used to be enough, so Launchpad on with the effect compiled for another provider fed an
+  all-zero field while the panel said the effect was feeding it. The provider has to be enabled and above the
+  effect; when it is below, the panel and the log name it and say to move it above. And when the effect's field
+  reads exactly still everywhere in two probe readings running, FidelityFX optical flow (or the estimator) takes
+  motion back until the effect's setup changes.
+- **mochizuki says when it refuses the network.** After a Scale or Passes change the runtime can free the old
+  network and then refuse the new one (`insufficient VRAM`), retrying every 10 s while the panel said it was
+  running and counted the frames as processed. The panel now says `mochizuki: network refused` with the runtime's
+  reason, in the warning colour; after 3 s of refusal the add-on puts back the last Scale and Passes the network
+  ran at, logs why and says so in the panel. On either runtime a frame no pass ran on is no longer counted as
+  processed.
+- **The D3D11 depth guide is the buffer the most draws went into** (issue #19), with binds as the tie-break, as
+  ReShade picks; the log names its pointer and draw count. A chosen buffer the probe reads FLAT twice in a moving
+  scene gives the slot to the next candidate, twice at most, before the copy before the clears is tried. The
+  32-bit bridge ranks by draws too.
+- The 32-bit helper stays same-frame when the wire carries `Inline=0`, which the settings table allows since
+  v0.7.10; `test-x86bridge-v2` checks it again, and its panel assertion follows the colour-only routes.
+
 ## v0.7.10 - 2026-10-04 - Async on 64-bit games, NR back on after a GPU freeze, mochizuki by default on RX 9000
 
 Built on v0.7.9 with the same runtimes. Bridge protocol v6: the helper's status carries the stand-down time.
