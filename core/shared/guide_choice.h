@@ -72,25 +72,6 @@ inline bool ScreenShaped(UINT w, UINT h, UINT screenW, UINT screenH)
     return screenW != 0 && screenH != 0 && (d < 0 ? -d : d) <= static_cast<long long>(screenW) * screenH / 10;
 }
 
-// Depth buffers the probe read FLAT twice in a moving scene, which SettleGuide passes over for the
-// next candidate (D3D11Transport.inc): a set, as issue #19 had three of one size, so a third is tried
-// rather than the first again. Identity only, never dereferenced; one set per process, as there is one
-// depth guide, emptied when the route lets them back in.
-inline const void *passedOver[4] {};
-inline bool PassedOver(const void *p)
-{
-    for (const void *q : passedOver)
-        if (p != nullptr && q == p)
-            return true;
-    return false;
-}
-inline void PassOver(const void *p)
-{
-    for (const void *&q : passedOver)
-        if (q == nullptr)
-            return void(q = p);
-}
-
 // A motion-vector target as an engine writes it: two float channels, no more, at something
 // close to render resolution. The dozens of small two-channel buffers an engine also produces
 // are excluded by the size floor rather than by name, because names are not available here.
@@ -121,21 +102,24 @@ inline bool LooksLikeMotion(const D3D11_TEXTURE2D_DESC &d, UINT screenW, UINT sc
 template <class Guide, class LogFn>
 bool SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn Log)
 {
-    // Screen-shaped depth candidates rank by draws, binds breaking a tie; with none of that shape, and
-    // for motion, which has no draws, most-bound wins as it always did.
-    bool shaped = false;
-    for (const auto &entry : tally)
-        shaped = shaped || (entry.second.screenShaped && !PassedOver(entry.first));
+    // Most-bound wins, as it always did: motion, which has no draws, and depth with no candidate of the
+    // backbuffer's shape (or before its size is known).
     const Tallied *best = nullptr;
+    for (const auto &entry : tally)
+        if (best == nullptr || entry.second.binds > best->binds)
+            best = &entry.second;
+    // Depth candidates of the backbuffer's shape, when there is one, rank among themselves by draws,
+    // binds breaking a tie: a shadow map out-draws the scene but is not its shape.
+    const Tallied *shaped = nullptr;
     for (const auto &entry : tally)
     {
         const Tallied &t = entry.second;
-        if (PassedOver(entry.first) || (shaped && !t.screenShaped))
-            continue;
-        if (best == nullptr || (shaped ? t.draws > best->draws || (t.draws == best->draws && t.binds > best->binds)
-                                       : t.binds > best->binds))
-            best = &t;
+        if (t.screenShaped && (shaped == nullptr || t.draws > shaped->draws ||
+                               (t.draws == shaped->draws && t.binds > shaped->binds)))
+            shaped = &t;
     }
+    if (shaped != nullptr)
+        best = shaped;
     if (best == nullptr)
     {
         tally.clear();

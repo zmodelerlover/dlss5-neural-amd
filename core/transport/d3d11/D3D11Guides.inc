@@ -55,33 +55,4 @@ void ObserveD3D11(device* dev, const resource_view* rtvs, uint32_t count, resour
                               g_motionTally);
 }
 
-// Called by CrossGuides before it settles the guides.
-void PassOverFlatDepth() {
-    // Depth read FLAT twice in a moving scene: the next buffer the tally holds that has not read FLAT
-    // is tried before the copy before the clears (issue #19, three same-size depth buffers), three at
-    // most. Before the settle, while the tally still holds this frame. A FLAT menu or sky is not the
-    // buffer's last word, so 4800 presents after the last move every buffer is a candidate again.
-    if (g.depthRotations != 0 && g.status.frame >= g.depthRotatedAt + 4800) {
-        Log("guide depth: the buffers passed over as FLAT are candidates again");
-        for (const void*& p : guides::passedOver)
-            p = nullptr;
-        g.depthRotations = 0;
-    }
-    if (g.depthFlatOf != nullptr && g.depthFlatOf == g.guideDepth.chosen.Get() && g.depthRotations < 3 &&
-        std::any_of(g_depthTally.begin(), g_depthTally.end(), [](const auto& e) {
-            return e.first != g.depthFlatOf && !guides::PassedOver(e.first);
-        })) {
-        Log("guide depth: %p reads FLAT in a moving scene; trying the next buffer before the copy before the clears",
-            g.depthFlatOf);
-        guides::PassOver(g.depthFlatOf);
-        ++g.depthRotations;
-        g.depthRotatedAt = g.status.frame;
-        g.flatProbes = 0;
-        g.guideDepth.chosen.Reset();
-        g.guideDepth.challenger = nullptr;
-        g.guideDepth.challengerFrames = g.guideDepth.coldFrames = 0;
-    }
-    g.depthFlatOf = nullptr;
-}
-
 } // namespace d3d11route

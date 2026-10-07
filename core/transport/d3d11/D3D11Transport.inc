@@ -98,7 +98,6 @@ void CrossGuides() {
     // Settled first, and unconditionally, so a game that renders its own buffers can take a slot
     // back off the companion effect. The observation no longer sees ReShade's own targets, so an
     // entry in these tallies is the game's by construction.
-    PassOverFlatDepth();
     const bool hadDepth = g.guideDepth.chosen != nullptr && g.settings.useDepth.load();  // in use
     const bool hadMotion = g.guideMotion.chosen != nullptr && g.settings.useMotion.load();
     const bool tookDepth = SettleGuide(g.guideDepth, g_depthTally, Log);

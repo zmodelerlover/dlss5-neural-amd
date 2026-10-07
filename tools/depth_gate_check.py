@@ -313,8 +313,7 @@ need(re.search(r"!g\.depthUsable\.load\(\)\s*\? GuideSource::Unusable", panel),
 drain = ("if (g.probedDepth && depthJunk)\n"
          "SetDepthUsable(false, \"JUNK\");\n"
          "else if (g.probedDepth && !depthReal && zero < n && ++g.flatProbes >= 2)\n"
-         "{\nSetDepthUsable(false, \"FLAT in two readings of a moving scene\");\n"
-         "g.depthFlatOf = g.guideDepth.chosen.Get();\n}\n"
+         "SetDepthUsable(false, \"FLAT in two readings of a moving scene\");\n"
          "else if (g.probedDepth && depthReal)\n"
          "SetDepthUsable(true, \"it varies\");\n"
          "g.depthVaried.store(g.probedDepth && depthReal);")

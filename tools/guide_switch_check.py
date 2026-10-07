@@ -184,11 +184,18 @@ need(settle_fn.count("return true;") == 1 and re.search(
     "guide_choice.h: SettleGuide returns true only after the take")
 need("return;" not in settle_fn, "guide_choice.h: a SettleGuide path returns nothing")
 # Issue #19: screen-shaped depth candidates rank by draws, binds breaking the tie; with none of that shape
-# (and for motion, which has no draws) binds alone, so a shadow atlas cannot out-draw the scene; the
-# buffers read FLAT are passed over; and both routes' draw events feed the count.
-need("shaped ? t.draws > best->draws || (t.draws == best->draws && t.binds > best->binds)" in settle_fn
-     and ": t.binds > best->binds" in settle_fn and "(shaped && !t.screenShaped)" in settle_fn
-     and "PassedOver(entry.first)" in settle_fn, "guide_choice.h: SettleGuide no longer ranks screen-shaped depth by draws")
+# (and for motion, which has no draws) v0.7.10's most-bound loop, word for word, so a shadow atlas cannot
+# out-draw the scene; a FLAT buffer is withheld as in v0.7.10, never passed over for another; and both
+# routes' draw events feed the count.
+need("    for (const auto &entry : tally)\n        if (best == nullptr || entry.second.binds > best->binds)\n"
+     "            best = &entry.second;\n" in settle_fn
+     and "t.screenShaped && (shaped == nullptr || t.draws > shaped->draws ||" in settle_fn
+     and "(t.draws == shaped->draws && t.binds > shaped->binds)))" in settle_fn
+     and "if (shaped != nullptr)\n        best = shaped;" in settle_fn,
+     "guide_choice.h: SettleGuide no longer ranks screen-shaped depth by draws over v0.7.10's bind ranking")
+need(not any(re.search(r"passedOver|PassOver|depthFlatOf|depthRotations", f.read_text(encoding="utf-8"))
+             for f in (root / "core").rglob("*") if f.suffix in (".cpp", ".h", ".inc")),
+     "core: a FLAT depth buffer is passed over for another again, before the copy before the clears")
 
 
 def screen_shaped(w, h, sw, sh):  # guides::ScreenShaped

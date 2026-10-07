@@ -200,14 +200,11 @@ void DrainReadbacks(UINT nw, UINT nh)
                 // whatever it last did. JUNK is never depth. FLAT is a menu as often as a wrong
                 // buffer, so it counts only in a scene -- something moved -- and only the second
                 // time. A menu that moves (a spinner, a video) reads just the same, so depth
-                // withheld as FLAT is looked at again past the five-reading cap, below (D3D11: next buffer first).
+                // withheld as FLAT is looked at again past the five-reading cap, below.
                 if (g.probedDepth && depthJunk)
                     SetDepthUsable(false, "JUNK");
                 else if (g.probedDepth && !depthReal && zero < n && ++g.flatProbes >= 2)
-                {
                     SetDepthUsable(false, "FLAT in two readings of a moving scene");
-                    g.depthFlatOf = g.guideDepth.chosen.Get();
-                }
                 else if (g.probedDepth && depthReal)
                     SetDepthUsable(true, "it varies");
                 g.depthVaried.store(g.probedDepth && depthReal);  // FallBackToPreClear's cue
