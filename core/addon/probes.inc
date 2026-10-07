@@ -222,7 +222,7 @@ void DrainReadbacks(UINT nw, UINT nh)
                     Log("guide probe: both guides carry real data. Not probing again until a "
                         "guide moves to another buffer.");
                 }
-                else if (++g.junkProbes >= 5 && g.flatProbes < 2)
+                else if (++g.junkProbes >= 5 && g.flatProbes < 2 && !(g.guideMotion.external && zero == n))
                 {
                     // Junk used to end the search, which was the bug. Never ending it is the
                     // other one: each probe allocates two readback buffers and spins on a fence
@@ -241,11 +241,12 @@ void DrainReadbacks(UINT nw, UINT nh)
                     // that moved and the scene comes later in the same buffer, so the first
                     // reading that varies hands it back. JUNK keeps the cap: a menu never reads
                     // as JUNK. Each look stalls the present on a fence and walks both copies on
-                    // the CPU, so the gap doubles to at most 4800 presents.
+                    // the CPU, so the gap doubles to at most 4800 presents. So too while the effect's motion
+                    // reads all zero: stopping would feed a provider's dead field for good (the demotion above).
                     g.nextGuideProbe = g.status.frame + (600ull << std::min(g.junkProbes - 4, 3u));
                     if (g.junkProbes == 5)
-                        Log("guide probe: five readings and depth is still withheld as FLAT. "
-                            "Looking again, less often each time, until a reading varies.");
+                        Log("guide probe: five readings and depth is still withheld as FLAT, or the effect's motion "
+                            "reads all zero. Looking again, less often each time, until a reading varies.");
                 }
                 g.guideReadDepth->Unmap(0, nullptr);
                 g.guideReadMotion->Unmap(0, nullptr);

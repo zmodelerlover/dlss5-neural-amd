@@ -318,8 +318,9 @@ drain = ("if (g.probedDepth && depthJunk)\n"
          "SetDepthUsable(true, \"it varies\");\n"
          "g.depthVaried.store(g.probedDepth && depthReal);")
 need(drain in re.sub(r"\n\s+", "\n", probes), "probes.inc: the drain's rule is not the one modelled here")
-need("else if (++g.junkProbes >= 5 && g.flatProbes < 2)" in probes,
-     "probes.inc: five readings end the probe even while FLAT withholds depth, so it never comes back")
+need("else if (++g.junkProbes >= 5 && g.flatProbes < 2 && !(g.guideMotion.external && zero == n))" in probes,
+     "probes.inc: five readings end the probe even while FLAT withholds depth or the effect's motion reads all "
+     "zero, so it never comes back")
 need("g.nextGuideProbe = g.status.frame + (600ull << std::min(g.junkProbes - 4, 3u));" in probes,
      "probes.inc: the probe past five readings under FLAT is not the back-off modelled here")
 need("depth fed %d (handed %d)" in neural, "neural.cpp: the probe's arm line does not say whether depth is handed")
