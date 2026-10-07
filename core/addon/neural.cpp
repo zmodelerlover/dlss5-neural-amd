@@ -21,6 +21,7 @@
 #include "../shared/d3d10_stage.h"
 #include "../shared/d3d10_compile_unhook.h"
 #include "../shared/stall_watch.h"
+#include "../shared/dxgi_entry.h"
 #include "../shared/raster_pin.h"
 #include "../shared/history_keys.h"
 #include "../ui/panel.h"
@@ -277,6 +278,24 @@ std::filesystem::path ExeDirectory()
     wchar_t path[MAX_PATH] {};
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     return std::filesystem::path(path).parent_path();
+}
+
+// Beside the game, where every report looks for it. A game under Program Files is not writable there
+// without elevation, and the log was simply missing (issue #22), so then %LOCALAPPDATA%\amd-nr, said
+// in the first line. Export logs looks in g_logDir first.
+std::filesystem::path &g_logDir = *new std::filesystem::path;  // never destroyed, like g
+void OpenLog()
+{
+    g_logDir = ExeDirectory();
+    g_log = _wfopen((g_logDir / L"amd-nr.log").c_str(), L"w");
+    const wchar_t *local = _wgetenv(L"LOCALAPPDATA");
+    if (g_log != nullptr || local == nullptr)
+        return;
+    std::error_code ec;
+    g_logDir = std::filesystem::path(local) / L"amd-nr";
+    std::filesystem::create_directories(g_logDir, ec);
+    g_log = _wfopen((g_logDir / L"amd-nr.log").c_str(), L"w");
+    Log("amd-nr.log could not be written in %ls, so it is in %ls", ExeDirectory().c_str(), g_logDir.c_str());
 }
 
 DXGI_FORMAT DepthReadFormat(DXGI_FORMAT f)
@@ -3006,8 +3025,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         if (!reshade::register_addon(module))
             return FALSE;
         {
-            const auto log = ExeDirectory() / L"amd-nr.log";
-            g_log = _wfopen(log.c_str(), L"w");
+            OpenLog();
             Log("AMD Neural Rendering: %s", ProfileForThisProcess().note);
             Log("preview 2026-09-10: SDR input contract, serialized inline passes; Vulkan %d, "
                 "OpenGL %d", AMDNR_WITH_VULKAN, AMDNR_WITH_OPENGL);

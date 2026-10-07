@@ -41,6 +41,7 @@ Gate 'panel_check' {
 } 'panel_check: PASS'
 Gate 'opengl_import (binary)' { python tools/opengl_import_check.py build/amd-nr.addon64 } 'PASS'
 Gate 'opengl_import (source)' { python tools/opengl_import_check.py } 'PASS'
+Gate 'import_table (binary)' { python tools/import_table_check.py build/amd-nr.addon64 } 'PASS'
 Gate 'runtime_offsets' { python tools/runtime_offsets_check.py } 'PASS'
 Gate 'compose_check' { python tools/compose_check.py } '.'
 Gate 'guide_switch' { python tools/guide_switch_check.py } 'hold'

@@ -6,7 +6,7 @@
 // game. See log_export.h, shared with the 32-bit bridge.
 std::wstring ExportLogs()
 {
-    const auto r = logexport::ToDesktop({ ExeDirectory() }, { L"amd-nr.log", L"dlssnr_on_amd.log",
+    const auto r = logexport::ToDesktop({ g_logDir, ExeDirectory() }, { L"amd-nr.log", L"dlssnr_on_amd.log",
                                                               L"mochizuki_nr.log", L"ReShade.log", L"amd-nr.ini" });
     if (r.copied != 0)
         Log("menu: exported %d file(s) to %ls", r.copied, r.folder.c_str());

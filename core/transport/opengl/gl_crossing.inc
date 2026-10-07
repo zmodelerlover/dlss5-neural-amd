@@ -121,7 +121,7 @@ constexpr GLenum kCrossingGlFormat = GL_RGBA8_;
 bool AdapterForLuid(LUID luid, ComPtr<IDXGIAdapter> &out)
 {
     ComPtr<IDXGIFactory1> factory;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+    if (FAILED(DxgiCreateFactory(0, IID_PPV_ARGS(&factory))))
         return false;
     ComPtr<IDXGIAdapter1> adapter;
     for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i)

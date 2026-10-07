@@ -51,6 +51,8 @@ jobs:
         run: |
           python tools/opengl_import_check.py build/amd-nr.addon64
           if ($LASTEXITCODE -ne 0) { throw 'opengl import check failed' }
+          python tools/import_table_check.py build/amd-nr.addon64
+          if ($LASTEXITCODE -ne 0) { throw 'import table check failed' }
 
       - name: Check composition and guide selection
         shell: pwsh

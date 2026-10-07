@@ -168,9 +168,11 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "FidelityFX compilation failed ($LASTEXITCODE)" }
         $ffxObjects = $ffxSources | ForEach-Object { Join-Path $out ([IO.Path]::GetFileNameWithoutExtension($_) + '.obj') }
     }
+    # No dxgi.lib for the add-on: it resolves its factory at first use (core/shared/dxgi_entry.h), and
+    # an import of it broke Dragon Age: Inquisition at start (tools/import_table_check.py).
     & $cl @common `
           /Fo"$out\" $(if (-not $Exe) { '/LD' }) $sources $ffxObjects /link $(if (-not $Exe) { '/DLL' }) /OUT:"$dll" `
-          user32.lib d3d11.lib d3d12.lib dxgi.lib d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib
+          user32.lib d3d11.lib d3d12.lib $(if ($Target -ne 'neural') { 'dxgi.lib' }) d3dcompiler.lib bcrypt.lib shell32.lib ole32.lib
     if ($LASTEXITCODE -ne 0) { throw "compilation failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 

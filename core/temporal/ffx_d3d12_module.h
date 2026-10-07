@@ -18,3 +18,10 @@ static HMODULE AmdNrFfxGetModuleHandleW(LPCWSTR name)
     return GetModuleHandleW(name);
 }
 #define GetModuleHandleW AmdNrFfxGetModuleHandleW
+
+// The backend's one DXGI call, a factory for its memory budget queries, goes the add-on's way too
+// (core/shared/dxgi_entry.h), so the release build imports no dxgi.dll either. The real declaration
+// comes first, so the SDK's own include of it later is a no-op and does not meet the macro.
+#include <dxgi1_3.h>
+#include "../shared/dxgi_entry.h"
+#define CreateDXGIFactory2 DxgiCreateFactory
