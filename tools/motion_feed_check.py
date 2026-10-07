@@ -82,6 +82,10 @@ fails = [why for ok, why in [
      f"{len(names)} blocks)"),
     ("FeedProviderOn(below)" in cpp and "!g.feedMotionZero" in cpp and "g.feedMotionZero = true;" in probes,
      "neural.cpp/probes.inc: motion from the effect no longer needs its own provider, or an all-zero field keeps it"),
+    # A still menu or pause reads all zero honestly: only a scene that moved counts, and the effect is retried.
+    ("else if (sceneMoved)\n                    ++g.feedZeroProbes;" in probes and "g.feedRetryAt = g.status.frame + wait;" in probes
+     and "g.status.frame >= g.feedRetryAt" in cpp,
+     "probes.inc/neural.cpp: a still scene can demote the effect's motion, or the demotion lasts the session"),
     ("asuint(v) & 0x7fffffff" in inc, "motion_feed.inc: the shader lost the bit compare"),
     (not re.search(r"maxPx\s*<=\s*0\.0f\)\s*\n\s*return;", inc), "motion_feed.inc: FeedMotion skips again with no cap set"),
     (re.search(r"\bFeedMotion\(cmd,\s*haveMotion\)", cpp) is not None, "neural.cpp: FeedMotion(cmd, haveMotion) is not called"),

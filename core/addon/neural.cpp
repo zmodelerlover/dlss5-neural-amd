@@ -933,8 +933,9 @@ struct State
     std::atomic<bool> inEffects { false };
     char feedStatus[192] = "";
     int feedSignature = -1;
-    unsigned feedZeroProbes = 0;  // the effect's field read all zero: probes.inc, AdoptFeedEffect
+    unsigned feedZeroProbes = 0, feedZeroLatches = 0;  // the effect's field read all zero: probes.inc
     bool feedMotionZero = false;
+    UINT64 feedRetryAt = 0;  // when AdoptFeedEffect hands motion back to the effect to look again
     // Diagnostic. Runs the entire bridge but never touches the swapchain image, which is the
     // only way to tell a back-buffer reference apart from anything else the add-on does to the
     // device. Picture is untouched with this on; it is not a usable mode.
@@ -1543,7 +1544,12 @@ void AdoptFeedEffect()
     const int inputs = (ticked ? 1 : 0) | (haveGameMotion ? 8 : 0) | (haveGameDepth ? 16 : 0) |
                        (provider ? 32 : 0) | (below ? 64 : 0) | (providerTech != nullptr ? 256 : 0);
     if (g.feedSignature < 0 || (g.feedSignature & ~(2 | 4 | 128)) != inputs)
+        g.feedMotionZero = false, g.feedZeroProbes = g.feedZeroLatches = 0;
+    else if (g.feedMotionZero && g.status.frame >= g.feedRetryAt)
+    {
         g.feedMotionZero = false, g.feedZeroProbes = 0;
+        Log("AMD_Neural_Feed.fx: taking the effect's motion again, to see whether its field still reads all zero");
+    }
 
     bool mv = false, depth = false;
     // Depth needs only the effect; motion needs a provider behind it as well, because the
