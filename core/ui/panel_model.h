@@ -153,9 +153,12 @@ struct PanelStatus
     // a guide detector whose pick is worth seeing, and none of that is the panel's to interpret.
     std::vector<std::string> routeDiagnostics;
     // The mochizuki runtime, when amd-nr.ini picks it: 0 not in use, 1 starting or building the
-    // network, 2 running, 3 failed. mochizukiMs is the network's median GPU time.
+    // network, 2 running, 3 failed, 4 the runtime refuses the network with no build under way.
+    // mochizukiMs is the network's median GPU time; mochizukiNote the runtime's reason for 4, or the
+    // Scale and Passes put back after a refusal (empty on the 32-bit bridge, whose wire has no room).
     int mochizuki = 0;
     float mochizukiMs = 0.0f;
+    std::string mochizukiNote;
     // The danielblnc runtime once it is loaded: its release, and the network's GPU time for the
     // last frame with every pass added up (0 until a job has finished).
     const char *danielblnc = nullptr;

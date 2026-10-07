@@ -30,6 +30,12 @@ struct Mochizuki {
     void* lastJob = nullptr;
     std::string reason, said;
     bool crashed = false; // the last network build here never finished; this run took danielblnc
+    // The last Scale and Passes a network ran at; since when PrepareFrame has refused with no build
+    // under way (0 while it runs or builds), and why; and what the panel says after a revert.
+    float goodScale = 0.0f;
+    int goodPasses = 0;
+    ULONGLONG refusedSince = 0;
+    std::string refusal, reverted;
 };
 // Never destroyed, like g: its session and module outlive anything that could run at exit.
 Mochizuki &mz = *new Mochizuki;
@@ -207,6 +213,41 @@ void MzSendControls() {
         c.linear_input == 1 ? "on" : "off");
 }
 
+// PrepareFrame refused a frame. While a network builds that is the build; with none under way the
+// runtime has turned the network down -- a Scale or Passes change it freed the old network for and then
+// could not build the new one for ("insufficient VRAM ... free 0 MB"), retrying every 10 s while the
+// panel said it was running. Said as refused; after 3 s of it at a Scale or Passes other than the last
+// the network ran at, those come back, so it builds what it built before.
+void MzRefused() {
+    MochizukiNrInfo info{};
+    info.struct_size = sizeof info;
+    if (mz.getInfo != nullptr && mz.getInfo(mz.session, &info) == LMXXF_NR_OK && info.building != 0) {
+        mz.refusedSince = 0;
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (mz.refusedSince == 0)
+        mz.refusedSince = now;
+    char err[256]{};
+    if (mz.api.GetLastError != nullptr)
+        mz.api.GetLastError(err, sizeof err);
+    mz.refusal = err;
+    const float scale = g.settings.scale.load();
+    const int passes = g.settings.passes.load();
+    if (now - mz.refusedSince < 3000 || mz.goodPasses == 0 || (scale == mz.goodScale && passes == mz.goodPasses))
+        return;
+    g.settings.scale.store(mz.goodScale);
+    g.settings.passes.store(mz.goodPasses);
+    char line[160]{};
+    std::snprintf(line, sizeof line, "Scale %.2f, Passes %d refused; back to Scale %.2f, Passes %d",
+                  static_cast<double>(scale), passes, static_cast<double>(mz.goodScale), mz.goodPasses);
+    mz.reverted = line;
+    mz.refusedSince = 0;
+    Log("mochizuki: the network was refused for 3 s at Scale %.2f, Passes %d (%s); back to Scale %.2f, "
+        "Passes %d, the last it ran at", static_cast<double>(scale), passes, err,
+        static_cast<double>(mz.goodScale), mz.goodPasses);
+}
+
 // Runs the network on netColour in place. `accepted` stays 0 on a frame that goes without it (the
 // network still building, a refused format). False only when the list could not be carried on.
 bool MzRecord(ID3D12GraphicsCommandList*& cmd, bool haveMotion, UINT passes,
@@ -239,6 +280,7 @@ bool MzRecord(ID3D12GraphicsCommandList*& cmd, bool haveMotion, UINT passes,
     LmxxfNrJob job{sizeof job, nullptr, nullptr};
     if (mz.api.PrepareFrame(mz.session, &fi, &job) != LMXXF_NR_OK) {
         MzSay("frame without the network");
+        MzRefused();
         return true;
     }
     if (mz.api.RecordInputs(mz.session, job.handle, cmd) != LMXXF_NR_OK) {
@@ -276,6 +318,9 @@ bool MzRecord(ID3D12GraphicsCommandList*& cmd, bool haveMotion, UINT passes,
     }
     g.historyValid.fetch_or(1u);
     accepted = passes;
+    mz.refusedSince = 0;
+    mz.goodScale = g.settings.scale.load();
+    mz.goodPasses = g.settings.passes.load();
     return true;
 }
 
@@ -303,12 +348,22 @@ void MzStatus(PanelStatus& st) {
     if (!selected)
         return;
     st.mochizuki = 1;
+    // A revert is news until Scale or Passes moves again.
+    if (g.settings.scale.load() != mz.goodScale || g.settings.passes.load() != mz.goodPasses)
+        mz.reverted.clear();
+    st.mochizukiNote = mz.reverted;
     MochizukiNrInfo info{};
     info.struct_size = sizeof info;
     if (mz.session == nullptr || mz.getInfo == nullptr ||
         mz.getInfo(mz.session, &info) != LMXXF_NR_OK)
         return;
-    st.mochizuki = info.failed != 0 ? 3 : info.building != 0 || info.frames == 0 ? 1 : 2;
+    // info.frames counts the session's whole life, so a refused network still read as running.
+    st.mochizuki = info.failed != 0                         ? 3
+                   : info.building == 0 && mz.refusedSince != 0 ? 4
+                   : info.building != 0 || info.frames == 0  ? 1
+                                                             : 2;
+    if (st.mochizuki == 4)
+        st.mochizukiNote = mz.refusal;
     st.mochizukiMs = info.gpu_ms_median;
 }
 

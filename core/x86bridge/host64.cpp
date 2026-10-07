@@ -47,7 +47,7 @@ struct Host {
     }
     WireStatus ExportStatus(){
         WireStatus s;s.connected=1;s.transportOnly=transport;
-        s.processed=g.status.frame-std::min(g.status.frame,g.status.skipped);s.skipped=g.status.skipped;  // as the 64-bit panel reads them
+        s.processed=g.status.frame-std::min(g.status.frame,g.status.skipped+g.status.idle);s.skipped=g.status.skipped;  // as the 64-bit panel reads them
         s.engineReady=!transport&&(g.runtime!=nullptr||mz.session!=nullptr)&&!g.status.unavailable&&!g.status.failed;
         s.unavailable=g.status.unavailable;s.failed=g.status.failed;
         s.outWidth=spec.colour.width;s.outHeight=spec.colour.height;s.netWidth=g.netWidth;s.netHeight=g.netHeight;

@@ -558,6 +558,7 @@ struct State
         bool loggedOtherSwapchain = false;  // said again when the first one takes the latch back
         const char *reason = "";
         uint64_t frame = 0, skipped = 0;
+        uint64_t idle = 0;  // presents the network was asked for and no pass ran on (refused, building)
         // The last present went to a window nobody can see: alt-tab, in practice, and the state
         // in which every wait in this file misbehaves.
         bool windowHidden = false, loggedHidden = false;
@@ -2766,6 +2767,8 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         ++g_stats.now.evaluated;
         NoteTemporal(haveMotion ? motionFrom : GuideSource::None);
     }
+    else if (!nativeFailure)
+        ++g.status.idle;
     if (nativeFailure)
         return false;
 

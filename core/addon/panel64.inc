@@ -22,7 +22,8 @@ PanelStatus ReadPanelStatus()
     st.run = g.status.unavailable ? RunState::Unavailable : g.status.failed ? RunState::Error : RunState::Ready;
     st.reason = g.status.reason;
     st.standDownSeconds = static_cast<float>(g.standDownMs.load()) / 1000.0f;
-    st.processed = g.status.frame - std::min(g.status.frame, g.status.skipped);  // a skip is a present too
+    // A skip is a present too, and so is a frame no pass ran on (idle): neither was processed.
+    st.processed = g.status.frame - std::min(g.status.frame, g.status.skipped + g.status.idle);
     st.skipped = g.status.skipped;
     st.routeNote = ProfileForThisProcess().note;
     st.outWidth = g.outWidth;

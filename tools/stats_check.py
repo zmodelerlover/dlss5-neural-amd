@@ -23,7 +23,7 @@ core/shared/frame_stats.h). Both are compiled here with g++, against a clock thi
 And read from the text:
   - JobGate ticks first, and nothing else does; a refused pass counts as refused, not as skipped;
     an evaluation counts where a pass was accepted; a held heap counts inside skipped;
-  - both panels read processed as the presents less the skipped ones, and the 64-bit one shows the
+  - both panels read processed as the presents less the skipped and idle ones (no pass ran), and the 64-bit one shows the
     line under Debug;
   - WaitForPreviousJob is off with D3D12Wait=0 (read at load, never saved) and notes each hold
     once, after its spin;
@@ -300,10 +300,10 @@ if not re.search(r"if \(accepted != 0\)\s*\{[^}]*\+\+g_stats\.now\.evaluated;", 
     bad.append("neural.cpp: an evaluation is not counted where a pass was accepted")
 if "++g.status.skipped, ++g_stats.now.heapHeld;" not in body(runtimes, "bool HeapStillRead("):
     bad.append("runtimes.inc: a frame HeapStillRead held is not counted as skipped and as heap")
-if "st.processed = g.status.frame - std::min(g.status.frame, g.status.skipped);" not in panel:
-    bad.append("panel64.inc: processed still counts the skipped presents")
-if "s.processed=g.status.frame-std::min(g.status.frame,g.status.skipped);s.skipped=g.status.skipped;" not in host:
-    bad.append("host64.cpp: the 32-bit panel's processed still counts the skipped presents")
+if "st.processed = g.status.frame - std::min(g.status.frame, g.status.skipped + g.status.idle);" not in panel:
+    bad.append("panel64.inc: processed still counts the skipped or idle presents")
+if "s.processed=g.status.frame-std::min(g.status.frame,g.status.skipped+g.status.idle);s.skipped=g.status.skipped;" not in host:
+    bad.append("host64.cpp: the 32-bit panel's processed still counts the skipped or idle presents")
 if not re.search(r"RouteCaps\(st\);[^\n]*\n\s*for \(const std::string \*line : \{ &g_stats\.line, "
                  r"&g_stats\.temporalLine \}\)\s*if \(!line->empty\(\)\)\s*st\.routeDiagnostics\.push_back\(\*line\);", panel):
     bad.append("panel64.inc: the stats and temporal lines are not under Debug")

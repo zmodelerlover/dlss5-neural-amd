@@ -76,6 +76,13 @@ void StatusColumn(const PanelStatus &status)
     else if (status.mochizuki == 3)
         RightLine(&kWarn, "%s", T("mochizuki failed; see mochizuki_nr.log",
                                   "mochizuki falhou; veja mochizuki_nr.log"));
+    else if (status.mochizuki == 4)
+        RightLine(&kWarn, T("mochizuki: network refused -- %s", "mochizuki: rede recusada -- %s"),
+                  status.mochizukiNote.empty() ? T("see mochizuki_nr.log", "veja mochizuki_nr.log")
+                                               : status.mochizukiNote.c_str());
+    if (status.mochizuki != 4 && !status.mochizukiNote.empty())
+        Note(kWarn, (std::string(T("mochizuki: ", "mochizuki: ")) + status.mochizukiNote +
+                     T(", the last it ran at.", ", os últimos com que ela rodou.")).c_str());
     if (skipping)
         Note(kWarn, T("The network is not finishing inside a frame, and that is the flicker. "
                       "Lower Scale and set Passes to 1.",
