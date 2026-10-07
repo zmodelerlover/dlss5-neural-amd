@@ -10,7 +10,10 @@ So the feed runs every frame and anything longer than the raster -- or inf, or N
 comparing the float's bits. The model below is that compare; the source checks say the feed still does
 it, still always runs, and that the probe still hands such a field back to the estimator. One more says
 OpticalFlow reads as 0 in a build without FFX: at 2 it passed over the game's vectors for a flow that
-is not there, and the estimator took the motion over without a word.
+is not there, and the estimator took the motion over without a word. And the companion effect's field
+comes only from the provider its AMDNR_MV_PROVIDER samples (issue #18: any provider used to do, and the
+field arrived all zero), paired here row by row with the effect's blocks; two all-zero readings hand
+motion back.
 
     python tools/motion_feed_check.py
 """
@@ -63,7 +66,22 @@ host = (ROOT / "core/x86bridge/host64.cpp").read_text()
 src = "".join(p.read_text(encoding="utf-8", errors="replace") for p in (ROOT / "core").rglob("*")
               if p.suffix in (".cpp", ".inc", ".h"))
 flow = [" ".join(s.split()) for s in re.findall(r"opticalFlow\s*\.\s*(?:store|exchange)\s*\((.*?)\);", src, re.S)]
+# Each provider the add-on looks for is the one the effect samples under its define (issue #18): the
+# kMvProviders row shares a word with that block's AMDNR_PROVIDER_NAME, and with no other block's.
+fx = (ROOT / "effects/AMD_Neural_Feed.fx").read_text(encoding="utf-8")
+feed = (ROOT / "core/addon/feed_provider.inc").read_text(encoding="utf-8")
+words = lambda text: {w for w in re.split(r"[^a-z0-9]+", text.lower()) if w and w not in ("fx", "motion")}
+names = {int(n): words(name) for n, name in re.findall(
+    r'#(?:el)?if AMDNR_MV_PROVIDER == (\d)[^#]*?(?:#[^d][^#]*?)*?#define AMDNR_PROVIDER_NAME "([^"]+)"', fx)}
+names[0] = words(re.search(r'#else[^#]*#define AMDNR_PROVIDER_NAME "([^"]+)"', fx).group(1))
+rows = re.findall(r'\{ "([^"]+)", "([^"]+)", (\d) \}', feed)
+paired = [(f, d) for f, t, d in rows if {k for k, v in names.items() if v & words(f + " " + t)} == {int(d)}]
 fails = [why for ok, why in [
+    (len(names) == 5 and len(rows) >= 5 and len(paired) == len(rows),
+     f"feed_provider.inc: kMvProviders does not pair with the effect's blocks ({len(paired)} of {len(rows)} rows, "
+     f"{len(names)} blocks)"),
+    ("FeedProviderOn(below)" in cpp and "!g.feedMotionZero" in cpp and "g.feedMotionZero = true;" in probes,
+     "neural.cpp/probes.inc: motion from the effect no longer needs its own provider, or an all-zero field keeps it"),
     ("asuint(v) & 0x7fffffff" in inc, "motion_feed.inc: the shader lost the bit compare"),
     (not re.search(r"maxPx\s*<=\s*0\.0f\)\s*\n\s*return;", inc), "motion_feed.inc: FeedMotion skips again with no cap set"),
     (re.search(r"\bFeedMotion\(cmd,\s*haveMotion\)", cpp) is not None, "neural.cpp: FeedMotion(cmd, haveMotion) is not called"),

@@ -179,6 +179,17 @@ void DrainReadbacks(UINT nw, UINT nh)
                     zero == n ? "  <-- ALL ZERO. Either nothing is moving, or the guide picked a "
                                 "buffer the engine does not write velocity into."
                               : "");
+                // The effect's field exactly still everywhere, twice running: the provider it samples is
+                // not writing it (issue #18), and zeros read to the network as "nothing moved". Held
+                // until the effect's inputs change (AdoptFeedEffect), apart from guide.failed, which
+                // AdoptFeedEffect clears with every new texture.
+                g.feedZeroProbes = g.guideMotion.external && zero == n ? g.feedZeroProbes + 1 : 0;
+                if (g.feedZeroProbes == 2 && !g.feedMotionZero)
+                {
+                    g.feedMotionZero = true;
+                    Log("guide probe: the effect's motion field is all zero; %s takes motion back",
+                        g.settings.opticalFlow.load() != 0 ? "FidelityFX optical flow" : "the estimator");
+                }
                 // Only a reading of depth that frame fed says anything: with none, netDepth holds
                 // whatever it last did. JUNK is never depth. FLAT is a menu as often as a wrong
                 // buffer, so it counts only in a scene -- something moved -- and only the second

@@ -932,6 +932,8 @@ struct State
     std::atomic<bool> inEffects { false };
     char feedStatus[192] = "";
     int feedSignature = -1;
+    unsigned feedZeroProbes = 0;  // the effect's field read all zero: probes.inc, AdoptFeedEffect
+    bool feedMotionZero = false;
     // Diagnostic. Runs the entire bridge but never touches the swapchain image, which is the
     // only way to tell a back-buffer reference apart from anything else the add-on does to the
     // device. Picture is untouched with this on; it is not a usable mode.
@@ -1466,42 +1468,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
                    DXGI_FORMAT colourFmt, ID3D12Resource *outTarget, bool runNetwork, UINT wanted,
                    const SubmitPassFn &submitPass = {});
 
-// The motion-vector shaders the companion effect can be compiled against. Name checks only:
-// the effect binds the selected provider's output texture itself, so one that is not listed
-// here still works. This exists to answer "is anything actually writing that texture", which
-// is the difference between a real field and a page of zeros the network would read as
-// "nothing moved" -- a wrong answer, where no answer at all leaves the estimator in charge.
-constexpr struct
-{
-    const char *file, *tech;
-} kMvProviders[] = {
-    { "MartysMods_LAUNCHPAD.fx", "MartysMods_Launchpad" },
-    { "vort_Motion.fx", "vort_MotionEffects" },
-    { "lumenite_Kernel.fx", "Lumenite_Kernel" },
-    { "lumenite_QuantMotion.fx", "Lumenite_QuantMotion" },
-    { "qUINT_motionvectors.fx", "MotionVectors" },
-    { "dh_uber_motion.fx", "DH_UBER_MOTION_020" },
-    { "MotionEstimation.fx", "DRME" },
-};
-
-// Whether a technique of that name exists and is ticked. ReShade keeps a technique whose effect
-// failed to compile in its list and lets it be "enabled" -- it just never runs -- so this is
-// necessary but not sufficient, and the guide probe is what catches the rest.
-bool TechniqueOn(const char *file, const char *tech)
-{
-    if (g.effects == nullptr)
-        return false;
-    const auto t = g.effects->find_technique(file, tech);
-    return t.handle != 0 && g.effects->get_technique_state(t);
-}
-
-bool AnyMvProviderOn()
-{
-    for (const auto &p : kMvProviders)
-        if (TechniqueOn(p.file, p.tech))
-            return true;
-    return false;
-}
+#include "feed_provider.inc"
 
 // One texture of the companion effect, as the D3D11 resource ReShade allocated for it.
 // ReShade owns the lifetime; this is read inside present, between the effect chain finishing
@@ -1564,15 +1531,22 @@ void AdoptFeedEffect()
     // when the technique was last on, or as zeros. Both read to the network as fact.
     const bool ticked = g.settings.useFeedEffect.load() && g.effects != nullptr &&
                         TechniqueOn("AMD_Neural_Feed.fx", "AMD_Neural_Feed");
-    const bool provider = ticked && AnyMvProviderOn();
+    bool below = false;
+    const char *providerTech = ticked ? FeedProviderOn(below) : nullptr;
+    const bool provider = providerTech != nullptr && !below;
     const bool haveGameMotion = g.guideMotion.chosen != nullptr && !g.guideMotion.external;
     const bool haveGameDepth = g.guideDepth.chosen != nullptr && !g.guideDepth.external;
+    // The probe's all-zero demotion (probes.inc) holds until one of these changes, not the outputs.
+    const int inputs = (ticked ? 1 : 0) | (haveGameMotion ? 8 : 0) | (haveGameDepth ? 16 : 0) |
+                       (provider ? 32 : 0) | (below ? 64 : 0) | (providerTech != nullptr ? 256 : 0);
+    if (g.feedSignature < 0 || (g.feedSignature & ~(2 | 4 | 128)) != inputs)
+        g.feedMotionZero = false, g.feedZeroProbes = 0;
 
     bool mv = false, depth = false;
     // Depth needs only the effect; motion needs a provider behind it as well, because the
     // effect is a validator and a converter, not an estimator -- with nothing writing the
     // provider's texture it forwards zeros, and zeros are worse than the estimator.
-    if (provider && !haveGameMotion)
+    if (provider && !haveGameMotion && !g.feedMotionZero)
         mv = FeedTexture("AMDNR_MV", g.guideMotion);
     if (ticked && !haveGameDepth)
         depth = FeedTexture("AMDNR_Depth", g.guideDepth);
@@ -1593,9 +1567,7 @@ void AdoptFeedEffect()
 
     // Says the state once per change, not once per frame. Games recreate swapchains in bursts
     // and ReShade its effects with them, and a line per present would bury everything else.
-    const int signature = (ticked ? 1 : 0) | (mv ? 2 : 0) | (depth ? 4 : 0) |
-                          (haveGameMotion ? 8 : 0) | (haveGameDepth ? 16 : 0) |
-                          (provider ? 32 : 0);
+    const int signature = inputs | (mv ? 2 : 0) | (depth ? 4 : 0) | (g.feedMotionZero ? 128 : 0);
     if (signature == g.feedSignature)
         return;
     const bool first = g.feedSignature < 0;
@@ -1609,15 +1581,20 @@ void AdoptFeedEffect()
     // only push the reading further out.
     if (!first)
         RearmGuideProbe(false);  // a slot filled or emptied: a buffer replaced is SettleGuide's
+    char under[96] {};
+    std::snprintf(under, sizeof(under), "enabled, but %s is below AMD_Neural_Feed; move it above",
+                  providerTech != nullptr ? providerTech : "");
     std::snprintf(g.feedStatus, sizeof(g.feedStatus),
                   "AMD_Neural_Feed.fx: %s; motion %s, depth %s",
                   g.effects == nullptr      ? "no effect runtime yet"
                   : !g.settings.useFeedEffect.load() ? "switched off"
                   : !ticked                 ? "not installed, or its technique is not enabled"
-                  : !provider ? "enabled, but no motion-vector shader is enabled above it"
+                  : below ? under
+                  : !provider ? "enabled, but the motion-vector shader AMDNR_MV_PROVIDER names is not enabled"
                               : "enabled",
                   mv               ? "from the effect"
                   : haveGameMotion ? "from the game"
+                  : g.feedMotionZero ? "estimated (the effect's field read all zero)"
                                    : "estimated",
                   depth           ? "from the effect"
                   : haveGameDepth ? "from the game"
