@@ -189,7 +189,7 @@ need("return;" not in settle_fn, "guide_choice.h: a SettleGuide path returns not
 # routes' draw events feed the count.
 need("    for (const auto &entry : tally)\n        if (best == nullptr || entry.second.binds > best->binds)\n"
      "            best = &entry.second;\n" in settle_fn
-     and "t.screenShaped && (shaped == nullptr || t.draws > shaped->draws ||" in settle_fn
+     and "t.screenShaped && t.draws > 0 && (shaped == nullptr || t.draws > shaped->draws ||" in settle_fn
      and "(t.draws == shaped->draws && t.binds > shaped->binds)))" in settle_fn
      and "if (shaped != nullptr)\n        best = shaped;" in settle_fn,
      "guide_choice.h: SettleGuide no longer ranks screen-shaped depth by draws over v0.7.10's bind ranking")
@@ -209,8 +209,11 @@ need(screen_shaped(1920, 1080, 1920, 1080) and screen_shaped(960, 540, 1920, 108
      "guide_choice.h: ScreenShaped is not ReShade's 10% aspect test")
 need("record(depthTally, native, d).screenShaped =" in src("core/shared/d3d11_guides.h"),
      "d3d11_guides.h: a depth candidate's shape is not recorded")
-need(src("core/addon/neural.cpp").count("d3d11guides::CountDraw();") == 2
-     and src("core/x86bridge/frontend32.cpp").count("d3d11guides::CountDraw();") == 2,
+# draw, draw_indexed, and the draws of draw_or_dispatch_indirect (a GPU-driven scene), on both routes.
+need(src("core/addon/neural.cpp").count("d3d11guides::CountDraw();") == 3
+     and src("core/x86bridge/frontend32.cpp").count("d3d11guides::CountDraw();") == 3
+     and all("register_event<reshade::addon_event::draw_or_dispatch_indirect>(OnDrawIndirect)" in src(f)
+             for f in ("core/addon/neural.cpp", "core/x86bridge/frontend32.cpp")),
      "a route's draw events no longer count draws for the depth pick")
 
 probes = src("core/addon/probes.inc")

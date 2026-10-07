@@ -437,7 +437,7 @@ void OnBind(command_list* cmd,uint32_t count,const resource_view* targets,resour
     d3d11guides::ObserveD3D11(dev,targets,count,resource,g.outWidth,g.outHeight,g_depthTally,g_motionTally);
 }
 bool OnDraw(command_list*,uint32_t,uint32_t,uint32_t,uint32_t){d3d11guides::CountDraw();return false;}  // the depth pick ranks by draws
-bool OnDrawIndexed(command_list*,uint32_t,uint32_t,uint32_t,int32_t,uint32_t){d3d11guides::CountDraw();return false;}
+bool OnDrawIndexed(command_list*,uint32_t,uint32_t,uint32_t,int32_t,uint32_t){d3d11guides::CountDraw();return false;} bool OnDrawIndirect(command_list*,reshade::api::indirect_command t,resource,uint64_t,uint32_t n,uint32_t){if(t==reshade::api::indirect_command::draw||t==reshade::api::indirect_command::draw_indexed)for(uint32_t i=0;i<n;++i)d3d11guides::CountDraw();return false;}
 // The depth copy before a clear, once the helper's probe withheld the one taken at present (d3d11_guides.h).
 bool OnClear(command_list* cmd,resource_view dsv,const float*,const uint8_t*,uint32_t,const rect*){if(!cmd||g.inEffects)return false;auto* dev=cmd->get_device();if(!dev||dev->get_api()!=device_api::d3d11)return false;std::lock_guard lock(g.lock);
     if(g.enabled&&!g.failed&&!g.hidden&&controls.shadow.useGameGuides&&controls.shadow.useDepth)d3d11guides::SnapshotDepthBeforeClear(cmd,dsv,g.game11.Get(),g.guideDepth);return false;}
@@ -749,7 +749,7 @@ BOOL APIENTRY DllMain(HMODULE module,DWORD reason,LPVOID){
         reshade::register_event<reshade::addon_event::reshade_begin_effects>(OnBeginEffects);
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(OnFinishEffects);
         reshade::register_event<reshade::addon_event::draw>(OnDraw);
-        reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);reshade::register_event<reshade::addon_event::clear_depth_stencil_view>(OnClear);
+        reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);reshade::register_event<reshade::addon_event::draw_or_dispatch_indirect>(OnDrawIndirect);reshade::register_event<reshade::addon_event::clear_depth_stencil_view>(OnClear);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(OnDestroy);
         reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
         reshade::register_event<reshade::addon_event::present>(OnPresent);

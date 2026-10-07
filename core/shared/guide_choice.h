@@ -109,12 +109,13 @@ bool SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
         if (best == nullptr || entry.second.binds > best->binds)
             best = &entry.second;
     // Depth candidates of the backbuffer's shape, when there is one, rank among themselves by draws,
-    // binds breaking a tie: a shadow map out-draws the scene but is not its shape.
+    // binds breaking a tie: a shadow map out-draws the scene but is not its shape. One nothing was drawn into
+    // (a full-window compositing depth bound once) never overrides the most-bound pick, as in ReShade.
     const Tallied *shaped = nullptr;
     for (const auto &entry : tally)
     {
         const Tallied &t = entry.second;
-        if (t.screenShaped && (shaped == nullptr || t.draws > shaped->draws ||
+        if (t.screenShaped && t.draws > 0 && (shaped == nullptr || t.draws > shaped->draws ||
                                (t.draws == shaped->draws && t.binds > shaped->binds)))
             shaped = &t;
     }

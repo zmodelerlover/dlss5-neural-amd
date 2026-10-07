@@ -16,7 +16,8 @@ Built on v0.7.11 with the same runtimes and the same bridge protocol (v6).
   (2048x2048, 1024x4096), which out-draws the scene, take the slot. Only depth buffers with the backbuffer's
   shape (ReShade's test, aspect within 10%) rank by draws now; with none of that shape, most-bound wins as before
   v0.7.11. Draws are counted per recording thread, so a deferred context's draws go to its own depth buffer, and
-  only on D3D11. The 32-bit bridge does the same.
+  only on D3D11. A buffer nothing was drawn into never wins this way, and a GPU-driven scene's indirect draws
+  count too. The 32-bit bridge does the same.
 - **A D3D11 depth buffer that reads FLAT is handled as in v0.7.10 again**: withheld, copied just before the
   game's clears and probed again. v0.7.11 passed it over for another buffer first, which could drop the right
   buffer before the copy before the clears was tried and reopen a shadow-map pick.

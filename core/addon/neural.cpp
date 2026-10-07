@@ -2157,6 +2157,14 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
 // count draws for the D3D11 depth pick (d3d11_guides.h). Returning false lets the draw proceed.
 bool OnDraw(command_list *, uint32_t, uint32_t, uint32_t, uint32_t) { d3d11guides::CountDraw(); return false; }
 bool OnDrawIndexed(command_list *, uint32_t, uint32_t, uint32_t, int32_t, uint32_t) { d3d11guides::CountDraw(); return false; }
+// A GPU-driven engine draws its scene through DrawIndexedInstancedIndirect; a dispatch draws into no depth.
+bool OnDrawIndirect(command_list *, reshade::api::indirect_command type, resource, uint64_t, uint32_t count, uint32_t)
+{
+    if (type == reshade::api::indirect_command::draw || type == reshade::api::indirect_command::draw_indexed)
+        for (uint32_t i = 0; i < count; ++i)
+            d3d11guides::CountDraw();
+    return false;
+}
 
 // Reading the depth buffer at present time returns zeros: PCSX2 has already cleared it by then.
 // The only moment its contents exist is immediately before the clear, so take the copy here.
@@ -3043,6 +3051,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         {
             reshade::register_event<reshade::addon_event::draw>(OnDraw);
             reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
+            reshade::register_event<reshade::addon_event::draw_or_dispatch_indirect>(OnDrawIndirect);
         }
         if (g.events & 4)
             reshade::register_event<reshade::addon_event::clear_depth_stencil_view>(OnClearDepth);
