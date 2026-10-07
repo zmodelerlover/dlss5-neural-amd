@@ -132,13 +132,18 @@ bool EnsureStage(ID3D11Device* dev, S& s, UINT w, UINT h, DXGI_FORMAT fmt, LogFn
 }
 
 // Draws since the last bind, credited by ObserveD3D11 to the depth-stencil that bind left bound: what
-// the D3D11 depth pick ranks by (guide_choice.h, Tallied::draws). One relaxed add per draw, from each
-// route's draw events, which are registered anyway (Events bit 2, on by default). ponytail: one
-// counter for the device, not one per command list, so draws recorded on deferred contexts land on
-// whatever the immediate context bound last; per-list state if a log shows deferred-heavy games pick wrong.
-inline std::atomic<UINT> drawsSinceBind{0};
-inline void* boundDepth = nullptr;  // identity only, never dereferenced
-inline void CountDraw() { drawsSinceBind.fetch_add(1, std::memory_order_relaxed); }
+// the D3D11 depth pick ranks by (guide_choice.h, Tallied::draws). Per recording thread, as a deferred
+// context binds and draws on the thread recording it (GTA V), so its draws go to its own bind and no
+// add is shared between threads. Nothing is counted until a D3D11 bind has been observed: the draw
+// events are registered on every API (Events bit 2, on by default), and elsewhere this is one load.
+// ponytail: two deferred contexts recorded in turn on one thread share its count.
+inline std::atomic<bool> countDraws{false};
+inline thread_local UINT drawsSinceBind = 0;
+inline thread_local void* boundDepth = nullptr;  // identity only, never dereferenced
+inline void CountDraw() {
+    if (countDraws.load(std::memory_order_relaxed))
+        ++drawsSinceBind;
+}
 
 // D3D11 half of the observation. ReShade hands the render targets and the depth-stencil of
 // every bind; on D3D12 it hands the add-on only the swapchain (measured: zero depth binds in
@@ -151,7 +156,7 @@ inline void CountDraw() { drawsSinceBind.fetch_add(1, std::memory_order_relaxed)
 inline void ObserveD3D11(reshade::api::device* dev, const reshade::api::resource_view* rtvs,
                          uint32_t count, reshade::api::resource depthRes, UINT screenW,
                          UINT screenH, TallyMap& depthTally, TallyMap& motionTally) {
-    auto record = [](TallyMap& tally, ID3D11Resource* native, const D3D11_TEXTURE2D_DESC& d) {
+    auto record = [](TallyMap& tally, ID3D11Resource* native, const D3D11_TEXTURE2D_DESC& d) -> guides::Tallied& {
         guides::Tallied& slot = tally[native];
         if (slot.res == nullptr) {
             slot.res = native;
@@ -160,10 +165,13 @@ inline void ObserveD3D11(reshade::api::device* dev, const reshade::api::resource
             slot.format = d.Format;
         }
         ++slot.binds;
+        return slot;
     };
-    const UINT draws = drawsSinceBind.exchange(0, std::memory_order_relaxed);
+    if (!countDraws.load(std::memory_order_relaxed))
+        countDraws.store(true, std::memory_order_relaxed);
     if (const auto it = depthTally.find(boundDepth); it != depthTally.end())
-        it->second.draws += draws;
+        it->second.draws += drawsSinceBind;
+    drawsSinceBind = 0;
     boundDepth = nullptr;
     if (depthRes.handle != 0) {
         auto* native = reinterpret_cast<ID3D11Resource*>(depthRes.handle);
@@ -177,7 +185,8 @@ inline void ObserveD3D11(reshade::api::device* dev, const reshade::api::resource
                 guides::GuideDepthSrvFormat(d.Format) != DXGI_FORMAT_UNKNOWN &&
                 (screenW == 0 || screenH == 0 ||
                  (d.Width * 2 >= screenW && d.Height * 2 >= screenH))) {
-                record(depthTally, native, d);
+                record(depthTally, native, d).screenShaped =
+                    guides::ScreenShaped(d.Width, d.Height, screenW, screenH);
                 boundDepth = native;
             }
         }

@@ -179,14 +179,9 @@ void DrainReadbacks(UINT nw, UINT nh)
                     zero == n ? "  <-- ALL ZERO. Either nothing is moving, or the guide picked a "
                                 "buffer the engine does not write velocity into."
                               : "");
-                // The effect's field exactly still everywhere in two readings of a scene that moved: the
-                // provider it samples is not writing it (issue #18), and zeros read to the network as
-                // "nothing moved". A still menu, loading screen or pause reads all zero honestly, so a
-                // zero reading counts only when the depth fed with it changed since the last one -- the
-                // FLAT rule's "something moved", from the one other field the probe reads. ponytail: with
-                // no real depth fed nothing counts, so such a game never demotes the effect. Held until
-                // the effect's inputs change (AdoptFeedEffect) or the retry below, apart from
-                // guide.failed, which AdoptFeedEffect clears with every new texture.
+                // The effect's field all zero in two readings of a moving scene (issue #18). A still menu reads
+                // all zero honestly, so a reading counts only when the depth fed with it changed (ponytail: no
+                // real depth, never counts). Retried 1200 presents on, doubling to 9600, or on new inputs.
                 static double lastDepthSum = -1.0;
                 const bool sceneMoved = g.probedDepth && depthReal && lastDepthSum >= 0.0 && sum != lastDepthSum;
                 lastDepthSum = g.probedDepth && depthReal ? sum : -1.0;
@@ -196,21 +191,16 @@ void DrainReadbacks(UINT nw, UINT nh)
                     ++g.feedZeroProbes;
                 if (g.feedZeroProbes == 2 && !g.feedMotionZero)
                 {
-                    // Not for the session: the effect is tried again 1200 presents on, doubling to 9600.
                     const UINT64 wait = 1200ull << std::min(g.feedZeroLatches++, 3u);
-                    g.feedMotionZero = true;
-                    g.feedRetryAt = g.status.frame + wait;
-                    Log("guide probe: the effect's motion field is all zero in a moving scene; %s takes motion "
-                        "back, and the effect is tried again in %llu presents",
-                        g.settings.opticalFlow.load() != 0 ? "FidelityFX optical flow" : "the estimator",
-                        static_cast<unsigned long long>(wait));
+                    g.feedMotionZero = true, g.feedRetryAt = g.status.frame + wait;
+                    Log("guide probe: the effect's motion field is all zero in a moving scene; %s takes motion back, and the "
+                        "effect is tried again in %llu presents", g.settings.opticalFlow.load() != 0 ? "FidelityFX optical flow" : "the estimator", static_cast<unsigned long long>(wait));
                 }
                 // Only a reading of depth that frame fed says anything: with none, netDepth holds
                 // whatever it last did. JUNK is never depth. FLAT is a menu as often as a wrong
                 // buffer, so it counts only in a scene -- something moved -- and only the second
                 // time. A menu that moves (a spinner, a video) reads just the same, so depth
-                // withheld as FLAT is looked at again past the five-reading cap, below. On D3D11 the
-                // FLAT buffer is named, so the route tries the next one first (D3D11Transport.inc).
+                // withheld as FLAT is looked at again past the five-reading cap, below (D3D11: next buffer first).
                 if (g.probedDepth && depthJunk)
                     SetDepthUsable(false, "JUNK");
                 else if (g.probedDepth && !depthReal && zero < n && ++g.flatProbes >= 2)

@@ -183,10 +183,25 @@ need(settle_fn.count("return true;") == 1 and re.search(
     r"guide\.chosen = best->res;.*tally\.clear\(\);\s*return true;\s*\}\s*$", settle_fn, re.S),
     "guide_choice.h: SettleGuide returns true only after the take")
 need("return;" not in settle_fn, "guide_choice.h: a SettleGuide path returns nothing")
-# Issue #19: draws rank first and binds break the tie (a motion tally has no draws, so binds alone);
-# the buffer read FLAT is passed over; and both routes' draw events feed the count.
-need("entry.second.draws > best->draws" in settle_fn and "entry.second.binds > best->binds" in settle_fn
-     and "entry.first != passedOver" in settle_fn, "guide_choice.h: SettleGuide no longer ranks by draws")
+# Issue #19: screen-shaped depth candidates rank by draws, binds breaking the tie; with none of that shape
+# (and for motion, which has no draws) binds alone, so a shadow atlas cannot out-draw the scene; the
+# buffers read FLAT are passed over; and both routes' draw events feed the count.
+need("shaped ? t.draws > best->draws || (t.draws == best->draws && t.binds > best->binds)" in settle_fn
+     and ": t.binds > best->binds" in settle_fn and "(shaped && !t.screenShaped)" in settle_fn
+     and "PassedOver(entry.first)" in settle_fn, "guide_choice.h: SettleGuide no longer ranks screen-shaped depth by draws")
+
+
+def screen_shaped(w, h, sw, sh):  # guides::ScreenShaped
+    return sw != 0 and sh != 0 and abs(w * sh - h * sw) <= sw * sh // 10
+
+
+need(screen_shaped(1920, 1080, 1920, 1080) and screen_shaped(960, 540, 1920, 1080)
+     and screen_shaped(1920, 1088, 1920, 1080) and not screen_shaped(2048, 2048, 1920, 1080)
+     and not screen_shaped(1024, 4096, 1920, 1080) and not screen_shaped(4096, 4096, 2560, 1440)
+     and "(d < 0 ? -d : d) <= static_cast<long long>(screenW) * screenH / 10" in choice,
+     "guide_choice.h: ScreenShaped is not ReShade's 10% aspect test")
+need("record(depthTally, native, d).screenShaped =" in src("core/shared/d3d11_guides.h"),
+     "d3d11_guides.h: a depth candidate's shape is not recorded")
 need(src("core/addon/neural.cpp").count("d3d11guides::CountDraw();") == 2
      and src("core/x86bridge/frontend32.cpp").count("d3d11guides::CountDraw();") == 2,
      "a route's draw events no longer count draws for the depth pick")

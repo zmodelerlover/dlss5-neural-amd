@@ -80,7 +80,7 @@ fails = [why for ok, why in [
     (len(names) == 5 and len(rows) >= 5 and len(paired) == len(rows),
      f"feed_provider.inc: kMvProviders does not pair with the effect's blocks ({len(paired)} of {len(rows)} rows, "
      f"{len(names)} blocks)"),
-    ("FeedProviderOn(below)" in cpp and "!g.feedMotionZero" in cpp and "g.feedMotionZero = true;" in probes,
+    ("FeedProviderOn(below)" in cpp and "!g.feedMotionZero" in cpp and "g.feedMotionZero = true" in probes,
      "neural.cpp/probes.inc: motion from the effect no longer needs its own provider, or an all-zero field keeps it"),
     # A still menu or pause reads all zero honestly: only a scene that moved counts, and the effect is retried.
     ("else if (sceneMoved)\n                    ++g.feedZeroProbes;" in probes and "g.feedRetryAt = g.status.frame + wait;" in probes

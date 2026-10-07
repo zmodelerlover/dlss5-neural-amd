@@ -1001,6 +1001,7 @@ struct State
     UINT junkProbes = 0, flatProbes = 0;
     void *depthFlatOf = nullptr;  // the D3D11 depth buffer read FLAT twice, for D3D11Transport.inc's next try
     UINT depthRotations = 0;
+    UINT64 depthRotatedAt = 0;
     ComPtr<ID3D12Fence> fence;
     UINT64 serial = 0, completion = 0;
 

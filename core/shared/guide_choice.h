@@ -51,6 +51,9 @@ struct Tallied
     // break a tie, and are all a motion target has. Issue #19: three same-size D32S8 buffers, and the
     // most-bound was not the one the scene was drawn into -- ReShade's own pick counts draws.
     UINT draws = 0;
+    // A depth candidate the backbuffer's shape (ObserveD3D11, ScreenShaped). Only these rank by draws:
+    // a shadow cascade or atlas (2048x2048, 1024x4096) passes the size floor and out-draws the scene.
+    bool screenShaped = false;
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 };
@@ -61,10 +64,32 @@ struct Tallied
 // in exactly that window, with CreateTexture2D failing on it the next line.
 constexpr UINT kGuideFloor = 256;
 
-// A depth buffer the probe read FLAT twice in a moving scene, which SettleGuide then passes over for
-// the next candidate (D3D11Transport.inc). Identity only, never dereferenced; one per process, as
-// there is one depth guide.
-inline const void *passedOver = nullptr;
+// ReShade's aspect test: w/h within 10% of the backbuffer's, as |w*H - h*W| <= W*H/10. False while the
+// backbuffer's size is not known yet.
+inline bool ScreenShaped(UINT w, UINT h, UINT screenW, UINT screenH)
+{
+    const long long d = static_cast<long long>(w) * screenH - static_cast<long long>(h) * screenW;
+    return screenW != 0 && screenH != 0 && (d < 0 ? -d : d) <= static_cast<long long>(screenW) * screenH / 10;
+}
+
+// Depth buffers the probe read FLAT twice in a moving scene, which SettleGuide passes over for the
+// next candidate (D3D11Transport.inc): a set, as issue #19 had three of one size, so a third is tried
+// rather than the first again. Identity only, never dereferenced; one set per process, as there is one
+// depth guide, emptied when the route lets them back in.
+inline const void *passedOver[4] {};
+inline bool PassedOver(const void *p)
+{
+    for (const void *q : passedOver)
+        if (p != nullptr && q == p)
+            return true;
+    return false;
+}
+inline void PassOver(const void *p)
+{
+    for (const void *&q : passedOver)
+        if (q == nullptr)
+            return void(q = p);
+}
 
 // A motion-vector target as an engine writes it: two float channels, no more, at something
 // close to render resolution. The dozens of small two-channel buffers an engine also produces
@@ -96,12 +121,21 @@ inline bool LooksLikeMotion(const D3D11_TEXTURE2D_DESC &d, UINT screenW, UINT sc
 template <class Guide, class LogFn>
 bool SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn Log)
 {
+    // Screen-shaped depth candidates rank by draws, binds breaking a tie; with none of that shape, and
+    // for motion, which has no draws, most-bound wins as it always did.
+    bool shaped = false;
+    for (const auto &entry : tally)
+        shaped = shaped || (entry.second.screenShaped && !PassedOver(entry.first));
     const Tallied *best = nullptr;
     for (const auto &entry : tally)
-        if (entry.first != passedOver &&
-            (best == nullptr || entry.second.draws > best->draws ||
-             (entry.second.draws == best->draws && entry.second.binds > best->binds)))
-            best = &entry.second;
+    {
+        const Tallied &t = entry.second;
+        if (PassedOver(entry.first) || (shaped && !t.screenShaped))
+            continue;
+        if (best == nullptr || (shaped ? t.draws > best->draws || (t.draws == best->draws && t.binds > best->binds)
+                                       : t.binds > best->binds))
+            best = &t;
+    }
     if (best == nullptr)
     {
         tally.clear();

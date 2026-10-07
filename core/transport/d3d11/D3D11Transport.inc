@@ -98,21 +98,7 @@ void CrossGuides() {
     // Settled first, and unconditionally, so a game that renders its own buffers can take a slot
     // back off the companion effect. The observation no longer sees ReShade's own targets, so an
     // entry in these tallies is the game's by construction.
-    // Depth read FLAT twice in a moving scene: the next buffer the tally holds is tried before the
-    // copy before the clears (issue #19, three same-size depth buffers), twice at most, so two flat
-    // buffers cannot trade the slot for good. Before the settle, while the tally still holds this frame.
-    if (g.depthFlatOf != nullptr && g.depthFlatOf == g.guideDepth.chosen.Get() && g.depthRotations < 2 &&
-        std::any_of(g_depthTally.begin(), g_depthTally.end(), [](const auto& e) { return e.first != g.depthFlatOf; })) {
-        Log("guide depth: %p reads FLAT in a moving scene; trying the next buffer before the copy before the clears",
-            g.depthFlatOf);
-        guides::passedOver = g.depthFlatOf;
-        ++g.depthRotations;
-        g.flatProbes = 0;
-        g.guideDepth.chosen.Reset();
-        g.guideDepth.challenger = nullptr;
-        g.guideDepth.challengerFrames = g.guideDepth.coldFrames = 0;
-    }
-    g.depthFlatOf = nullptr;
+    PassOverFlatDepth();
     const bool hadDepth = g.guideDepth.chosen != nullptr && g.settings.useDepth.load();  // in use
     const bool hadMotion = g.guideMotion.chosen != nullptr && g.settings.useMotion.load();
     const bool tookDepth = SettleGuide(g.guideDepth, g_depthTally, Log);
