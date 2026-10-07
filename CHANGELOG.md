@@ -8,7 +8,8 @@ Built on v0.7.11 with the same runtimes and the same bridge protocol (v6).
   session after two probe readings of an all-zero field, and a loading screen, menu or pause reads all zero
   honestly, so a correct Launchpad setup could lose it for the run. A zero reading now counts only when the depth
   fed with it changed since the last reading (the scene moved), and the effect's motion is taken again 1200
-  presents later, doubling to 9600, to see whether its field still reads all zero.
+  presents later, doubling to 9600, to see whether its field still reads all zero. While it reads all zero the
+  probe keeps looking, less often each time, instead of stopping after five readings.
 - **A motion provider below AMD_Neural_Feed is taken again**, as before v0.7.11: the effect reads its field a
   frame late. The panel and the log still name it and say to move it above for this frame's motion.
 - **A shadow map can no longer become the D3D11 depth guide.** Ranking by draws let a shadow cascade or atlas
@@ -16,13 +17,13 @@ Built on v0.7.11 with the same runtimes and the same bridge protocol (v6).
   shape (ReShade's test, aspect within 10%) rank by draws now; with none of that shape, most-bound wins as before
   v0.7.11. Draws are counted per recording thread, so a deferred context's draws go to its own depth buffer, and
   only on D3D11. The 32-bit bridge does the same.
-- **Depth buffers passed over as FLAT come back.** Up to three are passed over (issue #19 had three of one size,
-  and a third is tried rather than the first again), and 4800 presents after the last one every buffer is a
-  candidate again, so a FLAT menu or sky does not cost the right buffer for the session.
+- **A D3D11 depth buffer that reads FLAT is handled as in v0.7.10 again**: withheld, copied just before the
+  game's clears and probed again. v0.7.11 passed it over for another buffer first, which could drop the right
+  buffer before the copy before the clears was tried and reopen a shadow-map pick.
 - **mochizuki puts back the Scale and Passes its network was built at.** The old network could still run a frame
   after a change and make the refused values the ones to put back, which then did nothing. They are now taken
-  from a network of a new size, and the values put back are written to `amd-nr.ini` too, so the next launch does
-  not start at the refused ones.
+  from a network of a new size (from the first frame after a build, on a runtime that cannot report its size),
+  and the values put back are written to `amd-nr.ini` too, so the next launch does not start at the refused ones.
 
 ## v0.7.11 - 2026-10-07 - Dragon Age: Inquisition starts, danielblnc 0.6.0 gets a defined pre-exposure, honest mochizuki status, Feed.fx and D3D11 depth fixes
 
