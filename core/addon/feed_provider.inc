@@ -48,9 +48,10 @@ int FeedProviderDefine()
 
 // Any provider being on used to be enough (issue #18): Launchpad ticked with the effect compiled for
 // VORT samples a texture nothing writes, and the field arrives all zero while the panel says the effect
-// is feeding it. Now the one the effect samples has to be ticked, and above the effect in the list:
-// below it, the effect reads that texture before the provider has written it this frame. Returns the
-// provider that is ticked, or null; `below` says it runs after the effect.
+// is feeding it. Now the one the effect samples has to be ticked. Below the effect in the list it is
+// still taken -- the effect reads last frame's field, a frame late, which setups have run on -- and
+// AdoptFeedEffect says to move it above. Returns the provider that is ticked, or null; `below` says it
+// runs after the effect.
 const char *FeedProviderOn(bool &below)
 {
     below = false;

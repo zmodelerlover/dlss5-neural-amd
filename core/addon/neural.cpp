@@ -1537,7 +1537,7 @@ void AdoptFeedEffect()
                         TechniqueOn("AMD_Neural_Feed.fx", "AMD_Neural_Feed");
     bool below = false;
     const char *providerTech = ticked ? FeedProviderOn(below) : nullptr;
-    const bool provider = providerTech != nullptr && !below;
+    const bool provider = providerTech != nullptr;  // below the effect too, a frame late, and said so
     const bool haveGameMotion = g.guideMotion.chosen != nullptr && !g.guideMotion.external;
     const bool haveGameDepth = g.guideDepth.chosen != nullptr && !g.guideDepth.external;
     // The probe's all-zero demotion (probes.inc) holds until one of these changes, not the outputs.
@@ -1590,8 +1590,9 @@ void AdoptFeedEffect()
     // only push the reading further out.
     if (!first)
         RearmGuideProbe(false);  // a slot filled or emptied: a buffer replaced is SettleGuide's
-    char under[96] {};
-    std::snprintf(under, sizeof(under), "enabled, but %s is below AMD_Neural_Feed; move it above",
+    char under[128] {};
+    std::snprintf(under, sizeof(under),
+                  "enabled, but %s is below AMD_Neural_Feed; move it above for this frame's motion",
                   providerTech != nullptr ? providerTech : "");
     std::snprintf(g.feedStatus, sizeof(g.feedStatus),
                   "AMD_Neural_Feed.fx: %s; motion %s, depth %s",
