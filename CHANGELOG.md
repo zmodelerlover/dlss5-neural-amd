@@ -1,6 +1,6 @@
 ﻿# Changelog
 
-## Unreleased
+## v0.7.11 - 2026-10-07 - Dragon Age: Inquisition starts, danielblnc 0.6.0 gets a defined pre-exposure, honest mochizuki status, Feed.fx and D3D11 depth fixes
 
 Built on v0.7.10 with the same runtimes and the same bridge protocol (v6).
 
