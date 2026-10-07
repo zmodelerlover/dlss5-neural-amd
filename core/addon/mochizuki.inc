@@ -323,7 +323,8 @@ bool MzRecord(ID3D12GraphicsCommandList*& cmd, bool haveMotion, UINT passes,
     Barrier(cmd, result, D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     mz.lastJob = job.handle;
-    if (!mz.said.empty()) {
+    const bool resumed = !mz.said.empty();  // the first frame run after frames without the network
+    if (resumed) {
         mz.said.clear();
         Log("mochizuki: the network is running");
     }
@@ -332,8 +333,12 @@ bool MzRecord(ID3D12GraphicsCommandList*& cmd, bool haveMotion, UINT passes,
     mz.refusedSince = 0;
     MochizukiNrInfo info{};
     info.struct_size = sizeof info;
-    if (mz.getInfo != nullptr && mz.getInfo(mz.session, &info) == LMXXF_NR_OK &&
-        (info.frame_w != mz.builtW || info.frame_h != mz.builtH || info.max_passes != mz.builtPasses)) {
+    // A runtime without MochizukiNrGetInfo cannot name the network's size: the values at the first frame
+    // after frames without the network (a build, as a rule) stand in, so the revert still has something.
+    if (mz.getInfo == nullptr ? resumed || mz.goodPasses == 0
+                              : mz.getInfo(mz.session, &info) == LMXXF_NR_OK &&
+                                    (info.frame_w != mz.builtW || info.frame_h != mz.builtH ||
+                                     info.max_passes != mz.builtPasses)) {
         mz.builtW = info.frame_w, mz.builtH = info.frame_h, mz.builtPasses = info.max_passes;
         mz.goodScale = g.settings.scale.load();
         mz.goodPasses = g.settings.passes.load();
