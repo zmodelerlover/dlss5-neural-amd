@@ -183,6 +183,13 @@ need(settle_fn.count("return true;") == 1 and re.search(
     r"guide\.chosen = best->res;.*tally\.clear\(\);\s*return true;\s*\}\s*$", settle_fn, re.S),
     "guide_choice.h: SettleGuide returns true only after the take")
 need("return;" not in settle_fn, "guide_choice.h: a SettleGuide path returns nothing")
+# Issue #19: draws rank first and binds break the tie (a motion tally has no draws, so binds alone);
+# the buffer read FLAT is passed over; and both routes' draw events feed the count.
+need("entry.second.draws > best->draws" in settle_fn and "entry.second.binds > best->binds" in settle_fn
+     and "entry.first != passedOver" in settle_fn, "guide_choice.h: SettleGuide no longer ranks by draws")
+need(src("core/addon/neural.cpp").count("d3d11guides::CountDraw();") == 2
+     and src("core/x86bridge/frontend32.cpp").count("d3d11guides::CountDraw();") == 2,
+     "a route's draw events no longer count draws for the depth pick")
 
 probes = src("core/addon/probes.inc")
 rearm = re.search(r"void RearmGuideProbe\(bool replaced\)\s*\{(.*?)\n\}", probes, re.S)

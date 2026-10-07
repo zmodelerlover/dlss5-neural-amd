@@ -47,6 +47,10 @@ struct Tallied
 {
     ComPtr<ID3D11Resource> res;
     UINT binds = 0;
+    // Draws while it was the bound depth-stencil (d3d11guides::CountDraw), which rank first; binds
+    // break a tie, and are all a motion target has. Issue #19: three same-size D32S8 buffers, and the
+    // most-bound was not the one the scene was drawn into -- ReShade's own pick counts draws.
+    UINT draws = 0;
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 };
@@ -56,6 +60,11 @@ struct Tallied
 // a Darksiders 3 log has "guide motion: taking 1x1 format 16, bound 2928 times this frame", taken
 // in exactly that window, with CreateTexture2D failing on it the next line.
 constexpr UINT kGuideFloor = 256;
+
+// A depth buffer the probe read FLAT twice in a moving scene, which SettleGuide then passes over for
+// the next candidate (D3D11Transport.inc). Identity only, never dereferenced; one per process, as
+// there is one depth guide.
+inline const void *passedOver = nullptr;
 
 // A motion-vector target as an engine writes it: two float channels, no more, at something
 // close to render resolution. The dozens of small two-channel buffers an engine also produces
@@ -89,7 +98,9 @@ bool SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
 {
     const Tallied *best = nullptr;
     for (const auto &entry : tally)
-        if (best == nullptr || entry.second.binds > best->binds)
+        if (entry.first != passedOver &&
+            (best == nullptr || entry.second.draws > best->draws ||
+             (entry.second.draws == best->draws && entry.second.binds > best->binds)))
             best = &entry.second;
     if (best == nullptr)
     {
@@ -165,8 +176,9 @@ bool SettleGuide(Guide &guide, std::unordered_map<void *, Tallied> &tally, LogFn
     // Whatever the companion effect had here, the game has just outbid it with a buffer it
     // renders itself. That is not a guess at motion, so it wins.
     guide.external = false;
-    Log("guide %s: taking %ux%u format %u, bound %u times %s", guide.name, best->width,
-        best->height, static_cast<unsigned>(best->format), best->binds,
+    Log("guide %s: taking %p, %ux%u format %u, bound %u times with %u draws %s", guide.name,
+        static_cast<void *>(best->res.Get()), best->width, best->height,
+        static_cast<unsigned>(best->format), best->binds, best->draws,
         cold ? "over the first three presents" : "a frame for three frames running");
     tally.clear();
     return true;

@@ -436,8 +436,8 @@ void OnBind(command_list* cmd,uint32_t count,const resource_view* targets,resour
     const auto resource=depth.handle?dev->get_resource_from_view(depth):reshade::api::resource{0};
     d3d11guides::ObserveD3D11(dev,targets,count,resource,g.outWidth,g.outHeight,g_depthTally,g_motionTally);
 }
-bool OnDraw(command_list*,uint32_t,uint32_t,uint32_t,uint32_t){return false;}
-bool OnDrawIndexed(command_list*,uint32_t,uint32_t,uint32_t,int32_t,uint32_t){return false;}
+bool OnDraw(command_list*,uint32_t,uint32_t,uint32_t,uint32_t){d3d11guides::CountDraw();return false;}  // the depth pick ranks by draws
+bool OnDrawIndexed(command_list*,uint32_t,uint32_t,uint32_t,int32_t,uint32_t){d3d11guides::CountDraw();return false;}
 // The depth copy before a clear, once the helper's probe withheld the one taken at present (d3d11_guides.h).
 bool OnClear(command_list* cmd,resource_view dsv,const float*,const uint8_t*,uint32_t,const rect*){if(!cmd||g.inEffects)return false;auto* dev=cmd->get_device();if(!dev||dev->get_api()!=device_api::d3d11)return false;std::lock_guard lock(g.lock);
     if(g.enabled&&!g.failed&&!g.hidden&&controls.shadow.useGameGuides&&controls.shadow.useDepth)d3d11guides::SnapshotDepthBeforeClear(cmd,dsv,g.game11.Get(),g.guideDepth);return false;}

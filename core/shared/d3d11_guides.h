@@ -15,6 +15,7 @@
 #include <wrl/client.h>
 #include <reshade_api.hpp>
 
+#include <atomic>
 #include <unordered_map>
 
 #include "guide_choice.h"
@@ -130,6 +131,15 @@ bool EnsureStage(ID3D11Device* dev, S& s, UINT w, UINT h, DXGI_FORMAT fmt, LogFn
     return true;
 }
 
+// Draws since the last bind, credited by ObserveD3D11 to the depth-stencil that bind left bound: what
+// the D3D11 depth pick ranks by (guide_choice.h, Tallied::draws). One relaxed add per draw, from each
+// route's draw events, which are registered anyway (Events bit 2, on by default). ponytail: one
+// counter for the device, not one per command list, so draws recorded on deferred contexts land on
+// whatever the immediate context bound last; per-list state if a log shows deferred-heavy games pick wrong.
+inline std::atomic<UINT> drawsSinceBind{0};
+inline void* boundDepth = nullptr;  // identity only, never dereferenced
+inline void CountDraw() { drawsSinceBind.fetch_add(1, std::memory_order_relaxed); }
+
 // D3D11 half of the observation. ReShade hands the render targets and the depth-stencil of
 // every bind; on D3D12 it hands the add-on only the swapchain (measured: zero depth binds in
 // 600 frames), which is why this path exists at all and why PCSX2 had to be moved to D3D11
@@ -151,6 +161,10 @@ inline void ObserveD3D11(reshade::api::device* dev, const reshade::api::resource
         }
         ++slot.binds;
     };
+    const UINT draws = drawsSinceBind.exchange(0, std::memory_order_relaxed);
+    if (const auto it = depthTally.find(boundDepth); it != depthTally.end())
+        it->second.draws += draws;
+    boundDepth = nullptr;
     if (depthRes.handle != 0) {
         auto* native = reinterpret_cast<ID3D11Resource*>(depthRes.handle);
         ComPtr<ID3D11Texture2D> tex;
@@ -162,8 +176,10 @@ inline void ObserveD3D11(reshade::api::device* dev, const reshade::api::resource
                 d.Height >= guides::kGuideFloor &&
                 guides::GuideDepthSrvFormat(d.Format) != DXGI_FORMAT_UNKNOWN &&
                 (screenW == 0 || screenH == 0 ||
-                 (d.Width * 2 >= screenW && d.Height * 2 >= screenH)))
+                 (d.Width * 2 >= screenW && d.Height * 2 >= screenH))) {
                 record(depthTally, native, d);
+                boundDepth = native;
+            }
         }
     }
     for (uint32_t i = 0; i < count; ++i) {

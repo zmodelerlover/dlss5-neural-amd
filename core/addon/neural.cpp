@@ -998,6 +998,8 @@ struct State
     std::atomic<UINT64> worstJobMs { 0 };
     UINT longJobs = 0;
     UINT junkProbes = 0, flatProbes = 0;
+    void *depthFlatOf = nullptr;  // the D3D11 depth buffer read FLAT twice, for D3D11Transport.inc's next try
+    UINT depthRotations = 0;
     ComPtr<ID3D12Fence> fence;
     UINT64 serial = 0, completion = 0;
 
@@ -2146,10 +2148,10 @@ void OnBindDepthStencil(command_list *cmd_list, uint32_t count, const resource_v
 // Subscribing to the draw events is what makes ReShade track render-target state on the game's
 // own command lists. Without a subscriber it only reports the swapchain, which is the whole of
 // "on D3D12 an add-on sees two render targets and no depth" -- the probe add-on registers these
-// and sees eight, depth included, on the same game. The callbacks do nothing; being registered
-// is the entire point. Returning false lets the draw proceed.
-bool OnDraw(command_list *, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
-bool OnDrawIndexed(command_list *, uint32_t, uint32_t, uint32_t, int32_t, uint32_t) { return false; }
+// and sees eight, depth included, on the same game. Being registered is the point; all they do is
+// count draws for the D3D11 depth pick (d3d11_guides.h). Returning false lets the draw proceed.
+bool OnDraw(command_list *, uint32_t, uint32_t, uint32_t, uint32_t) { d3d11guides::CountDraw(); return false; }
+bool OnDrawIndexed(command_list *, uint32_t, uint32_t, uint32_t, int32_t, uint32_t) { d3d11guides::CountDraw(); return false; }
 
 // Reading the depth buffer at present time returns zeros: PCSX2 has already cleared it by then.
 // The only moment its contents exist is immediately before the clear, so take the copy here.
