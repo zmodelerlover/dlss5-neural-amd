@@ -401,8 +401,14 @@ struct Packet
     UINT pad4c;
     UINT renderWidth, renderHeight; // read since v0.4.1, as the jitter below always is (names as the
     float jitterX, jitterY;         // OptiScaler fork's): zero here, no longer whatever the stack held
+    // danielblnc 0.6.0 reads one float past those, FSR's pre-exposure (UsePreExposure=1, its default;
+    // `movss xmm0, [rsi+0x60]` in Record). A 0x60-byte packet handed it stack bytes, the green noise the
+    // OptiScaler fork met. The colour goes in as the game shows it, so 1; older builds stop at 0x60.
+    float preExposure;
+    UINT pad64;
 };
-static_assert(sizeof(Packet) == 0x60 && offsetof(Packet, scaleX) == 0x44 && offsetof(Packet, jitterX) == 0x58);
+static_assert(sizeof(Packet) == 0x68 && offsetof(Packet, scaleX) == 0x44 && offsetof(Packet, jitterX) == 0x58 &&
+              offsetof(Packet, preExposure) == 0x60);
 
 using InitFn = bool(__fastcall *)(void *, const std::string *);
 using RecordFn = void(__fastcall *)(Packet *);
@@ -2658,6 +2664,7 @@ bool RecordNetwork(ID3D12GraphicsCommandList *&cmd, ID3D12Resource *colourSrc,
         packet.exposureState = 4;
         packet.scaleX = 1.0f;
         packet.scaleY = 1.0f;
+        packet.preExposure = 1.0f;
         // v0.4.0 also records its inline wait on this list as draws (its ini SpinDraw, default 1),
         // so after the call the list's graphics root signature, pipeline, viewport, scissor and
         // render targets are the runtime's. Nothing here draws, and every dispatch below binds its

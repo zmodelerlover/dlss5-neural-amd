@@ -28,6 +28,10 @@ What it proves, in the order of how much each would have caught:
   * The ini reader takes Quality with a default of "fast", compares it with "fast" and stores the
     answer to kQuality, the byte the add-on writes its own Quality into; a build that names 0 there
     has no Quality key in it at all.
+  * The packet the add-on hands Record (`struct Packet`, neural.cpp) holds every float Record reads
+    off it. 0.6.0 reads FSR's pre-exposure at +0x60, one past the 0x60 bytes the packet had; with a
+    binary, the record entry's `movss xmm, [packet+0x60]` reads are counted, and the packet must
+    reach past them.
   * The file is a build `kBuilds` names, by its hash, and it has been through `patch_runtime.py`.
     Without a binary: every build names every address (a field left out compiles as zero) but the
     ones `struct Build` declares optional, and each is the patched_sha256 of a runtime-patches.json
@@ -51,6 +55,15 @@ ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "core/addon/runtime_offsets.h"
 BUILDS = ROOT / "core/addon/runtime_builds.inc"  # kBuilds, included by HEADER
 SOURCES = ROOT / "core"
+NEURAL = ROOT / "core/addon/neural.cpp"  # struct Packet and its static_assert
+
+
+def packet_layout():
+    """(sizeof(Packet), offsetof(Packet, preExposure) or -1), off the static_assert under it."""
+    text = NEURAL.read_text(encoding="utf-8")
+    size = re.search(r"sizeof\(Packet\)\s*==\s*(0x[0-9a-fA-F]+)", text)
+    pre = re.search(r"offsetof\(Packet,\s*preExposure\)\s*==\s*(0x[0-9a-fA-F]+)", text)
+    return (int(size.group(1), 16) if size else 0), (int(pre.group(1), 16) if pre else -1)
 
 
 def sections(data):
@@ -193,6 +206,13 @@ def main(argv):
                                           "runtime-patches.json build")
     check(len({b["sha256"] for b in builds}) == len(builds), f"{len(builds)} builds, no two with one hash")
 
+    # Record reads pre-exposure at +0x60 on 0.6.0 (UsePreExposure=1 by default); a packet that ends
+    # there hands it stack bytes, which the OptiScaler fork's 0x60-byte packet turned into green noise.
+    packet_size, pre_exposure = packet_layout()
+    check(pre_exposure == 0x60 and packet_size >= 0x64,
+          f"struct Packet is {packet_size:#x} bytes with preExposure at {pre_exposure:#x} "
+          "(Record reads +0x60 since 0.6.0)")
+
     if len(argv) == 1:
         print("\n" + ("PASS (sources only; pass the runtime to check it too)" if not bad
                       else f"FAIL: {len(bad)} check(s)"))
@@ -246,6 +266,21 @@ def main(argv):
         check(data_off.get(want) == rva,
               f"record entry gates on {rva:#x}, which the header calls {want} "
               f"({data_off.get(want, 0):#x})")
+
+    # -- The packet reaches every float Record reads at +0x60 -------------------------------------
+    # The record entry keeps the packet in the register it moves rcx into (`mov rsi, rcx` on 0.6.0);
+    # `movss xmmN, [that+0x60]` is the pre-exposure read, twice on 0.6.0 (0x1a916, 0x1aef8).
+    entry = raw[record - delta:record - delta + 0x80]
+    keep = re.search(rb"\x48\x89([\xc8-\xcf])", entry)
+    reads = 0
+    if keep:
+        rm = keep.group(1)[0] - 0xc8
+        modrm = bytes(0x40 | (n << 3) | rm for n in range(8))
+        reads = len(re.findall(rb"\xf3\x0f\x10[" + re.escape(modrm) + rb"]\x60",
+                               raw[record - delta:record - delta + 0x4000]))
+    check(bool(keep), f"record entry {record:#x}: found the register it keeps the packet in")
+    check(reads == 0 or packet_size >= 0x64,
+          f"Record reads a float at packet+0x60 {reads} time(s); the packet is {packet_size:#x} bytes")
 
     # -- The jobs in flight, decoded where the record entry refuses one --------------------------
     # runtimes.inc's Outstanding is kJobId - kJobCounter. The runtime's own refusal is the same
